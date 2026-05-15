@@ -1,0 +1,1318 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8" />
+<title>Beautiful LinkedIn — Literary</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT@9..144,300;9..144,400;9..144,500;9..144,600&family=EB+Garamond:ital,wght@0,400;0,500;1,400&family=JetBrains+Mono:wght@400;500&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --paper: #f3ede1;
+    --paper-2: #ece4d3;
+    --paper-3: #e3d9c3;
+    --ink: #221d17;
+    --ink-2: #4a4239;
+    --ink-3: #7a6f60;
+    --rule: #d6c9ae;
+    --rule-2: #c9bb9d;
+    --accent: #a14222;     /* terracotta */
+    --accent-2: #6b3a1f;
+    --moss: #5b6b3a;
+    --serif: 'Fraunces', 'EB Garamond', Georgia, serif;
+    --garamond: 'EB Garamond', Georgia, serif;
+    --sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    --mono: 'JetBrains Mono', ui-monospace, monospace;
+  }
+  [data-theme="dark"] {
+    --paper: #1a1612;
+    --paper-2: #221d17;
+    --paper-3: #2c261e;
+    --ink: #f1e9d8;
+    --ink-2: #c9bea8;
+    --ink-3: #8a8170;
+    --rule: #3a3328;
+    --rule-2: #4a4133;
+    --accent: #d97a4f;
+    --accent-2: #e8a37a;
+    --moss: #a8b87a;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+  }
+  .app {
+    display: grid;
+    grid-template-columns: 240px 1fr;
+    height: 100vh;
+    width: 100vw;
+  }
+  /* ---------------- Sidebar ---------------- */
+  .sidebar {
+    background: var(--paper-2);
+    border-right: 1px solid var(--rule);
+    display: flex;
+    flex-direction: column;
+    padding: 22px 0 16px;
+    position: relative;
+  }
+  .sidebar::after {
+    content: '';
+    position: absolute; top: 0; right: 0; bottom: 0; width: 1px;
+    background: linear-gradient(to bottom, transparent, var(--rule-2) 12%, var(--rule-2) 88%, transparent);
+  }
+  .brand {
+    padding: 0 24px 18px;
+    border-bottom: 1px solid var(--rule);
+    margin-bottom: 14px;
+  }
+  .brand-mark {
+    display: flex; align-items: baseline; gap: 6px;
+    font-family: var(--serif);
+    font-weight: 400;
+    letter-spacing: -0.01em;
+  }
+  .brand-mark .b {
+    font-style: italic;
+    font-size: 26px;
+    color: var(--accent);
+    line-height: 1;
+  }
+  .brand-mark .l {
+    font-size: 18px;
+    color: var(--ink);
+    font-weight: 500;
+  }
+  .brand-meta {
+    margin-top: 6px;
+    font-family: var(--garamond);
+    font-style: italic;
+    font-size: 13px;
+    color: var(--ink-3);
+    letter-spacing: 0.01em;
+  }
+  .nav-label {
+    font-family: var(--mono);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+    color: var(--ink-3);
+    padding: 14px 24px 6px;
+  }
+  .nav-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 7px 24px;
+    color: var(--ink-2);
+    font-family: var(--garamond);
+    font-size: 16px;
+    cursor: pointer;
+    border-left: 2px solid transparent;
+    margin-left: -1px;
+    transition: background 80ms;
+  }
+  .nav-item:hover { background: var(--paper-3); }
+  .nav-item.active {
+    color: var(--ink);
+    border-left-color: var(--accent);
+    background: var(--paper-3);
+  }
+  .nav-item .roman {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--ink-3);
+    width: 22px;
+    letter-spacing: 0.1em;
+  }
+  .nav-item.active .roman { color: var(--accent); }
+  .saved-list {
+    margin-top: 4px;
+  }
+  .saved-item {
+    display: block;
+    padding: 4px 24px 4px 46px;
+    font-family: var(--garamond);
+    font-style: italic;
+    font-size: 14px;
+    color: var(--ink-3);
+    cursor: pointer;
+    border-left: 2px solid transparent;
+    margin-left: -1px;
+  }
+  .saved-item:hover { color: var(--ink-2); background: var(--paper-3); }
+  .sidebar-foot {
+    margin-top: auto;
+    padding: 14px 24px 0;
+    border-top: 1px solid var(--rule);
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--ink-3);
+    letter-spacing: 0.08em;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--moss);
+    box-shadow: 0 0 0 3px color-mix(in oklch, var(--moss) 20%, transparent);
+  }
+
+  /* ---------------- Main ---------------- */
+  .main {
+    overflow-y: auto;
+    overflow-x: hidden;
+    background: var(--paper);
+    position: relative;
+  }
+  .titlebar {
+    height: 38px;
+    border-bottom: 1px solid var(--rule);
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 22px;
+    background: var(--paper);
+    position: sticky; top: 0; z-index: 10;
+    backdrop-filter: blur(8px);
+  }
+  .titlebar .crumbs {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--ink-3);
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+  }
+  .titlebar .crumbs em {
+    color: var(--ink);
+    font-style: normal;
+  }
+  .titlebar .actions { display: flex; align-items: center; gap: 14px; }
+  .icon-btn {
+    width: 26px; height: 26px;
+    display: grid; place-items: center;
+    color: var(--ink-3);
+    cursor: pointer;
+    border-radius: 4px;
+  }
+  .icon-btn:hover { background: var(--paper-2); color: var(--ink); }
+
+  /* Editorial header */
+  .ed-header {
+    padding: 56px 64px 30px;
+    max-width: 1180px;
+    border-bottom: 1px solid var(--rule);
+    position: relative;
+  }
+  .ed-eyebrow {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--accent);
+    display: flex; align-items: center; gap: 12px;
+  }
+  .ed-eyebrow::before {
+    content: ''; height: 1px; width: 28px; background: var(--accent);
+  }
+  .ed-title {
+    font-family: var(--serif);
+    font-weight: 300;
+    font-size: 58px;
+    line-height: 1.02;
+    letter-spacing: -0.025em;
+    margin: 16px 0 14px;
+    color: var(--ink);
+    font-variation-settings: "opsz" 144, "SOFT" 50;
+  }
+  .ed-title em { font-style: italic; color: var(--accent); font-weight: 400; }
+  .ed-dek {
+    font-family: var(--garamond);
+    font-size: 19px;
+    font-style: italic;
+    line-height: 1.5;
+    color: var(--ink-2);
+    max-width: 640px;
+  }
+  .ed-byline {
+    margin-top: 24px;
+    display: flex; align-items: center; gap: 18px;
+    font-family: var(--mono);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.16em;
+    color: var(--ink-3);
+  }
+  .ed-byline span { display: flex; align-items: center; gap: 8px; }
+  .ed-byline .pip { width: 4px; height: 4px; background: var(--ink-3); border-radius: 50%; }
+
+  /* Form / margin notes */
+  .composer {
+    padding: 40px 64px 30px;
+    display: grid;
+    grid-template-columns: 1fr 280px;
+    gap: 56px;
+    max-width: 1180px;
+    border-bottom: 1px solid var(--rule);
+  }
+  .field-stack { display: flex; flex-direction: column; gap: 24px; }
+  .field {
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .field-label {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+  }
+  .field-num {
+    color: var(--accent);
+    margin-right: 10px;
+  }
+  .field-input {
+    background: transparent;
+    border: 0;
+    border-bottom: 1px solid var(--rule-2);
+    padding: 8px 2px;
+    font-family: var(--serif);
+    font-size: 22px;
+    font-weight: 300;
+    color: var(--ink);
+    outline: none;
+    transition: border-color 120ms;
+  }
+  .field-input:focus { border-bottom-color: var(--accent); }
+  .field-input::placeholder { color: var(--ink-3); font-style: italic; }
+  .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px 8px; margin-top: 4px; }
+  .chip {
+    font-family: var(--garamond);
+    font-size: 14px;
+    padding: 3px 11px 4px;
+    border: 1px solid var(--rule-2);
+    border-radius: 999px;
+    cursor: pointer;
+    color: var(--ink-2);
+    background: transparent;
+    transition: all 120ms;
+  }
+  .chip:hover { border-color: var(--ink-3); }
+  .chip.on {
+    background: var(--ink);
+    color: var(--paper);
+    border-color: var(--ink);
+  }
+  .modes { display: grid; grid-template-columns: repeat(4,1fr); gap: 8px; margin-top: 4px; }
+  .mode {
+    border: 1px solid var(--rule-2);
+    padding: 10px 12px;
+    cursor: pointer;
+    background: transparent;
+    text-align: left;
+  }
+  .mode .m-name {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .mode .m-desc {
+    font-family: var(--garamond);
+    font-style: italic;
+    font-size: 13px;
+    color: var(--ink-2);
+    margin-top: 6px;
+    line-height: 1.3;
+  }
+  .mode.on { border-color: var(--accent); background: color-mix(in oklch, var(--accent) 8%, var(--paper)); }
+  .mode.on .m-name { color: var(--accent); }
+
+  .submit {
+    margin-top: 16px;
+    display: flex; align-items: center; gap: 16px;
+  }
+  .btn-run {
+    background: var(--ink);
+    color: var(--paper);
+    border: 0;
+    padding: 11px 22px 12px;
+    font-family: var(--serif);
+    font-size: 16px;
+    font-weight: 400;
+    letter-spacing: 0.01em;
+    cursor: pointer;
+    display: inline-flex; align-items: center; gap: 10px;
+    border-radius: 1px;
+  }
+  .btn-run:hover { background: var(--accent-2); }
+  .btn-ghost {
+    background: transparent;
+    border: 0;
+    color: var(--ink-2);
+    font-family: var(--garamond);
+    font-style: italic;
+    font-size: 15px;
+    cursor: pointer;
+    padding: 6px 4px;
+  }
+  .btn-ghost:hover { color: var(--accent); }
+
+  /* Margin column (notes) */
+  .margin-notes {
+    padding-top: 26px;
+    border-left: 1px dashed var(--rule-2);
+    padding-left: 26px;
+    font-family: var(--garamond);
+    font-style: italic;
+    color: var(--ink-3);
+    font-size: 14px;
+    line-height: 1.55;
+  }
+  .margin-notes h4 {
+    font-family: var(--mono);
+    font-style: normal;
+    font-weight: 400;
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--ink-2);
+    margin: 0 0 8px;
+  }
+  .margin-notes p { margin: 0 0 14px; }
+  .margin-notes .drop {
+    float: left;
+    font-family: var(--serif);
+    font-style: italic;
+    font-size: 38px;
+    line-height: 0.85;
+    color: var(--accent);
+    margin: 4px 6px 0 0;
+    font-weight: 400;
+  }
+
+  /* Results */
+  .results {
+    padding: 36px 64px 80px;
+    max-width: 1180px;
+  }
+  .res-head {
+    display: flex; align-items: flex-end; justify-content: space-between;
+    border-bottom: 1px solid var(--ink);
+    padding-bottom: 8px;
+    margin-bottom: 18px;
+  }
+  .res-head h2 {
+    font-family: var(--serif);
+    font-weight: 400;
+    font-size: 26px;
+    margin: 0;
+    letter-spacing: -0.01em;
+  }
+  .res-head .meta {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+  }
+  .res-toolbar {
+    display: flex; align-items: center; gap: 18px;
+    padding: 8px 0 14px;
+    border-bottom: 1px solid var(--rule);
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+  }
+  .res-toolbar .filt {
+    cursor: pointer;
+  }
+  .res-toolbar .filt.on { color: var(--accent); }
+  .res-toolbar .grow { flex: 1; }
+
+  .lead-row {
+    display: grid;
+    grid-template-columns: 24px 2.4fr 2fr 1.1fr 0.9fr 60px;
+    gap: 18px;
+    align-items: baseline;
+    padding: 18px 0;
+    border-bottom: 1px solid var(--rule);
+  }
+  .lead-row:hover { background: color-mix(in oklch, var(--accent) 5%, transparent); }
+  .lead-num {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--ink-3);
+    letter-spacing: 0.06em;
+  }
+  .lead-name {
+    font-family: var(--serif);
+    font-size: 21px;
+    font-weight: 400;
+    color: var(--ink);
+    letter-spacing: -0.01em;
+    line-height: 1.15;
+  }
+  .lead-name .pill {
+    margin-left: 8px;
+    font-family: var(--mono);
+    font-size: 9px;
+    letter-spacing: 0.14em;
+    color: var(--ink-3);
+    text-transform: uppercase;
+    vertical-align: middle;
+  }
+  .lead-handle {
+    font-family: var(--garamond);
+    font-style: italic;
+    font-size: 13px;
+    color: var(--ink-3);
+    margin-top: 2px;
+  }
+  .lead-role {
+    font-family: var(--garamond);
+    font-size: 16px;
+    font-style: italic;
+    color: var(--ink-2);
+    line-height: 1.3;
+  }
+  .lead-co {
+    font-family: var(--serif);
+    font-size: 14px;
+    color: var(--ink-2);
+  }
+  .lead-src {
+    font-family: var(--mono);
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    color: var(--ink-3);
+  }
+  .score-cell {
+    font-family: var(--serif);
+    font-size: 22px;
+    font-weight: 300;
+    color: var(--accent);
+    text-align: right;
+    letter-spacing: -0.02em;
+    line-height: 1;
+    font-variation-settings: "opsz" 144;
+  }
+  .score-cell .s-of {
+    font-family: var(--mono);
+    font-size: 9px;
+    color: var(--ink-3);
+    letter-spacing: 0.1em;
+    margin-left: 1px;
+  }
+
+  .footnote {
+    margin-top: 32px;
+    padding-top: 14px;
+    border-top: 1px solid var(--rule);
+    font-family: var(--garamond);
+    font-style: italic;
+    font-size: 13px;
+    color: var(--ink-3);
+    line-height: 1.55;
+  }
+  .footnote sup { color: var(--accent); margin-right: 4px; font-style: normal; font-family: var(--mono); font-size: 9px; }
+
+  /* ---------------- Settings ---------------- */
+  .settings-page {
+    padding: 56px 64px 80px;
+    max-width: 980px;
+  }
+  .set-tabs {
+    display: flex; gap: 28px;
+    border-bottom: 1px solid var(--rule);
+    margin-bottom: 36px;
+  }
+  .set-tab {
+    padding: 0 0 12px;
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+  }
+  .set-tab.on { color: var(--accent); border-bottom-color: var(--accent); }
+  .set-section { margin-bottom: 48px; }
+  .set-section h3 {
+    font-family: var(--serif);
+    font-weight: 400;
+    font-size: 28px;
+    margin: 0 0 6px;
+    letter-spacing: -0.015em;
+  }
+  .set-section .sec-dek {
+    font-family: var(--garamond);
+    font-style: italic;
+    font-size: 16px;
+    color: var(--ink-3);
+    margin-bottom: 22px;
+    max-width: 560px;
+  }
+  .set-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 24px;
+    align-items: center;
+    padding: 16px 0;
+    border-bottom: 1px solid var(--rule);
+  }
+  .set-row .lbl {
+    font-family: var(--serif);
+    font-size: 17px;
+    color: var(--ink);
+  }
+  .set-row .desc {
+    font-family: var(--garamond);
+    font-style: italic;
+    font-size: 14px;
+    color: var(--ink-3);
+    margin-top: 2px;
+  }
+
+  .toggle {
+    width: 42px; height: 24px;
+    background: var(--rule-2);
+    border-radius: 999px;
+    position: relative;
+    cursor: pointer;
+    transition: background 150ms;
+  }
+  .toggle::after {
+    content: '';
+    position: absolute; top: 2px; left: 2px;
+    width: 20px; height: 20px;
+    background: var(--paper);
+    border-radius: 50%;
+    transition: transform 150ms;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.15);
+  }
+  .toggle.on { background: var(--accent); }
+  .toggle.on::after { transform: translateX(18px); }
+
+  .api-card {
+    border: 1px solid var(--rule);
+    padding: 18px 22px;
+    margin-bottom: 12px;
+    background: var(--paper-2);
+  }
+  .api-head {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 8px;
+  }
+  .api-name {
+    font-family: var(--serif);
+    font-size: 18px;
+    font-weight: 500;
+  }
+  .api-name em { color: var(--accent); font-style: italic; font-weight: 400; margin-right: 6px; }
+  .api-desc {
+    font-family: var(--garamond);
+    font-style: italic;
+    font-size: 14px;
+    color: var(--ink-3);
+    margin-bottom: 12px;
+  }
+  .api-input {
+    display: flex; gap: 0; align-items: stretch;
+    border: 1px solid var(--rule-2);
+    background: var(--paper);
+  }
+  .api-input input {
+    flex: 1;
+    background: transparent;
+    border: 0; outline: none;
+    padding: 10px 12px;
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--ink);
+    letter-spacing: 0.04em;
+  }
+  .api-input input::placeholder { color: var(--ink-3); }
+  .api-input button {
+    border: 0; border-left: 1px solid var(--rule-2);
+    background: transparent;
+    padding: 0 14px;
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--ink-2);
+    cursor: pointer;
+  }
+  .api-input button:hover { color: var(--accent); }
+  .api-status {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-family: var(--mono);
+    font-size: 9px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--moss);
+  }
+  .api-status.off { color: var(--ink-3); }
+  .api-status .d {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: currentColor;
+  }
+  .acct-card {
+    border: 1px solid var(--rule);
+    padding: 22px;
+    background: var(--paper-2);
+    display: grid;
+    grid-template-columns: 56px 1fr auto;
+    gap: 20px; align-items: center;
+  }
+  .avatar {
+    width: 56px; height: 56px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: var(--paper);
+    display: grid; place-items: center;
+    font-family: var(--serif); font-style: italic; font-weight: 400;
+    font-size: 28px;
+    letter-spacing: -0.02em;
+  }
+  .acct-name { font-family: var(--serif); font-size: 20px; font-weight: 500; }
+  .acct-mail { font-family: var(--mono); font-size: 11px; color: var(--ink-3); margin-top: 4px; letter-spacing: 0.04em; }
+
+  /* ---------------- Misc ---------------- */
+  .ornament {
+    text-align: center;
+    color: var(--accent);
+    font-family: var(--serif);
+    font-style: italic;
+    font-size: 22px;
+    letter-spacing: 0.5em;
+    padding: 18px 0;
+    user-select: none;
+  }
+
+  .toast {
+    position: absolute; top: 48px; left: 50%; transform: translateX(-50%);
+    background: var(--ink);
+    color: var(--paper);
+    font-family: var(--garamond); font-style: italic;
+    font-size: 14px;
+    padding: 10px 20px;
+    z-index: 30;
+    border: 1px solid var(--ink);
+    box-shadow: 0 6px 24px rgba(0,0,0,0.18);
+    display: none;
+  }
+  .toast.show { display: block; animation: slidein 200ms ease-out; }
+  @keyframes slidein {
+    from { opacity: 0; transform: translate(-50%, -8px); }
+    to { opacity: 1; transform: translate(-50%, 0); }
+  }
+
+  .spinner {
+    width: 14px; height: 14px;
+    border-radius: 50%;
+    border: 1.5px solid color-mix(in oklch, var(--paper) 40%, transparent);
+    border-top-color: var(--paper);
+    animation: spin 800ms linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* tiny scrollbar */
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: var(--rule-2); border-radius: 99px; border: 2px solid var(--paper); }
+  ::-webkit-scrollbar-track { background: transparent; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel">
+const { useState, useEffect, useRef, useMemo } = React;
+
+const SEED_LEADS = [
+  { name: "Caio Cunha", role: "Growth Marketing @ XP Inc.", co: "xp inc", src: "search_serper", score: 100, handle: "in/caiocunha" },
+  { name: "Rafaela Lompa Truda Silveira", role: "Head Growth & Expansão B2B", co: "xp inc", src: "search_serper", score: 100, handle: "in/rafaela-lompa" },
+  { name: "Caio Zanetti", role: "Growth CRM", co: "xp inc", src: "search_searxng", score: 100, handle: "in/caiozanetti" },
+  { name: "Pedro Rached Darcie", role: "Growth and Strategy", co: "xp inc", src: "search_searxng", score: 100, handle: "in/prdarcie" },
+  { name: "Bruno Chojniak", role: "Growth Analyst", co: "xp inc", src: "search_searxng", score: 92, handle: "in/bchojniak" },
+  { name: "Patrícia Wroblewski", role: "Marketing Lead — Investidores", co: "xp inc", src: "search_searxng", score: 88, handle: "in/pwroblewski" },
+  { name: "João Carnelossi", role: "Growth Marketing", co: "xp inc", src: "search_searxng", score: 85, handle: "in/jcarnelossi" },
+  { name: "Gabriela Maia", role: "Analista de marketing", co: "xp inc", src: "search_searxng", score: 85, handle: "in/gabymaia" },
+  { name: "Eduardo Diniz", role: "Growth Marketing Analyst", co: "xp inc", src: "search_searxng", score: 84, handle: "in/edudiniz" },
+  { name: "Larissa Buscatti", role: "Head of Marketing", co: "xp inc", src: "search_serper", score: 82, handle: "in/lbuscatti" },
+  { name: "Matheus Azevedo", role: "Sales — Atacado", co: "xp inc", src: "search_searxng", score: 78, handle: "in/mazevedo" },
+];
+
+const ROMAN = ["I","II","III","IV","V","VI","VII","VIII"];
+
+function App() {
+  const [theme, setTheme] = useState("light");
+  const [view, setView] = useState("search"); // search | settings | history
+  const [setTab, setSetTab] = useState("api"); // general | api | account
+  const [running, setRunning] = useState(false);
+  const [leads, setLeads] = useState(SEED_LEADS);
+  const [toast, setToast] = useState(null);
+  const [company, setCompany] = useState("xp inc");
+  const [domain, setDomain] = useState("xpi.com.br");
+  const [profile, setProfile] = useState("Marketing / Growth");
+  const [keywords, setKeywords] = useState("marketing, growth, cmo, head of marketing, demand generation");
+  const [seniorities, setSeniorities] = useState(new Set(["Head of"]));
+  const [maxLeads, setMaxLeads] = useState(30);
+  const [output, setOutput] = useState("output/leadsHeadMarketing2.csv");
+  const [mode, setMode] = useState("serp");
+  const [includeUnmatched, setIncludeUnmatched] = useState(false);
+
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+  }, [theme]);
+
+  const fireToast = (msg) => {
+    setToast(msg);
+    setTimeout(() => setToast(null), 2400);
+  };
+
+  const toggleSenior = (s) => {
+    const next = new Set(seniorities);
+    next.has(s) ? next.delete(s) : next.add(s);
+    setSeniorities(next);
+  };
+
+  const runSearch = () => {
+    setRunning(true);
+    setTimeout(() => {
+      setRunning(false);
+      fireToast(`Busca finalizada — ${leads.length} leads únicos. Arquivo: ${output}`);
+    }, 1600);
+  };
+
+  return (
+    <div className="app">
+      {/* SIDEBAR */}
+      <aside className="sidebar">
+        <div className="brand">
+          <div className="brand-mark">
+            <span className="b">B</span>
+            <span className="l">eautiful Linked<em style={{fontStyle:'italic',fontFamily:'var(--garamond)',color:'var(--accent)'}}>in</em></span>
+          </div>
+          <div className="brand-meta">— a quiet way to find them.</div>
+        </div>
+
+        <div className="nav-label">Volume I — Atelier</div>
+        <div className={`nav-item ${view==='search'?'active':''}`} onClick={() => setView('search')}>
+          <span className="roman">I</span><span>Nova busca</span>
+        </div>
+        <div className={`nav-item ${view==='history'?'active':''}`} onClick={() => setView('history')}>
+          <span className="roman">II</span><span>Buscas salvas</span>
+        </div>
+
+        <div className="nav-label">Volume II — Manuscritos</div>
+        <a className="saved-item">▸ XP — Head Marketing</a>
+        <a className="saved-item">▸ Nubank — Growth</a>
+        <a className="saved-item">▸ Stone — CFO/Finance</a>
+        <a className="saved-item">▸ iFood — Product Leads</a>
+
+        <div className="nav-label">Volume III — Configuração</div>
+        <div className={`nav-item ${view==='settings'?'active':''}`} onClick={() => setView('settings')}>
+          <span className="roman">III</span><span>Preferências</span>
+        </div>
+
+        <div className="sidebar-foot">
+          <span className="dot"></span>
+          <span>SIDECAR · 127.0.0.1:65115</span>
+        </div>
+      </aside>
+
+      {/* MAIN */}
+      <main className="main">
+        <div className="titlebar">
+          <div className="crumbs">
+            Beautiful LinkedIn <span style={{margin:'0 8px'}}>›</span>
+            <em>{view === 'search' ? 'Nova busca' : view === 'settings' ? 'Preferências' : 'Buscas salvas'}</em>
+          </div>
+          <div className="actions">
+            <span className="crumbs" style={{marginRight:8}}>v 0.4.2 · serif edition</span>
+            <div className="icon-btn" title="Tema" onClick={() => setTheme(theme==='light'?'dark':'light')}>
+              {theme==='light' ? '☾' : '☀'}
+            </div>
+            <div className="icon-btn" onClick={() => setView('settings')}>⚙</div>
+          </div>
+        </div>
+
+        <div className={`toast ${toast ? 'show':''}`}>{toast}</div>
+
+        {view === 'search' && (
+          <SearchView
+            running={running} runSearch={runSearch}
+            company={company} setCompany={setCompany}
+            domain={domain} setDomain={setDomain}
+            profile={profile} setProfile={setProfile}
+            keywords={keywords} setKeywords={setKeywords}
+            seniorities={seniorities} toggleSenior={toggleSenior}
+            maxLeads={maxLeads} setMaxLeads={setMaxLeads}
+            output={output} setOutput={setOutput}
+            mode={mode} setMode={setMode}
+            includeUnmatched={includeUnmatched} setIncludeUnmatched={setIncludeUnmatched}
+            leads={leads}
+          />
+        )}
+
+        {view === 'settings' && (
+          <SettingsView tab={setTab} setTab={setSetTab} theme={theme} setTheme={setTheme} />
+        )}
+
+        {view === 'history' && <HistoryView />}
+      </main>
+    </div>
+  );
+}
+
+function SearchView(props) {
+  const { running, runSearch, company, setCompany, domain, setDomain, profile, setProfile,
+          keywords, setKeywords, seniorities, toggleSenior, maxLeads, setMaxLeads,
+          output, setOutput, mode, setMode, includeUnmatched, setIncludeUnmatched, leads } = props;
+  const [filter, setFilter] = useState("todos");
+  const filtered = useMemo(() => {
+    if (filter === "head") return leads.filter(l => /head|director|founder/i.test(l.role));
+    if (filter === "growth") return leads.filter(l => /growth/i.test(l.role));
+    return leads;
+  }, [filter, leads]);
+
+  return (
+    <>
+      <header className="ed-header">
+        <div className="ed-eyebrow">Edição diária · Quinta · 09 de maio de 2026</div>
+        <h1 className="ed-title">
+          Encontre, com graça,<br/>
+          as pessoas que <em>importam</em>.
+        </h1>
+        <p className="ed-dek">
+          Uma descoberta pública de leads B2B, redigida com cuidado a partir de buscadores,
+          diretórios públicos e APIs configuradas — sem cookies emprestados, sem atalhos turvos.
+        </p>
+        <div className="ed-byline">
+          <span>Operador <strong style={{color:'var(--ink)',fontWeight:500}}>—</strong> você</span>
+          <span className="pip"></span>
+          <span>Sidecar · 65115</span>
+          <span className="pip"></span>
+          <span>Cache · sqlite · v3</span>
+          <span className="pip"></span>
+          <span>LGPD · postura conservadora</span>
+        </div>
+      </header>
+
+      <section className="composer">
+        <div className="field-stack">
+          <div className="field">
+            <label className="field-label"><span className="field-num">§ 1</span>Empresa-alvo</label>
+            <input className="field-input" value={company} onChange={e => setCompany(e.target.value)} placeholder="ex. Nubank" />
+          </div>
+
+          <div className="field-row">
+            <div className="field">
+              <label className="field-label"><span className="field-num">§ 2</span>Domínio</label>
+              <input className="field-input" value={domain} onChange={e => setDomain(e.target.value)} placeholder="nubank.com.br" />
+            </div>
+            <div className="field">
+              <label className="field-label"><span className="field-num">§ 3</span>Página no LinkedIn</label>
+              <input className="field-input" placeholder="linkedin.com/company/…" />
+            </div>
+          </div>
+
+          <div className="field">
+            <label className="field-label"><span className="field-num">§ 4</span>Perfil de cargo</label>
+            <input className="field-input" value={profile} onChange={e => setProfile(e.target.value)} />
+          </div>
+
+          <div className="field">
+            <label className="field-label"><span className="field-num">§ 5</span>Palavras-chave de cargo</label>
+            <input className="field-input" value={keywords} onChange={e => setKeywords(e.target.value)} style={{fontSize:16}} />
+          </div>
+
+          <div className="field">
+            <label className="field-label"><span className="field-num">§ 6</span>Senioridade</label>
+            <div className="chips">
+              {["C-level / Founder","Vice President","Director / Diretor","Head of","Manager / Gerente","Senior / Sênior","Mid / Pleno","Junior / Júnior","Intern / Estagiário"].map(s => (
+                <button key={s} className={`chip ${seniorities.has(s)?'on':''}`} onClick={() => toggleSenior(s)}>{s}</button>
+              ))}
+            </div>
+          </div>
+
+          <div className="field-row">
+            <div className="field">
+              <label className="field-label"><span className="field-num">§ 7</span>Máx. de leads</label>
+              <input className="field-input" value={maxLeads} onChange={e => setMaxLeads(e.target.value)} type="number" />
+            </div>
+            <div className="field">
+              <label className="field-label"><span className="field-num">§ 8</span>Arquivo de saída</label>
+              <input className="field-input" value={output} onChange={e => setOutput(e.target.value)} style={{fontSize:15,fontFamily:'var(--mono)'}} />
+            </div>
+          </div>
+
+          <div className="field">
+            <label className="field-label"><span className="field-num">§ 9</span>Modo de coleta</label>
+            <div className="modes">
+              {[
+                {id:"api", name:"API", desc:"APIs externas + busca pública"},
+                {id:"serp", name:"SERP", desc:"Busca pública, sem conta"},
+                {id:"cookie", name:"Cookie", desc:"LinkedIn com li_at"},
+                {id:"browser", name:"Browser", desc:"Arriscado — Playwright logado"},
+              ].map(m => (
+                <button key={m.id} className={`mode ${mode===m.id?'on':''}`} onClick={() => setMode(m.id)}>
+                  <div className="m-name">{m.name}{mode===m.id && <span>●</span>}</div>
+                  <div className="m-desc">{m.desc}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <label style={{display:'flex',alignItems:'center',gap:10,fontFamily:'var(--garamond)',fontStyle:'italic',fontSize:14,color:'var(--ink-2)',cursor:'pointer'}}>
+            <input type="checkbox" checked={includeUnmatched} onChange={e=>setIncludeUnmatched(e.target.checked)} />
+            Incluir leads sem match claro de cargo
+          </label>
+
+          <div className="submit">
+            <button className="btn-run" onClick={runSearch} disabled={running}>
+              {running ? <><span className="spinner"></span> compondo manuscrito…</> : <>Buscar leads &nbsp;⟶</>}
+            </button>
+            <button className="btn-ghost">salvar como rascunho</button>
+          </div>
+        </div>
+
+        <aside className="margin-notes">
+          <h4>NOTA DO EDITOR</h4>
+          <p><span className="drop">B</span>uscas <em>auto</em> dão prioridade ao SearxNG local — quando ele estiver fora, Serper assume; depois CSE e DuckDuckGo, sempre com fallback HTML.</p>
+          <h4 style={{marginTop:18}}>OBSERVAÇÃO</h4>
+          <p>Common Crawl e diretórios públicos são lentos por natureza; só inclua-os quando houver tempo de leitura, pois retornam material denso e nem sempre essencial.<sup>1</sup></p>
+          <h4 style={{marginTop:18}}>POSTURA</h4>
+          <p>Conservadora quanto a LGPD e termos de uso. Quando em dúvida, prefira a fonte pública.</p>
+        </aside>
+      </section>
+
+      <div className="ornament">⁂</div>
+
+      <section className="results">
+        <div className="res-head">
+          <h2><em style={{fontStyle:'italic',color:'var(--accent)'}}>{filtered.length}</em> manuscritos encontrados</h2>
+          <div className="meta">brutos · 30 &nbsp;·&nbsp; únicos · 17 &nbsp;·&nbsp; arquivo · {output}</div>
+        </div>
+        <div className="res-toolbar">
+          <span className={`filt ${filter==='todos'?'on':''}`} onClick={()=>setFilter('todos')}>· Todos</span>
+          <span className={`filt ${filter==='head'?'on':''}`} onClick={()=>setFilter('head')}>· Head &amp; Direção</span>
+          <span className={`filt ${filter==='growth'?'on':''}`} onClick={()=>setFilter('growth')}>· Growth</span>
+          <span className="grow"></span>
+          <span>Ordenar · score ↓</span>
+          <span style={{cursor:'pointer'}}>· Exportar CSV</span>
+          <span style={{cursor:'pointer'}}>· Exportar XLSX</span>
+        </div>
+
+        {filtered.map((l, i) => (
+          <div className="lead-row" key={i}>
+            <div className="lead-num">{String(i+1).padStart(2,'0')}.</div>
+            <div>
+              <div className="lead-name">
+                {l.name}
+                {l.score === 100 && <span className="pill">★ ouro</span>}
+              </div>
+              <div className="lead-handle">linkedin · {l.handle}</div>
+            </div>
+            <div className="lead-role">“{l.role}”</div>
+            <div className="lead-co">{l.co}</div>
+            <div className="lead-src">{l.src}</div>
+            <div className="score-cell">{l.score}<span className="s-of">/100</span></div>
+          </div>
+        ))}
+
+        <p className="footnote">
+          <sup>1</sup>Common Crawl pesa, demora e nem sempre encontra. Use-o como leitura de domingo, não como diário.
+          A ferramenta lembrará você de pausar a cada 250 requisições, no melhor estilo dos copidesques: <em>respire, releia, prossiga.</em>
+        </p>
+      </section>
+    </>
+  );
+}
+
+function SettingsView({ tab, setTab, theme, setTheme }) {
+  const [keys, setKeys] = useState({
+    serper: "ser-••••••••••••••••3f9c",
+    pdl: "",
+    apollo: "apll_••••••••••••2d74",
+    coresignal: "",
+    lusha: "",
+    apify: "apify_••••••••f02a",
+  });
+  const [reveal, setReveal] = useState({});
+  const updateKey = (k, v) => setKeys({...keys, [k]: v});
+
+  return (
+    <div className="settings-page">
+      <div className="ed-eyebrow">Capítulo · Preferências</div>
+      <h1 className="ed-title" style={{fontSize:46,marginBottom:6}}>Ajustes do <em>atelier</em></h1>
+      <p className="ed-dek" style={{marginBottom:30}}>
+        Pequenas escolhas que mudam o tom da composição: contas conectadas, chaves silenciosas
+        e uma preferência cromática para escrever de noite.
+      </p>
+
+      <div className="set-tabs">
+        {[
+          {id:"general", label:"Geral"},
+          {id:"account", label:"Conta"},
+          {id:"api", label:"Chaves de API"},
+          {id:"export", label:"Exportação"},
+          {id:"about", label:"Sobre"},
+        ].map(t => (
+          <div key={t.id} className={`set-tab ${tab===t.id?'on':''}`} onClick={() => setTab(t.id)}>{t.label}</div>
+        ))}
+      </div>
+
+      {tab === "general" && (
+        <>
+          <div className="set-section">
+            <h3>Aparência</h3>
+            <div className="sec-dek">A tipografia e o fundo do papel reagem à hora do dia, ou à sua preferência.</div>
+            <div className="set-row">
+              <div>
+                <div className="lbl">Modo escuro</div>
+                <div className="desc">Fundo de couro, texto creme. Recomendado depois das 19h.</div>
+              </div>
+              <div className={`toggle ${theme==='dark'?'on':''}`} onClick={()=>setTheme(theme==='dark'?'light':'dark')}></div>
+            </div>
+            <div className="set-row">
+              <div>
+                <div className="lbl">Tipografia editorial</div>
+                <div className="desc">Fraunces &amp; Garamond — a fonte que dá nome ao “Beautiful”.</div>
+              </div>
+              <div className="toggle on"></div>
+            </div>
+            <div className="set-row">
+              <div>
+                <div className="lbl">Animação reduzida</div>
+                <div className="desc">Para quem prefere as páginas viradas em silêncio.</div>
+              </div>
+              <div className="toggle"></div>
+            </div>
+          </div>
+
+          <div className="set-section">
+            <h3>Comportamento</h3>
+            <div className="sec-dek">Como o aplicativo se comporta entre buscas.</div>
+            <div className="set-row">
+              <div>
+                <div className="lbl">Cache em SQLite</div>
+                <div className="desc">Versão 3 · ~14 MB · expira em 7 dias.</div>
+              </div>
+              <button className="btn-ghost">limpar cache</button>
+            </div>
+            <div className="set-row">
+              <div>
+                <div className="lbl">Idioma da interface</div>
+                <div className="desc">Mensagens em pt-BR, identificadores em inglês.</div>
+              </div>
+              <div style={{fontFamily:'var(--mono)',fontSize:11,letterSpacing:'0.14em',color:'var(--ink-3)'}}>PT-BR ▾</div>
+            </div>
+            <div className="set-row">
+              <div>
+                <div className="lbl">Telemetria</div>
+                <div className="desc">Nada sai daqui. Promessa de bom editor.</div>
+              </div>
+              <div className="toggle"></div>
+            </div>
+          </div>
+        </>
+      )}
+
+      {tab === "account" && (
+        <>
+          <div className="set-section">
+            <h3>Conta</h3>
+            <div className="sec-dek">Sua identidade no atelier — local, criptografada em disco.</div>
+            <div className="acct-card">
+              <div className="avatar">M</div>
+              <div>
+                <div className="acct-name">Mateus Andrade</div>
+                <div className="acct-mail">mateus@gmail.com · plano Pro · expira 12/2026</div>
+              </div>
+              <button className="btn-ghost">editar</button>
+            </div>
+          </div>
+          <div className="set-section">
+            <h3>Cookies do LinkedIn</h3>
+            <div className="sec-dek">Apenas se você aceitar o risco. <em>li_at</em> nunca é enviado a terceiros; fica em seu próprio Keychain.</div>
+            <div className="set-row">
+              <div>
+                <div className="lbl">Cookie regular (li_at)</div>
+                <div className="desc">Última verificação · há 3 dias · OK</div>
+              </div>
+              <span className="api-status"><span className="d"></span> conectado</span>
+            </div>
+            <div className="set-row">
+              <div>
+                <div className="lbl">Sales Navigator</div>
+                <div className="desc">Não conectado.</div>
+              </div>
+              <button className="btn-ghost">colar cookie</button>
+            </div>
+          </div>
+          <div className="set-section">
+            <h3>Sessão</h3>
+            <div className="set-row">
+              <div>
+                <div className="lbl">Encerrar sessão</div>
+                <div className="desc">Limpa tokens, cookies e cache local.</div>
+              </div>
+              <button className="btn-ghost" style={{color:'var(--accent)'}}>encerrar</button>
+            </div>
+          </div>
+        </>
+      )}
+
+      {tab === "api" && (
+        <>
+          <div className="set-section">
+            <h3>Chaves de API</h3>
+            <div className="sec-dek">
+              Configure as chaves dos provedores que você usa. Tudo é guardado no Keychain do
+              sistema; nada vai para o repositório, nada aparece em <span style={{fontFamily:'var(--mono)',fontStyle:'normal'}}>.env</span>.
+            </div>
+
+            {[
+              {k:"serper", name:"Serper", desc:"Pesquisa Google via API. Recomendada como primeira opção quando SearxNG estiver fora.", env:"SERPER_API_KEY"},
+              {k:"pdl", name:"People Data Labs", desc:"Resolução de company_id e enriquecimento de leads pesquisados.", env:"PDL_API_KEY"},
+              {k:"apollo", name:"Apollo.io", desc:"Estratégia by-company antes do search legado. Limites generosos no plano Pro.", env:"APOLLO_API_KEY"},
+              {k:"coresignal", name:"Coresignal", desc:"Dados de empresa em larga escala — opcional, raramente necessário.", env:"CORESIGNAL_API_KEY"},
+              {k:"lusha", name:"Lusha", desc:"Contatos verificados; respeita opt-out e LGPD.", env:"LUSHA_API_KEY"},
+              {k:"apify", name:"Apify Actor", desc:"Scrapper TypeScript em linkedin-api-scrapper/. Rode sob demanda.", env:"APIFY_TOKEN"},
+            ].map(p => (
+              <div className="api-card" key={p.k}>
+                <div className="api-head">
+                  <div className="api-name"><em>—</em>{p.name}</div>
+                  <span className={`api-status ${keys[p.k] ? '' : 'off'}`}>
+                    <span className="d"></span> {keys[p.k] ? 'conectado' : 'em branco'}
+                  </span>
+                </div>
+                <div className="api-desc">{p.desc} <span style={{fontFamily:'var(--mono)',fontStyle:'normal',color:'var(--ink-3)',fontSize:11,marginLeft:6}}>{p.env}</span></div>
+                <div className="api-input">
+                  <input
+                    type={reveal[p.k] ? 'text' : 'password'}
+                    placeholder={`cole sua ${p.name} key…`}
+                    value={keys[p.k]}
+                    onChange={e => updateKey(p.k, e.target.value)}
+                  />
+                  <button onClick={() => setReveal({...reveal, [p.k]: !reveal[p.k]})}>{reveal[p.k] ? 'ocultar' : 'revelar'}</button>
+                  <button>testar</button>
+                  <button onClick={() => updateKey(p.k, '')}>limpar</button>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="set-section">
+            <h3>Buscadores</h3>
+            <div className="sec-dek">Engines de busca pública. SearxNG local tem prioridade quando disponível.</div>
+            <div className="api-card">
+              <div className="api-head">
+                <div className="api-name"><em>—</em>SearxNG (local)</div>
+                <span className="api-status"><span className="d"></span> respondendo</span>
+              </div>
+              <div className="api-desc">SEARXNG_BASE_URL · variável de ambiente</div>
+              <div className="api-input">
+                <input value="http://localhost:8080" readOnly />
+                <button>testar</button>
+                <button>docker compose</button>
+              </div>
+            </div>
+            <div className="api-card">
+              <div className="api-head">
+                <div className="api-name"><em>—</em>Google Custom Search</div>
+                <span className="api-status off"><span className="d"></span> em branco</span>
+              </div>
+              <div className="api-desc">CSE_API_KEY &amp; CSE_CX</div>
+              <div className="api-input">
+                <input placeholder="API Key" />
+                <button>cx</button>
+                <button>testar</button>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
+      {tab === "export" && (
+        <div className="set-section">
+          <h3>Exportação</h3>
+          <div className="sec-dek">Como o produto final é entregue ao operador.</div>
+          <div className="set-row">
+            <div><div className="lbl">Formato padrão</div><div className="desc">CSV · UTF-8 · ; como separador.</div></div>
+            <div style={{fontFamily:'var(--mono)',fontSize:11,letterSpacing:'0.14em',color:'var(--ink-3)'}}>CSV ▾</div>
+          </div>
+          <div className="set-row">
+            <div><div className="lbl">Pasta de saída</div><div className="desc">~/Documents/beautiful-linkedin/output</div></div>
+            <button className="btn-ghost">escolher</button>
+          </div>
+          <div className="set-row">
+            <div><div className="lbl">Abrir após exportar</div><div className="desc">Abre o arquivo no app padrão.</div></div>
+            <div className="toggle on"></div>
+          </div>
+        </div>
+      )}
+
+      {tab === "about" && (
+        <div className="set-section">
+          <h3>Sobre</h3>
+          <div className="sec-dek" style={{maxWidth:680}}>
+            Beautiful LinkedIn é uma CLI Python com casaco Electron, escrita para descobrir leads
+            com a postura de um pesquisador, não a de um caçador. Versão 0.4.2 · serif edition. Licença MIT.
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function HistoryView() {
+  const items = [
+    { t: "XP — Head Marketing", d: "ontem · 17 leads · 100/85", co: "xp inc"},
+    { t: "Nubank — Growth", d: "há 3 dias · 42 leads · 92/74", co: "nubank"},
+    { t: "Stone — CFO/Finance", d: "há 1 semana · 8 leads · 96/80", co: "stone"},
+    { t: "iFood — Product Leads", d: "há 2 semanas · 24 leads · 88/70", co: "ifood"},
+  ];
+  return (
+    <div className="settings-page">
+      <div className="ed-eyebrow">Capítulo · Buscas salvas</div>
+      <h1 className="ed-title" style={{fontSize:46}}>Manuscritos <em>arquivados</em></h1>
+      <p className="ed-dek" style={{marginBottom:30}}>
+        Suas buscas anteriores, encadernadas em ordem cronológica reversa.
+      </p>
+      {items.map((it, i) => (
+        <div key={i} className="lead-row" style={{gridTemplateColumns:'24px 1.6fr 1fr 1fr 60px'}}>
+          <div className="lead-num">{String(i+1).padStart(2,'0')}.</div>
+          <div>
+            <div className="lead-name">{it.t}</div>
+            <div className="lead-handle">{it.d}</div>
+          </div>
+          <div className="lead-co">{it.co}</div>
+          <div className="lead-src">csv · xlsx</div>
+          <div className="score-cell">↻</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>

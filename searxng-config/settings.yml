@@ -1,0 +1,133 @@
+# SearxNG local para Beautiful LinkedIn.
+# Troque secret_key antes de subir.
+#
+# Estratégia: usar APENAS engines que respeitam operadores `site:` / `inurl:`
+# e que não estão bloqueados por CAPTCHA constante. Mantenha a lista enxuta
+# para a resposta JSON ser previsível.
+#
+# Histórico de problemas observado em 2026-05:
+#  - duckduckgo / startpage / brave: CAPTCHA permanente (rate-limit no
+#    container);
+#  - wikipedia: 400 Bad Request quando recebe queries com `site:` (a API
+#    REST espera o slug da página, não a query crua);
+#  - google: detecta SearxNG e devolve 0 resultados sem erro;
+#  - bing: aceita operadores leves (`linkedin.com/in`) mas frequentemente 0
+#    para `site:linkedin.com/in` puro;
+#  - yandex: aceita `site:` e devolve perfis reais — engine principal aqui;
+#  - mojeek/marginalia: complementares, ajudam quando yandex falha.
+
+use_default_settings: true
+
+server:
+  secret_key: "<placeholder - DEVE ser trocado pelo usuario>"
+  # Limiter desligado: o sidecar Python já controla concorrência e
+  # disparar 429 do limiter interno mata a sequência de queries.
+  limiter: false
+  public_instance: false
+
+search:
+  formats:
+    - html
+    - json
+  safe_search: 0
+  autocomplete: ""
+  default_lang: ""
+
+outgoing:
+  request_timeout: 8.0
+  max_request_timeout: 12.0
+  pool_connections: 100
+  pool_maxsize: 20
+  enable_http2: true
+
+engines:
+  # ---------------- Principais (precisam ficar ON) ----------------
+  - name: yandex
+    disabled: false
+    timeout: 8.0
+    weight: 3
+    shortcut: yan
+
+  - name: bing
+    disabled: false
+    timeout: 8.0
+    weight: 2
+    shortcut: bi
+
+  - name: mojeek
+    disabled: false
+    timeout: 6.0
+    weight: 1
+    shortcut: moj
+
+  - name: marginalia
+    disabled: false
+    timeout: 6.0
+    weight: 1
+
+  - name: mwmbl
+    disabled: false
+    timeout: 5.0
+
+  # ---------------- Engines bloqueadas / inúteis ----------------
+  # Mantemos `disabled: true` em vez de remover para preservar overrides
+  # quando a default settings for atualizada upstream.
+
+  - name: duckduckgo
+    disabled: true
+  - name: ddg definitions
+    disabled: true
+  - name: brave
+    disabled: true
+  - name: startpage
+    disabled: true
+  - name: karmasearch
+    disabled: true
+  - name: wikipedia
+    disabled: true
+  - name: wikidata
+    disabled: true
+  - name: openlibrary
+    disabled: true
+  - name: encyclosearch
+    disabled: true
+  - name: lingva
+    disabled: true
+  - name: mozhi
+    disabled: true
+  - name: presearch
+    disabled: true
+  - name: presearch videos
+    disabled: true
+  - name: tineye
+    disabled: true
+  - name: currency
+    disabled: true
+  - name: gmx
+    disabled: true
+  - name: bpb
+    disabled: true
+  - name: aol
+    disabled: true
+  - name: ask
+    disabled: true
+  - name: 360search
+    disabled: true
+  - name: baidu
+    disabled: true
+  - name: sogou
+    disabled: true
+  - name: quark
+    disabled: true
+  - name: yep
+    disabled: true
+  - name: boardreader
+    disabled: true
+  - name: crowdview
+    disabled: true
+  - name: searchmysite
+    disabled: true
+  - name: fynd
+    disabled: true
+  - name: qwant
+    disabled: true

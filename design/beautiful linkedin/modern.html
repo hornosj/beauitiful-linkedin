@@ -1,0 +1,1363 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8" />
+<title>Beautiful LinkedIn — Modern</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg: #f5f5f7;
+    --surface: #ffffff;
+    --surface-2: #fafafa;
+    --surface-3: #f0f0f3;
+    --line: #e5e5ea;
+    --line-2: #d6d6db;
+    --ink: #1d1d1f;
+    --ink-2: #3a3a3e;
+    --ink-3: #6e6e73;
+    --ink-4: #a1a1a6;
+    --accent: #007aff;
+    --accent-2: #0066d6;
+    --accent-tint: rgba(0,122,255,0.08);
+    --green: #34c759;
+    --orange: #ff9500;
+    --red: #ff3b30;
+    --shadow-sm: 0 1px 2px rgba(0,0,0,0.04), 0 0 0 0.5px rgba(0,0,0,0.05);
+    --shadow-md: 0 4px 16px rgba(0,0,0,0.06), 0 0 0 0.5px rgba(0,0,0,0.06);
+    --shadow-lg: 0 12px 40px rgba(0,0,0,0.08), 0 0 0 0.5px rgba(0,0,0,0.06);
+    --radius: 10px;
+    --radius-lg: 14px;
+    --font: 'Geist', -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", system-ui, sans-serif;
+    --mono: 'Geist Mono', ui-monospace, "SF Mono", monospace;
+  }
+  [data-theme="dark"] {
+    --bg: #1c1c1e;
+    --surface: #2c2c2e;
+    --surface-2: #242426;
+    --surface-3: #38383a;
+    --line: #38383a;
+    --line-2: #48484a;
+    --ink: #f5f5f7;
+    --ink-2: #d1d1d6;
+    --ink-3: #98989d;
+    --ink-4: #6e6e73;
+    --accent: #0a84ff;
+    --accent-2: #409cff;
+    --accent-tint: rgba(10,132,255,0.16);
+    --shadow-sm: 0 1px 2px rgba(0,0,0,0.4), 0 0 0 0.5px rgba(255,255,255,0.06);
+    --shadow-md: 0 4px 16px rgba(0,0,0,0.4), 0 0 0 0.5px rgba(255,255,255,0.06);
+    --shadow-lg: 0 12px 40px rgba(0,0,0,0.5), 0 0 0 0.5px rgba(255,255,255,0.06);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font);
+    font-size: 13px;
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+    letter-spacing: -0.005em;
+  }
+  .app {
+    display: grid;
+    grid-template-columns: 220px 1fr;
+    height: 100vh; width: 100vw;
+  }
+  /* ---------------- Title bar ---------------- */
+  .titlebar {
+    grid-column: 1 / -1;
+    height: 44px;
+    background: var(--surface);
+    border-bottom: 0.5px solid var(--line);
+    display: flex; align-items: center;
+    padding: 0 16px;
+    gap: 12px;
+    position: relative;
+    z-index: 5;
+  }
+  .brand {
+    display: flex; align-items: center; gap: 9px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--ink);
+    letter-spacing: -0.005em;
+  }
+  .brand-mark {
+    width: 22px; height: 22px;
+    border-radius: 6px;
+    background: linear-gradient(135deg, var(--accent), #5856d6);
+    display: grid; place-items: center;
+    color: white;
+    font-size: 12px;
+    font-weight: 700;
+    box-shadow: 0 1px 2px rgba(0,122,255,0.3);
+  }
+  .tb-context {
+    font-size: 12px; font-weight: 400;
+    color: var(--ink-3);
+    padding-left: 12px;
+    margin-left: 4px;
+    border-left: 0.5px solid var(--line);
+  }
+  .tb-actions { display: flex; align-items: center; gap: 4px; margin-left: auto; }
+  .tb-btn {
+    height: 28px;
+    min-width: 28px;
+    padding: 0 8px;
+    display: inline-flex; align-items: center; gap: 6px; justify-content: center;
+    color: var(--ink-3);
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+  }
+  .tb-btn:hover { background: var(--surface-3); color: var(--ink); }
+
+  .app { grid-template-rows: 44px 1fr; }
+
+  /* ---------------- Sidebar ---------------- */
+  .sidebar {
+    background: var(--surface-2);
+    border-right: 0.5px solid var(--line);
+    overflow-y: auto;
+    padding: 14px 10px;
+  }
+  .nav-section { margin-bottom: 18px; }
+  .nav-title {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--ink-3);
+    padding: 0 8px 6px;
+    letter-spacing: 0.01em;
+  }
+  .nav-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 6px 8px;
+    font-size: 13px;
+    color: var(--ink-2);
+    border-radius: 6px;
+    cursor: pointer;
+    user-select: none;
+    margin-bottom: 1px;
+  }
+  .nav-item:hover { background: var(--surface-3); }
+  .nav-item.active {
+    background: var(--accent);
+    color: white;
+  }
+  .nav-item .ico {
+    width: 16px; height: 16px;
+    display: grid; place-items: center;
+    flex-shrink: 0;
+  }
+  .nav-item .badge {
+    margin-left: auto;
+    background: var(--surface-3);
+    color: var(--ink-3);
+    border-radius: 99px;
+    padding: 1px 7px;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+  }
+  .nav-item.active .badge { background: rgba(255,255,255,0.22); color: white; }
+
+  .sidebar-foot {
+    margin-top: auto;
+    padding: 10px 8px;
+    border-top: 0.5px solid var(--line);
+    display: flex; align-items: center; gap: 8px;
+    font-size: 11px;
+    color: var(--ink-3);
+  }
+  .pulse {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--green);
+    box-shadow: 0 0 0 0 rgba(52,199,89,0.5);
+    animation: pulse 2s infinite;
+  }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(52,199,89,0.5); }
+    100% { box-shadow: 0 0 0 6px rgba(52,199,89,0); }
+  }
+
+  /* ---------------- Main ---------------- */
+  .main {
+    overflow-y: auto;
+    background: var(--bg);
+    position: relative;
+  }
+  .toolbar {
+    position: sticky; top: 0; z-index: 4;
+    background: color-mix(in oklch, var(--bg) 70%, transparent);
+    backdrop-filter: saturate(180%) blur(14px);
+    -webkit-backdrop-filter: saturate(180%) blur(14px);
+    border-bottom: 0.5px solid var(--line);
+    padding: 10px 22px;
+    display: flex; align-items: center; gap: 12px;
+  }
+  .crumb {
+    font-size: 13px;
+    color: var(--ink-2);
+    font-weight: 500;
+  }
+  .crumb .sep { color: var(--ink-4); margin: 0 6px; }
+  .toolbar .grow { flex: 1; }
+
+  .pill-btn {
+    height: 28px;
+    padding: 0 12px;
+    border-radius: 7px;
+    background: var(--surface);
+    border: 0.5px solid var(--line-2);
+    color: var(--ink-2);
+    font-size: 12px;
+    font-weight: 500;
+    font-family: inherit;
+    display: inline-flex; align-items: center; gap: 6px;
+    cursor: pointer;
+    box-shadow: var(--shadow-sm);
+  }
+  .pill-btn:hover { background: var(--surface-3); }
+  .pill-btn.primary {
+    background: var(--accent); color: white; border-color: transparent;
+    box-shadow: 0 1px 2px rgba(0,122,255,0.4);
+  }
+  .pill-btn.primary:hover { background: var(--accent-2); }
+
+  /* Hero card */
+  .container { padding: 24px 22px 60px; max-width: 1240px; }
+  .hero {
+    background: var(--surface);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-md);
+    padding: 22px 26px;
+    margin-bottom: 18px;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 24px;
+    align-items: center;
+  }
+  .hero h1 {
+    margin: 0 0 4px;
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+  }
+  .hero p {
+    margin: 0;
+    color: var(--ink-3);
+    font-size: 13px;
+  }
+  .stat-strip {
+    display: flex; gap: 0;
+    border-radius: 8px;
+    overflow: hidden;
+    border: 0.5px solid var(--line);
+  }
+  .stat {
+    padding: 8px 16px;
+    background: var(--surface-2);
+    border-right: 0.5px solid var(--line);
+    min-width: 96px;
+  }
+  .stat:last-child { border-right: 0; }
+  .stat .v {
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    line-height: 1.1;
+    font-variant-numeric: tabular-nums;
+  }
+  .stat .l {
+    font-size: 11px;
+    color: var(--ink-3);
+    font-weight: 500;
+    margin-top: 2px;
+  }
+
+  /* Two-column layout */
+  .grid {
+    display: grid;
+    grid-template-columns: 360px 1fr;
+    gap: 18px;
+  }
+  .card {
+    background: var(--surface);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-md);
+    overflow: hidden;
+  }
+  .card-head {
+    padding: 14px 18px 10px;
+    display: flex; align-items: center; justify-content: space-between;
+    border-bottom: 0.5px solid var(--line);
+  }
+  .card-head h3 {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: -0.005em;
+  }
+  .card-head .muted {
+    font-size: 12px;
+    color: var(--ink-3);
+  }
+  .card-body { padding: 14px 18px 18px; }
+  .form-row { margin-bottom: 14px; }
+  .form-label {
+    display: block;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--ink-3);
+    margin-bottom: 5px;
+    letter-spacing: 0.01em;
+  }
+  .input {
+    width: 100%;
+    height: 32px;
+    padding: 0 11px;
+    background: var(--surface-2);
+    border: 0.5px solid var(--line-2);
+    border-radius: 7px;
+    font-family: inherit;
+    font-size: 13px;
+    color: var(--ink);
+    outline: none;
+    transition: all 120ms;
+  }
+  .input:focus {
+    border-color: var(--accent);
+    background: var(--surface);
+    box-shadow: 0 0 0 3px var(--accent-tint);
+  }
+  .input.mono { font-family: var(--mono); font-size: 12px; }
+  textarea.input { height: auto; padding: 8px 11px; resize: vertical; }
+  .input-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+
+  .seg {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 4px;
+    background: var(--surface-3);
+    padding: 3px;
+    border-radius: 8px;
+  }
+  .seg-item {
+    text-align: center;
+    padding: 6px 0;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--ink-2);
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .seg-item.on {
+    background: var(--surface);
+    color: var(--ink);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 5px; }
+  .chip {
+    height: 24px;
+    padding: 0 10px;
+    background: var(--surface-2);
+    border: 0.5px solid var(--line-2);
+    border-radius: 99px;
+    font-size: 12px;
+    color: var(--ink-2);
+    font-family: inherit;
+    cursor: pointer;
+    display: inline-flex; align-items: center; gap: 5px;
+  }
+  .chip.on {
+    background: var(--accent);
+    border-color: transparent;
+    color: white;
+  }
+
+  .checkbox {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 13px; color: var(--ink-2);
+    cursor: pointer;
+    user-select: none;
+  }
+  .checkbox input { accent-color: var(--accent); width: 14px; height: 14px; }
+
+  .btn-primary {
+    width: 100%;
+    height: 36px;
+    background: var(--accent); color: white;
+    border: 0; border-radius: 8px;
+    font-family: inherit; font-size: 13px; font-weight: 600;
+    cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+    box-shadow: 0 1px 2px rgba(0,122,255,0.4);
+    margin-top: 4px;
+  }
+  .btn-primary:hover { background: var(--accent-2); }
+  .btn-primary:disabled { opacity: 0.65; cursor: default; }
+
+  /* Results table */
+  .table-tools {
+    display: flex; align-items: center; gap: 6px;
+    padding: 8px 12px;
+    border-bottom: 0.5px solid var(--line);
+    background: var(--surface-2);
+  }
+  .search-input {
+    flex: 1;
+    max-width: 280px;
+    height: 26px;
+    padding: 0 10px 0 28px;
+    background: var(--surface);
+    border: 0.5px solid var(--line-2);
+    border-radius: 6px;
+    font-family: inherit; font-size: 12px;
+    color: var(--ink);
+    outline: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%236e6e73' stroke-width='1.5'%3E%3Ccircle cx='7' cy='7' r='4.5'/%3E%3Cpath d='M10.5 10.5L13.5 13.5'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: 8px center;
+    background-size: 14px;
+  }
+  .table-tools .grow { flex: 1; }
+  .seg-mini {
+    display: inline-flex;
+    background: var(--surface-3);
+    padding: 2px;
+    border-radius: 6px;
+  }
+  .seg-mini button {
+    border: 0; background: transparent;
+    padding: 4px 10px;
+    font-size: 11px; font-weight: 500;
+    color: var(--ink-2);
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .seg-mini button.on { background: var(--surface); color: var(--ink); box-shadow: var(--shadow-sm); }
+
+  table.leads {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  table.leads thead th {
+    text-align: left;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--ink-3);
+    padding: 10px 14px;
+    border-bottom: 0.5px solid var(--line);
+    letter-spacing: 0.01em;
+    background: var(--surface);
+    position: sticky; top: 0;
+  }
+  table.leads tbody td {
+    padding: 12px 14px;
+    border-bottom: 0.5px solid var(--line);
+    vertical-align: middle;
+  }
+  table.leads tbody tr:hover { background: var(--surface-2); }
+  table.leads .person {
+    display: flex; align-items: center; gap: 10px;
+  }
+  .avatar {
+    width: 30px; height: 30px;
+    border-radius: 50%;
+    display: grid; place-items: center;
+    font-size: 12px; font-weight: 600;
+    color: white;
+    flex-shrink: 0;
+  }
+  .person .nm { font-weight: 500; line-height: 1.2; }
+  .person .hd { font-size: 11px; color: var(--ink-3); }
+  .role { color: var(--ink-2); }
+  .src-tag {
+    display: inline-flex; align-items: center; gap: 5px;
+    height: 20px;
+    padding: 0 7px;
+    background: var(--surface-3);
+    border-radius: 4px;
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--ink-2);
+  }
+  .score-bar {
+    display: flex; align-items: center; gap: 8px;
+    font-variant-numeric: tabular-nums;
+  }
+  .score-bar .bar {
+    flex: 1;
+    height: 4px;
+    background: var(--surface-3);
+    border-radius: 99px;
+    overflow: hidden;
+    max-width: 60px;
+  }
+  .score-bar .bar > div {
+    height: 100%;
+    background: var(--green);
+    border-radius: 99px;
+  }
+  .score-bar .v { font-size: 12px; font-weight: 600; color: var(--ink); width: 24px; text-align: right; }
+
+  /* Spinner */
+  .spinner {
+    width: 13px; height: 13px;
+    border-radius: 50%;
+    border: 1.5px solid rgba(255,255,255,0.4);
+    border-top-color: white;
+    animation: spin 700ms linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Settings sheet */
+  .sheet-overlay {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.32);
+    display: grid; place-items: center;
+    z-index: 100;
+    padding: 24px;
+    animation: fade 160ms ease-out;
+  }
+  @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+  .sheet {
+    width: min(820px, 100%);
+    height: min(620px, 92vh);
+    background: var(--bg);
+    border-radius: 14px;
+    box-shadow: var(--shadow-lg);
+    display: grid;
+    grid-template-columns: 200px 1fr;
+    overflow: hidden;
+    border: 0.5px solid var(--line);
+    animation: pop 200ms cubic-bezier(.2,.8,.3,1.1);
+  }
+  @keyframes pop {
+    from { opacity: 0; transform: scale(0.96); }
+    to { opacity: 1; transform: scale(1); }
+  }
+  .sheet-side {
+    background: var(--surface-2);
+    border-right: 0.5px solid var(--line);
+    padding: 14px 8px;
+    overflow-y: auto;
+  }
+  .sheet-head-row {
+    padding: 0 8px 12px;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .sheet-head-row h2 { margin: 0; font-size: 14px; font-weight: 600; }
+  .sheet-close {
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    background: var(--surface-3);
+    border: 0;
+    color: var(--ink-2);
+    cursor: pointer;
+    display: grid; place-items: center;
+    font-size: 11px;
+    font-family: inherit;
+  }
+  .sheet-close:hover { background: var(--line-2); }
+
+  .sheet-body {
+    overflow-y: auto;
+    padding: 22px 26px 30px;
+  }
+  .sheet-body h3 {
+    margin: 0 0 4px;
+    font-size: 18px; font-weight: 600;
+    letter-spacing: -0.015em;
+  }
+  .sheet-body .dek {
+    font-size: 12px; color: var(--ink-3);
+    margin-bottom: 18px;
+  }
+  .sheet-section {
+    background: var(--surface);
+    border-radius: 10px;
+    margin-bottom: 14px;
+    overflow: hidden;
+    box-shadow: var(--shadow-sm);
+  }
+  .sheet-section-title {
+    padding: 8px 14px;
+    font-size: 11px; font-weight: 500;
+    color: var(--ink-3);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    background: transparent;
+  }
+  .row {
+    display: flex; align-items: center; gap: 14px;
+    padding: 11px 14px;
+    border-top: 0.5px solid var(--line);
+    background: var(--surface);
+  }
+  .row:first-child { border-top: 0; }
+  .row .label { flex: 1; }
+  .row .label .t { font-size: 13px; font-weight: 500; }
+  .row .label .s { font-size: 11px; color: var(--ink-3); margin-top: 1px; }
+
+  .toggle {
+    width: 38px; height: 22px;
+    background: var(--line-2);
+    border-radius: 99px;
+    position: relative;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .toggle::after {
+    content: '';
+    position: absolute; top: 2px; left: 2px;
+    width: 18px; height: 18px;
+    border-radius: 50%;
+    background: white;
+    transition: transform 180ms;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+  }
+  .toggle.on { background: var(--green); }
+  .toggle.on::after { transform: translateX(16px); }
+
+  .key-input {
+    display: flex; align-items: center;
+    background: var(--surface-2);
+    border: 0.5px solid var(--line-2);
+    border-radius: 7px;
+    overflow: hidden;
+    height: 30px;
+    width: 100%;
+  }
+  .key-input input {
+    flex: 1;
+    border: 0; outline: none;
+    background: transparent;
+    padding: 0 10px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--ink);
+  }
+  .key-input button {
+    border: 0; background: transparent;
+    border-left: 0.5px solid var(--line-2);
+    padding: 0 10px;
+    height: 30px;
+    color: var(--ink-3);
+    font-size: 11px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .key-input button:hover { color: var(--ink); background: var(--surface-3); }
+  .api-row {
+    padding: 12px 14px;
+    border-top: 0.5px solid var(--line);
+  }
+  .api-row:first-child { border-top: 0; }
+  .api-row .api-meta {
+    display: flex; align-items: center; gap: 8px;
+    margin-bottom: 8px;
+  }
+  .api-row .api-name { font-size: 13px; font-weight: 500; }
+  .api-row .api-tag {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--ink-3);
+    background: var(--surface-3);
+    padding: 1px 6px;
+    border-radius: 4px;
+  }
+  .api-row .api-status {
+    margin-left: auto;
+    font-size: 11px;
+    color: var(--green);
+    display: inline-flex; align-items: center; gap: 4px;
+  }
+  .api-row .api-status.off { color: var(--ink-3); }
+  .api-row .api-status .d {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: currentColor;
+  }
+  .api-row .api-desc {
+    font-size: 11px; color: var(--ink-3);
+    margin-bottom: 8px;
+    line-height: 1.45;
+  }
+
+  /* Sheet sidebar nav */
+  .sheet-side .nav-item {
+    color: var(--ink);
+  }
+  .sheet-side .nav-item.active {
+    background: var(--accent);
+    color: white;
+  }
+
+  /* Toast */
+  .toast {
+    position: fixed;
+    bottom: 26px; left: 50%; transform: translateX(-50%);
+    background: var(--ink);
+    color: var(--bg);
+    padding: 9px 16px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 500;
+    box-shadow: var(--shadow-lg);
+    z-index: 200;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .toast .check {
+    width: 16px; height: 16px; border-radius: 50%;
+    background: var(--green);
+    display: grid; place-items: center;
+    color: white; font-size: 10px;
+  }
+
+  /* scrollbar */
+  ::-webkit-scrollbar { width: 9px; height: 9px; }
+  ::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 99px; border: 2px solid transparent; background-clip: content-box; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--ink-4); border: 2px solid transparent; background-clip: content-box; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel">
+const { useState, useEffect, useMemo } = React;
+
+const SEED_LEADS = [
+  { name: "Caio Cunha", role: "Growth Marketing", co: "XP Inc.", src: "search_serper", score: 100, handle: "in/caiocunha", color: "#ff9500" },
+  { name: "Rafaela Lompa Truda Silveira", role: "Head Growth & Expansão B2B", co: "XP Inc.", src: "search_serper", score: 100, handle: "in/rafaela-lompa", color: "#ff3b30" },
+  { name: "Caio Zanetti", role: "Growth CRM", co: "XP Inc.", src: "search_searxng", score: 98, handle: "in/caiozanetti", color: "#5856d6" },
+  { name: "Pedro Rached Darcie", role: "Growth and Strategy", co: "XP Inc.", src: "search_searxng", score: 96, handle: "in/prdarcie", color: "#34c759" },
+  { name: "Bruno Chojniak", role: "Growth Analyst", co: "XP Inc.", src: "search_searxng", score: 92, handle: "in/bchojniak", color: "#007aff" },
+  { name: "Patrícia Wroblewski", role: "Marketing Lead — Investidores", co: "XP Inc.", src: "search_searxng", score: 88, handle: "in/pwroblewski", color: "#ff2d55" },
+  { name: "João Carnelossi", role: "Growth Marketing", co: "XP Inc.", src: "search_searxng", score: 85, handle: "in/jcarnelossi", color: "#af52de" },
+  { name: "Gabriela Maia", role: "Analista de Marketing", co: "XP Inc.", src: "search_searxng", score: 85, handle: "in/gabymaia", color: "#ff9500" },
+  { name: "Eduardo Diniz", role: "Growth Marketing Analyst", co: "XP Inc.", src: "search_searxng", score: 84, handle: "in/edudiniz", color: "#5ac8fa" },
+  { name: "Larissa Buscatti", role: "Head of Marketing", co: "XP Inc.", src: "search_serper", score: 82, handle: "in/lbuscatti", color: "#34c759" },
+  { name: "Matheus Azevedo", role: "Sales — Atacado", co: "XP Inc.", src: "search_searxng", score: 78, handle: "in/mazevedo", color: "#007aff" },
+  { name: "Sérgio Keller", role: "Senior Performance Mkt.", co: "XP Inc.", src: "search_searxng", score: 76, handle: "in/skeller", color: "#ff3b30" },
+];
+
+const initials = (name) => name.split(' ').slice(0,2).map(p=>p[0]).join('').toUpperCase();
+
+function App() {
+  const [theme, setTheme] = useState("light");
+  const [view, setView] = useState("search");
+  const [showSettings, setShowSettings] = useState(false);
+  const [setTab, setSetTab] = useState("api");
+  const [running, setRunning] = useState(false);
+  const [toast, setToast] = useState(null);
+  const [filter, setFilter] = useState("all");
+  const [query, setQuery] = useState("");
+
+  const [company, setCompany] = useState("XP Inc.");
+  const [domain, setDomain] = useState("xpi.com.br");
+  const [seniorities, setSeniorities] = useState(new Set(["Head of"]));
+  const [mode, setMode] = useState("serp");
+  const [keywords, setKeywords] = useState("marketing, growth, cmo, head of marketing, demand generation, performance marketing");
+  const [output, setOutput] = useState("output/leadsHeadMarketing2.csv");
+  const [maxLeads, setMaxLeads] = useState(30);
+
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+  }, [theme]);
+
+  const fireToast = (msg) => {
+    setToast(msg);
+    setTimeout(() => setToast(null), 2400);
+  };
+
+  const filteredLeads = useMemo(() => {
+    let r = SEED_LEADS;
+    if (filter === "head") r = r.filter(l => /head|director/i.test(l.role));
+    if (filter === "growth") r = r.filter(l => /growth/i.test(l.role));
+    if (query) r = r.filter(l => (l.name+l.role).toLowerCase().includes(query.toLowerCase()));
+    return r;
+  }, [filter, query]);
+
+  const toggleSenior = (s) => {
+    const n = new Set(seniorities);
+    n.has(s) ? n.delete(s) : n.add(s);
+    setSeniorities(n);
+  };
+
+  const runSearch = () => {
+    setRunning(true);
+    setTimeout(() => {
+      setRunning(false);
+      fireToast(`Busca finalizada · 17 leads únicos · ${output}`);
+    }, 1600);
+  };
+
+  return (
+    <div className="app">
+      {/* Title bar */}
+      <div className="titlebar">
+        <div className="brand">
+          <div className="brand-mark">B</div>
+          Beautiful LinkedIn
+        </div>
+        <div className="tb-context">XP Inc · Marketing</div>
+        <div className="tb-actions">
+          <div className="tb-btn" onClick={()=>setTheme(theme==='light'?'dark':'light')} title="Tema">
+            {theme==='light' ? '🌙' : '☀'}
+          </div>
+          <div className="tb-btn" onClick={()=>setShowSettings(true)} title="Preferências">⚙</div>
+        </div>
+      </div>
+
+      {/* Sidebar */}
+      <aside className="sidebar">
+        <div className="nav-section">
+          <div className="nav-title">Workspace</div>
+          <div className={`nav-item ${view==='search'?'active':''}`} onClick={()=>setView('search')}>
+            <span className="ico">⌕</span> Nova busca
+          </div>
+          <div className={`nav-item ${view==='leads'?'active':''}`} onClick={()=>setView('leads')}>
+            <span className="ico">◴</span> Leads salvos
+            <span className="badge">126</span>
+          </div>
+          <div className="nav-item">
+            <span className="ico">◧</span> Pipelines
+            <span className="badge">3</span>
+          </div>
+          <div className="nav-item">
+            <span className="ico">⌬</span> Provedores
+          </div>
+        </div>
+
+        <div className="nav-section">
+          <div className="nav-title">Buscas recentes</div>
+          <div className="nav-item">XP — Head Marketing</div>
+          <div className="nav-item">Nubank — Growth</div>
+          <div className="nav-item">Stone — CFO/Finance</div>
+          <div className="nav-item">iFood — Product Leads</div>
+        </div>
+
+        <div className="nav-section">
+          <div className="nav-title">Tags</div>
+          <div className="nav-item"><span style={{width:8,height:8,borderRadius:99,background:'#ff9500'}}></span> Quente</div>
+          <div className="nav-item"><span style={{width:8,height:8,borderRadius:99,background:'#34c759'}}></span> Verificado</div>
+          <div className="nav-item"><span style={{width:8,height:8,borderRadius:99,background:'#5856d6'}}></span> ICP</div>
+        </div>
+
+        <div className="sidebar-foot">
+          <span className="pulse"></span>
+          <div>
+            <div style={{fontWeight:500,color:'var(--ink-2)'}}>Sidecar conectado</div>
+            <div style={{fontFamily:'var(--mono)',fontSize:10}}>127.0.0.1:65115</div>
+          </div>
+        </div>
+      </aside>
+
+      {/* Main */}
+      <main className="main">
+        <div className="toolbar">
+          <span className="crumb">Workspace <span className="sep">›</span> <strong style={{fontWeight:600}}>{view==='search'?'Nova busca':'Leads salvos'}</strong></span>
+          <span className="grow"></span>
+          <button className="pill-btn">
+            <span style={{width:6,height:6,borderRadius:99,background:'var(--green)'}}></span>
+            v0.4.2
+          </button>
+          <button className="pill-btn" onClick={()=>setShowSettings(true)}>⚙ Preferências</button>
+          <button className="pill-btn primary">+ Nova</button>
+        </div>
+
+        <div className="container">
+          <div className="hero">
+            <div>
+              <h1>Bem-vindo de volta, Mateus.</h1>
+              <p>Última busca há 2 horas. Você tem 17 leads novos prontos para revisão.</p>
+            </div>
+            <div className="stat-strip">
+              <div className="stat"><div className="v">126</div><div className="l">Leads totais</div></div>
+              <div className="stat"><div className="v">17</div><div className="l">Novos hoje</div></div>
+              <div className="stat"><div className="v">93<span style={{fontSize:14,color:'var(--ink-3)'}}>%</span></div><div className="l">Taxa de match</div></div>
+              <div className="stat"><div className="v" style={{color:'var(--green)'}}>4</div><div className="l">APIs ativas</div></div>
+            </div>
+          </div>
+
+          <div className="grid">
+            {/* Left card - Form */}
+            <div className="card">
+              <div className="card-head">
+                <h3>Parâmetros da busca</h3>
+                <span className="muted">⌘ + ↵</span>
+              </div>
+              <div className="card-body">
+                <div className="form-row">
+                  <label className="form-label">Empresa</label>
+                  <input className="input" value={company} onChange={e=>setCompany(e.target.value)} />
+                </div>
+                <div className="form-row">
+                  <div className="input-grid">
+                    <div>
+                      <label className="form-label">Domínio</label>
+                      <input className="input mono" value={domain} onChange={e=>setDomain(e.target.value)} />
+                    </div>
+                    <div>
+                      <label className="form-label">Máx. leads</label>
+                      <input className="input mono" type="number" value={maxLeads} onChange={e=>setMaxLeads(e.target.value)} />
+                    </div>
+                  </div>
+                </div>
+                <div className="form-row">
+                  <label className="form-label">Perfil de cargo</label>
+                  <select className="input" defaultValue="Marketing / Growth">
+                    <option>Marketing / Growth</option>
+                    <option>Engenharia / Tech</option>
+                    <option>Vendas / Sales</option>
+                    <option>Produto / Design</option>
+                    <option>Finance / CFO</option>
+                  </select>
+                </div>
+                <div className="form-row">
+                  <label className="form-label">Palavras-chave</label>
+                  <textarea className="input" rows="2" value={keywords} onChange={e=>setKeywords(e.target.value)}></textarea>
+                </div>
+                <div className="form-row">
+                  <label className="form-label">Senioridade</label>
+                  <div className="chips">
+                    {["C-level","VP","Director","Head of","Manager","Senior","Mid","Junior"].map(s => (
+                      <button key={s} className={`chip ${seniorities.has(s)?'on':''}`} onClick={()=>toggleSenior(s)}>{s}</button>
+                    ))}
+                  </div>
+                </div>
+                <div className="form-row">
+                  <label className="form-label">Modo de coleta</label>
+                  <div className="seg">
+                    {["api","serp","cookie","browser"].map(m => (
+                      <div key={m} className={`seg-item ${mode===m?'on':''}`} onClick={()=>setMode(m)}>
+                        {m.toUpperCase()}
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{fontSize:11,color:'var(--ink-3)',marginTop:6,lineHeight:1.4}}>
+                    {mode==='api' && 'APIs externas + busca pública. Recomendado.'}
+                    {mode==='serp' && 'Apenas busca pública via SearxNG / Serper.'}
+                    {mode==='cookie' && 'Voyager regular com cookie li_at do seu Keychain.'}
+                    {mode==='browser' && 'Playwright logado. Arriscado — só sob demanda.'}
+                  </div>
+                </div>
+                <div className="form-row">
+                  <label className="form-label">Arquivo de saída</label>
+                  <input className="input mono" value={output} onChange={e=>setOutput(e.target.value)} />
+                </div>
+                <div className="form-row">
+                  <label className="checkbox">
+                    <input type="checkbox" /> Incluir leads sem match claro de cargo
+                  </label>
+                </div>
+                <button className="btn-primary" onClick={runSearch} disabled={running}>
+                  {running ? <><span className="spinner"></span> Buscando…</> : <>Buscar leads <span style={{opacity:0.7,fontSize:11}}>⌘↵</span></>}
+                </button>
+              </div>
+            </div>
+
+            {/* Right card - Results */}
+            <div className="card">
+              <div className="card-head">
+                <h3>Resultados <span style={{color:'var(--ink-3)',fontWeight:400,fontSize:13,marginLeft:6}}>· {filteredLeads.length} leads</span></h3>
+                <div style={{display:'flex',gap:6}}>
+                  <button className="pill-btn">Exportar CSV</button>
+                  <button className="pill-btn">XLSX</button>
+                </div>
+              </div>
+              <div className="table-tools">
+                <input className="search-input" placeholder="Filtrar leads…" value={query} onChange={e=>setQuery(e.target.value)} />
+                <span className="grow"></span>
+                <div className="seg-mini">
+                  <button className={filter==='all'?'on':''} onClick={()=>setFilter('all')}>Todos</button>
+                  <button className={filter==='head'?'on':''} onClick={()=>setFilter('head')}>Head</button>
+                  <button className={filter==='growth'?'on':''} onClick={()=>setFilter('growth')}>Growth</button>
+                </div>
+              </div>
+              <div style={{maxHeight:560,overflow:'auto'}}>
+                <table className="leads">
+                  <thead>
+                    <tr>
+                      <th style={{width:'34%'}}>Pessoa</th>
+                      <th>Cargo</th>
+                      <th style={{width:90}}>Empresa</th>
+                      <th style={{width:120}}>Fonte</th>
+                      <th style={{width:120,textAlign:'right'}}>Score</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredLeads.map((l,i) => (
+                      <tr key={i}>
+                        <td>
+                          <div className="person">
+                            <div className="avatar" style={{background:l.color}}>{initials(l.name)}</div>
+                            <div>
+                              <div className="nm">{l.name}</div>
+                              <div className="hd">linkedin.com/{l.handle}</div>
+                            </div>
+                          </div>
+                        </td>
+                        <td className="role">{l.role}</td>
+                        <td className="role">{l.co}</td>
+                        <td><span className="src-tag">● {l.src}</span></td>
+                        <td>
+                          <div className="score-bar">
+                            <div className="bar"><div style={{width:`${l.score}%`,background:l.score>=95?'#34c759':l.score>=85?'#007aff':'#ff9500'}}></div></div>
+                            <span className="v">{l.score}</span>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {showSettings && (
+          <SettingsSheet
+            onClose={()=>setShowSettings(false)}
+            tab={setTab} setTab={setSetTab}
+            theme={theme} setTheme={setTheme}
+          />
+        )}
+
+        {toast && <div className="toast"><span className="check">✓</span>{toast}</div>}
+      </main>
+    </div>
+  );
+}
+
+function SettingsSheet({ onClose, tab, setTab, theme, setTheme }) {
+  const [keys, setKeys] = useState({
+    serper: "ser_••••••••••••3f9c",
+    pdl: "",
+    apollo: "apll_••••••••2d74",
+    coresignal: "",
+    lusha: "",
+    apify: "apify_•••••f02a",
+  });
+  const [reveal, setReveal] = useState({});
+
+  return (
+    <div className="sheet-overlay" onClick={(e)=>{ if(e.target.classList.contains('sheet-overlay')) onClose(); }}>
+      <div className="sheet">
+        <aside className="sheet-side">
+          <div className="sheet-head-row">
+            <h2>Preferências</h2>
+            <button className="sheet-close" onClick={onClose}>✕</button>
+          </div>
+          {[
+            {id:"general", lbl:"Geral", ico:"⚙"},
+            {id:"account", lbl:"Conta", ico:"◯"},
+            {id:"api", lbl:"Chaves de API", ico:"⎈"},
+            {id:"providers", lbl:"Provedores", ico:"⌬"},
+            {id:"export", lbl:"Exportação", ico:"↧"},
+            {id:"shortcuts", lbl:"Atalhos", ico:"⌘"},
+            {id:"about", lbl:"Sobre", ico:"ⓘ"},
+          ].map(t => (
+            <div key={t.id} className={`nav-item ${tab===t.id?'active':''}`} onClick={()=>setTab(t.id)}>
+              <span className="ico">{t.ico}</span> {t.lbl}
+            </div>
+          ))}
+        </aside>
+
+        <div className="sheet-body">
+          {tab === 'general' && (
+            <>
+              <h3>Geral</h3>
+              <p className="dek">Aparência e comportamento padrão do aplicativo.</p>
+
+              <div className="sheet-section-title">Aparência</div>
+              <div className="sheet-section">
+                <div className="row">
+                  <div className="label">
+                    <div className="t">Modo escuro</div>
+                    <div className="s">Troca entre claro e escuro automaticamente.</div>
+                  </div>
+                  <div className={`toggle ${theme==='dark'?'on':''}`} onClick={()=>setTheme(theme==='dark'?'light':'dark')}></div>
+                </div>
+                <div className="row">
+                  <div className="label">
+                    <div className="t">Acompanhar sistema</div>
+                    <div className="s">Segue o tema do sistema operacional.</div>
+                  </div>
+                  <div className="toggle"></div>
+                </div>
+                <div className="row">
+                  <div className="label">
+                    <div className="t">Cor de acento</div>
+                  </div>
+                  <div style={{display:'flex',gap:6}}>
+                    {["#007aff","#5856d6","#34c759","#ff9500","#ff3b30"].map((c,i)=>(
+                      <div key={i} style={{width:18,height:18,borderRadius:'50%',background:c,boxShadow: i===0 ? '0 0 0 2px var(--surface), 0 0 0 3.5px var(--accent)' : 'inset 0 0 0 0.5px rgba(0,0,0,0.1)',cursor:'pointer'}}></div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div className="sheet-section-title">Idioma e região</div>
+              <div className="sheet-section">
+                <div className="row">
+                  <div className="label">
+                    <div className="t">Idioma da interface</div>
+                    <div className="s">Mensagens em pt-BR, identificadores em inglês.</div>
+                  </div>
+                  <select className="input" style={{width:140,height:28}}>
+                    <option>Português (BR)</option>
+                    <option>English (US)</option>
+                  </select>
+                </div>
+                <div className="row">
+                  <div className="label">
+                    <div className="t">Telemetria anônima</div>
+                    <div className="s">Compartilhar contagens de uso (não sai por padrão).</div>
+                  </div>
+                  <div className="toggle"></div>
+                </div>
+              </div>
+
+              <div className="sheet-section-title">Cache</div>
+              <div className="sheet-section">
+                <div className="row">
+                  <div className="label">
+                    <div className="t">Cache local SQLite</div>
+                    <div className="s">14.2 MB · expira em 7 dias · cache_version 3</div>
+                  </div>
+                  <button className="pill-btn">Limpar cache</button>
+                </div>
+                <div className="row">
+                  <div className="label">
+                    <div className="t">Pasta de saída</div>
+                    <div className="s">~/Documents/beautiful-linkedin/output</div>
+                  </div>
+                  <button className="pill-btn">Escolher…</button>
+                </div>
+              </div>
+            </>
+          )}
+
+          {tab === 'account' && (
+            <>
+              <h3>Conta</h3>
+              <p className="dek">Informações da sua conta local. Credenciais ficam no cofre seguro do sistema.</p>
+              <div className="sheet-section">
+                <div className="row">
+                  <div className="avatar" style={{width:46,height:46,fontSize:16,background:'linear-gradient(135deg,#007aff,#5856d6)'}}>MA</div>
+                  <div className="label">
+                    <div className="t">Mateus Andrade</div>
+                    <div className="s">mateus@gmail.com · plano Pro · expira em dez/2026</div>
+                  </div>
+                  <button className="pill-btn">Editar</button>
+                </div>
+              </div>
+
+              <div className="sheet-section-title">Sessão LinkedIn (opcional)</div>
+              <div className="sheet-section">
+                <div className="row">
+                  <div className="label">
+                    <div className="t">Cookie li_at</div>
+                    <div className="s">Usado pelo modo Cookie. Última verificação há 3 dias.</div>
+                  </div>
+                  <span style={{fontSize:11,color:'var(--green)',display:'inline-flex',gap:5,alignItems:'center'}}>
+                    <span style={{width:6,height:6,borderRadius:99,background:'currentColor'}}></span> conectado
+                  </span>
+                </div>
+                <div className="row">
+                  <div className="label">
+                    <div className="t">Sales Navigator</div>
+                    <div className="s">Não conectado.</div>
+                  </div>
+                  <button className="pill-btn">Conectar</button>
+                </div>
+              </div>
+
+              <div className="sheet-section-title">Zona perigosa</div>
+              <div className="sheet-section">
+                <div className="row">
+                  <div className="label">
+                    <div className="t">Encerrar sessão</div>
+                    <div className="s">Limpa tokens e cookies locais.</div>
+                  </div>
+                  <button className="pill-btn" style={{color:'var(--red)'}}>Encerrar</button>
+                </div>
+                <div className="row">
+                  <div className="label">
+                    <div className="t">Apagar todos os dados</div>
+                    <div className="s">Cache, leads salvos, configurações.</div>
+                  </div>
+                  <button className="pill-btn" style={{color:'var(--red)'}}>Apagar…</button>
+                </div>
+              </div>
+            </>
+          )}
+
+          {tab === 'api' && (
+            <>
+              <h3>Chaves de API</h3>
+              <p className="dek">
+                Configure as chaves dos provedores que você usa. Tudo é guardado no cofre seguro do
+                sistema; nada vai para o repositório nem aparece em <code style={{fontFamily:'var(--mono)',background:'var(--surface-3)',padding:'1px 5px',borderRadius:4,fontSize:11}}>.env</code>.
+              </p>
+
+              <div className="sheet-section">
+                {[
+                  {k:"serper", name:"Serper", env:"SERPER_API_KEY", desc:"Pesquisa Google via API. Primeira opção quando SearxNG estiver fora."},
+                  {k:"pdl", name:"People Data Labs", env:"PDL_API_KEY", desc:"Resolução de company_id e enriquecimento de leads."},
+                  {k:"apollo", name:"Apollo.io", env:"APOLLO_API_KEY", desc:"Estratégia by-company antes do search legado."},
+                  {k:"coresignal", name:"Coresignal", env:"CORESIGNAL_API_KEY", desc:"Dados de empresa em larga escala — opcional."},
+                  {k:"lusha", name:"Lusha", env:"LUSHA_API_KEY", desc:"Contatos verificados; respeita opt-out e LGPD."},
+                  {k:"apify", name:"Apify Actor", env:"APIFY_TOKEN", desc:"Scraper TypeScript em linkedin-api-scrapper/."},
+                ].map(p => (
+                  <div className="api-row" key={p.k}>
+                    <div className="api-meta">
+                      <span className="api-name">{p.name}</span>
+                      <span className="api-tag">{p.env}</span>
+                      <span className={`api-status ${keys[p.k]?'':'off'}`}>
+                        <span className="d"></span> {keys[p.k] ? 'conectado' : 'em branco'}
+                      </span>
+                    </div>
+                    <div className="api-desc">{p.desc}</div>
+                    <div className="key-input">
+                      <input
+                        type={reveal[p.k]?'text':'password'}
+                        value={keys[p.k]}
+                        placeholder={`Cole sua chave ${p.name}…`}
+                        onChange={e=>setKeys({...keys,[p.k]:e.target.value})}
+                      />
+                      <button onClick={()=>setReveal({...reveal,[p.k]:!reveal[p.k]})}>{reveal[p.k]?'Ocultar':'Revelar'}</button>
+                      <button>Testar</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+
+          {tab === 'providers' && (
+            <>
+              <h3>Provedores e buscadores</h3>
+              <p className="dek">Quem fala primeiro quando você roda <code style={{fontFamily:'var(--mono)',fontSize:11}}>auto</code>.</p>
+
+              <div className="sheet-section-title">Lead providers (auto)</div>
+              <div className="sheet-section">
+                {[
+                  ["pdl","People Data Labs",true],
+                  ["apollo","Apollo.io",true],
+                  ["coresignal","Coresignal",false],
+                  ["lusha","Lusha",false],
+                  ["web","Busca pública (web)",true],
+                  ["apify_linkedin","Apify LinkedIn Actor",false],
+                  ["public_directories","Diretórios públicos",false],
+                  ["common_crawl","Common Crawl",false],
+                ].map(([k,n,on]) => (
+                  <div key={k} className="row">
+                    <div className="label">
+                      <div className="t">{n}</div>
+                      <div className="s" style={{fontFamily:'var(--mono)',fontSize:10}}>{k}</div>
+                    </div>
+                    <div className={`toggle ${on?'on':''}`}></div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="sheet-section-title">Search engines (auto)</div>
+              <div className="sheet-section">
+                {[
+                  ["searxng","SearxNG (local)","Prioridade quando SEARXNG_BASE_URL existe",true],
+                  ["serper","Serper",".env: SERPER_API_KEY",true],
+                  ["cse","Google CSE","CSE_API_KEY · CSE_CX",false],
+                  ["ddg","DuckDuckGo","sem chave",true],
+                  ["html","HTML fallback","último recurso",true],
+                ].map(([k,n,d,on]) => (
+                  <div key={k} className="row">
+                    <div className="label">
+                      <div className="t">{n}</div>
+                      <div className="s">{d}</div>
+                    </div>
+                    <div className={`toggle ${on?'on':''}`}></div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+
+          {tab === 'export' && (
+            <>
+              <h3>Exportação</h3>
+              <p className="dek">Como o produto final é entregue.</p>
+              <div className="sheet-section">
+                <div className="row">
+                  <div className="label"><div className="t">Formato padrão</div><div className="s">CSV ou XLSX.</div></div>
+                  <select className="input" style={{width:120,height:28}}><option>CSV</option><option>XLSX</option></select>
+                </div>
+                <div className="row">
+                  <div className="label"><div className="t">Encoding</div><div className="s">UTF-8 com BOM para Excel.</div></div>
+                  <div className="toggle on"></div>
+                </div>
+                <div className="row">
+                  <div className="label"><div className="t">Abrir após exportar</div></div>
+                  <div className="toggle on"></div>
+                </div>
+              </div>
+            </>
+          )}
+
+          {tab === 'shortcuts' && (
+            <>
+              <h3>Atalhos</h3>
+              <p className="dek">Atalhos globais do app.</p>
+              <div className="sheet-section">
+                {[
+                  ["Buscar leads","⌘ ↵"],
+                  ["Nova busca","⌘ N"],
+                  ["Abrir preferências","⌘ ,"],
+                  ["Alternar modo escuro","⌘ ⇧ D"],
+                  ["Filtrar resultados","⌘ F"],
+                  ["Exportar CSV","⌘ E"],
+                ].map(([n,k])=>(
+                  <div className="row" key={n}>
+                    <div className="label"><div className="t">{n}</div></div>
+                    <kbd style={{fontFamily:'var(--mono)',fontSize:11,background:'var(--surface-3)',padding:'3px 7px',borderRadius:5,boxShadow:'inset 0 -1px 0 rgba(0,0,0,0.06)'}}>{k}</kbd>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+
+          {tab === 'about' && (
+            <>
+              <h3>Sobre</h3>
+              <p className="dek" style={{maxWidth:540}}>
+                Beautiful LinkedIn é uma CLI Python com interface desktop, escrita para descobrir leads
+                com postura de pesquisador. Versão 0.4.2. Licença MIT.
+              </p>
+              <div className="sheet-section">
+                <div className="row"><div className="label"><div className="t">Versão</div></div><div style={{fontFamily:'var(--mono)',fontSize:12,color:'var(--ink-3)'}}>0.4.2 (build 1248)</div></div>
+                <div className="row"><div className="label"><div className="t">Python runtime</div></div><div style={{fontFamily:'var(--mono)',fontSize:12,color:'var(--ink-3)'}}>3.11.7</div></div>
+                <div className="row"><div className="label"><div className="t">Verificar atualizações</div></div><button className="pill-btn">Verificar agora</button></div>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
