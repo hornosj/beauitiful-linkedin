@@ -139,14 +139,39 @@ def test_enrich_endpoint_estimates_saved_lead_enrichment(client: TestClient) -> 
             "lead_refs": ["https://www.linkedin.com/in/ana-silva/"],
             "fields": "email",
             "providers": ["lusha"],
-            "credit_costs_brl": {"lusha": 3.25},
+            # Pricing vem da tabela canônica do servidor; payload é ignorado.
+            "credit_costs_brl": {"lusha": 99.99},
             "confirmed": False,
         },
     )
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "estimated"
-    assert body["estimate"]["total_estimated_brl"] == 3.25
+    # Default tabelado no servidor para lusha = R$3,00.
+    assert body["estimate"]["total_estimated_brl"] == 3.0
+
+
+def test_enrichment_pricing_endpoint_returns_default_table(client: TestClient) -> None:
+    response = client.get("/enrichment/pricing")
+    assert response.status_code == 200
+    body = response.json()
+    providers = {item["provider"]: item for item in body["items"]}
+    assert set(providers.keys()) == {"apollo", "lusha", "snovio", "pdl"}
+    assert providers["apollo"]["brl_per_credit"] == 0.30
+    assert providers["lusha"]["brl_per_credit"] == 3.00
+    assert providers["apollo"]["source"] == "default"
+    assert providers["apollo"]["env_var"] == "ENRICHMENT_COST_BRL_APOLLO"
+
+
+def test_enrichment_pricing_endpoint_honours_env_override(
+    client: TestClient, monkeypatch
+) -> None:
+    monkeypatch.setenv("ENRICHMENT_COST_BRL_APOLLO", "0.18")
+    response = client.get("/enrichment/pricing")
+    assert response.status_code == 200
+    apollo = next(item for item in response.json()["items"] if item["provider"] == "apollo")
+    assert apollo["brl_per_credit"] == 0.18
+    assert apollo["source"] == "env_override"
 
 
 def test_merge_endpoint_dedupes_across_tables(client: TestClient) -> None:

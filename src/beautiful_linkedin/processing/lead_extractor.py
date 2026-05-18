@@ -144,6 +144,7 @@ AMBIGUOUS_STANDALONE_ROLE_TERMS = {
 MAYBE_INCORRECT_NOTE_TEMPLATE = (
     "Talvez incorreto: '{matched_title}' apareceu fora de um contexto confiável de cargo."
 )
+NO_RELATED_KEYWORDS_NOTE = "Encontrado porém sem keywords relacionadas."
 
 
 def match_target_title(text: str | None, target_titles: list[str]) -> str | None:
@@ -214,12 +215,11 @@ def extract_leads_from_search_results(
             validation_note = MAYBE_INCORRECT_NOTE_TEMPLATE.format(
                 matched_title=raw_matched_title
             )
+        elif company.titles and not matched_title:
+            validation_status = "maybe_incorrect"
+            validation_note = NO_RELATED_KEYWORDS_NOTE
 
-        if (
-            not include_uncertain
-            and not matched_title
-            and validation_status != "maybe_incorrect"
-        ):
+        if not include_uncertain and not matched_title and not validation_note:
             continue
 
         lead = Lead(

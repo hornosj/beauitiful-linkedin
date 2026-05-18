@@ -199,6 +199,12 @@ describe('default form state', () => {
     const mod = await import('../src/shared/validation')
     expect(mod.emptyFormState.scrapeMode).toBe('people_search')
   })
+
+  it('uses 8 cards per cycle by default for people_search', async () => {
+    const mod = await import('../src/shared/validation')
+    expect(mod.emptyFormState.cardsPerCycle).toBe(8)
+    expect(mod.buildSearchRequestFromForm(mod.emptyFormState).cards_per_cycle).toBe(8)
+  })
 })
 
 describe('isRiskyScrapeMode', () => {

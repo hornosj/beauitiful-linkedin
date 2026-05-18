@@ -81,6 +81,7 @@ export default function SearchForm(props: Props) {
   const modes = sourceModes.filter((m) => ALLOWED_MODES.includes(m.value as ScrapeMode))
   const rolePresets = props.rolePresets.length ? props.rolePresets : FALLBACK_ROLE_PRESETS
   const seniority = props.seniority.length ? props.seniority : FALLBACK_SENIORITY
+  const isPeopleSearch = props.form.scrapeMode === 'people_search'
 
   const toggleSeniority = (value: Seniority) => {
     const next = props.form.filters.seniority.includes(value)
@@ -93,7 +94,7 @@ export default function SearchForm(props: Props) {
     <form className="card" onSubmit={props.onSubmit}>
       <div className="card-head">
         <h3>Parâmetros da busca</h3>
-        <span className="muted">⌘ + ↵</span>
+        <span className="muted">Ctrl + ↵</span>
       </div>
       <div className="card-body">
         <div className="form-row">
@@ -102,7 +103,9 @@ export default function SearchForm(props: Props) {
           </label>
           <input
             id="company"
+            name="companyName"
             className={`input ${props.errors.companyName ? 'invalid' : ''}`}
+            aria-invalid={props.errors.companyName ? 'true' : undefined}
             value={props.form.companyName}
             onChange={(e) => props.onChange({ companyName: e.target.value })}
             placeholder="Nubank"
@@ -118,7 +121,9 @@ export default function SearchForm(props: Props) {
               </label>
               <input
                 id="domain"
+                name="companyDomain"
                 className="input mono"
+                autoComplete="url"
                 value={props.form.companyDomain}
                 onChange={(e) => props.onChange({ companyDomain: e.target.value })}
                 placeholder="nubank.com.br"
@@ -130,6 +135,7 @@ export default function SearchForm(props: Props) {
               </label>
               <input
                 id="max"
+                name="maxResults"
                 type="number"
                 min={1}
                 max={500}
@@ -150,7 +156,10 @@ export default function SearchForm(props: Props) {
           </label>
           <input
             id="linkedin"
+            name="linkedinUrl"
+            type="url"
             className="input mono"
+            autoComplete="url"
             value={props.form.linkedinUrl}
             onChange={(e) => props.onChange({ linkedinUrl: e.target.value })}
             placeholder="https://www.linkedin.com/company/nubank/people/"
@@ -167,6 +176,7 @@ export default function SearchForm(props: Props) {
           </label>
           <select
             id="role-preset"
+            name="rolePreset"
             className="input"
             value={props.form.rolePreset}
             onChange={(e) => props.onRolePresetChange(e.target.value)}
@@ -186,7 +196,9 @@ export default function SearchForm(props: Props) {
           </label>
           <textarea
             id="titles"
+            name="titles"
             className={`input ${props.errors.titles ? 'invalid' : ''}`}
+            aria-invalid={props.errors.titles ? 'true' : undefined}
             rows={2}
             value={props.form.titles}
             onChange={(e) => props.onChange({ titles: e.target.value, rolePreset: 'custom' })}
@@ -226,6 +238,7 @@ export default function SearchForm(props: Props) {
                   key={item.value}
                   type="button"
                   className={`chip ${active ? 'on' : ''}`}
+                  aria-pressed={active}
                   onClick={() => toggleSeniority(value)}
                 >
                   {item.label}
@@ -246,6 +259,7 @@ export default function SearchForm(props: Props) {
                   key={mode.value}
                   type="button"
                   className={`seg-item ${active ? 'on' : ''} ${risky ? 'danger' : ''}`}
+                  aria-pressed={active}
                   onClick={() => props.onScrapeModeChange(mode.value as ScrapeMode)}
                 >
                   {mode.value.toUpperCase()}
@@ -257,62 +271,30 @@ export default function SearchForm(props: Props) {
           {props.errors.acceptRisk && <p className="field-error">{props.errors.acceptRisk}</p>}
         </div>
 
-        {props.form.scrapeMode === 'people_search' && (
+        {!isPeopleSearch && (
           <div className="form-row">
-            <label className="form-label" htmlFor="cards-per-cycle">
-              Cards por clique de "Exibir mais resultados"
-            </label>
-            <input
-              id="cards-per-cycle"
-              type="number"
-              min={1}
-              max={200}
-              className={`input mono ${props.errors.cardsPerCycle ? 'invalid' : ''}`}
-              value={props.form.cardsPerCycle}
-              onChange={(e) =>
-                props.onChange({
-                  cardsPerCycle: Number.parseInt(e.target.value, 10) || 0
-                })
-              }
-            />
-            <div className="field-hint">
-              Usado para calcular quantos cliques o app precisa dar pra atingir a meta de{' '}
-              <strong>{props.form.maxResults}</strong> leads. ~
-              <strong>
-                {Math.max(
-                  1,
-                  Math.ceil(props.form.maxResults / Math.max(1, props.form.cardsPerCycle)) + 1
-                )}
-              </strong>{' '}
-              cliques estimados.
+            <label className="form-label">Intensidade da busca</label>
+            <div className="seg" style={{ gridTemplateColumns: 'repeat(2, 1fr)' }}>
+              {SEARCH_DEPTH_OPTIONS.map((option) => {
+                const active = props.form.searchDepth === option.value
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    className={`seg-item ${active ? 'on' : ''}`}
+                    aria-pressed={active}
+                    onClick={() => props.onChange({ searchDepth: option.value })}
+                  >
+                    <span style={{ display: 'block', fontWeight: 600 }}>{option.label}</span>
+                    <span style={{ display: 'block', fontSize: 10, color: 'var(--ink-3)' }}>
+                      {option.hint}
+                    </span>
+                  </button>
+                )
+              })}
             </div>
-            {props.errors.cardsPerCycle && (
-              <p className="field-error">{props.errors.cardsPerCycle}</p>
-            )}
           </div>
         )}
-
-        <div className="form-row">
-          <label className="form-label">Intensidade da busca</label>
-          <div className="seg" style={{ gridTemplateColumns: 'repeat(2, 1fr)' }}>
-            {SEARCH_DEPTH_OPTIONS.map((option) => {
-              const active = props.form.searchDepth === option.value
-              return (
-                <button
-                  key={option.value}
-                  type="button"
-                  className={`seg-item ${active ? 'on' : ''}`}
-                  onClick={() => props.onChange({ searchDepth: option.value })}
-                >
-                  <span style={{ display: 'block', fontWeight: 600 }}>{option.label}</span>
-                  <span style={{ display: 'block', fontSize: 10, color: 'var(--ink-3)' }}>
-                    {option.hint}
-                  </span>
-                </button>
-              )
-            })}
-          </div>
-        </div>
 
         <div className="form-row">
           <label className="form-label" htmlFor="output">
@@ -320,7 +302,9 @@ export default function SearchForm(props: Props) {
           </label>
           <input
             id="output"
+            name="outputPath"
             className={`input mono ${props.errors.outputPath ? 'invalid' : ''}`}
+            aria-invalid={props.errors.outputPath ? 'true' : undefined}
             value={props.form.outputPath}
             onChange={(e) => props.onChange({ outputPath: e.target.value })}
             placeholder="output/leads.csv"
@@ -337,6 +321,13 @@ export default function SearchForm(props: Props) {
             />
             Incluir leads sem match claro de cargo
           </label>
+          {props.form.includeUncertain && (
+            <p className="field-warning" style={{ marginTop: 4, fontSize: 11, color: 'var(--ink-3)' }}>
+              ⚠ Com essa opção marcada o filtro de cargo é relaxado — você pode
+              receber engineers em uma busca de "marketing". Desmarque para o
+              modo estrito (validador por palavra-chave + aliases).
+            </p>
+          )}
         </div>
 
         <button type="submit" className="btn-primary" disabled={props.running}>
@@ -346,7 +337,7 @@ export default function SearchForm(props: Props) {
             </>
           ) : (
             <>
-              Buscar leads <span style={{ opacity: 0.7, fontSize: 11 }}>⌘↵</span>
+              Buscar leads <span style={{ opacity: 0.7, fontSize: 11 }}>Ctrl↵</span>
             </>
           )}
         </button>

@@ -184,7 +184,7 @@ export const emptyFormState: SearchFormState = {
   titles: 'marketing, growth, cmo, head of marketing, demand generation, performance marketing',
   generalSearch: false,
   maxResults: 25,
-  cardsPerCycle: 10,
+  cardsPerCycle: 8,
   scrapeMode: 'people_search',
   searchDepth: 'standard',
   outputPath: 'output/leads.csv',

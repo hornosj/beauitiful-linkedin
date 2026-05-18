@@ -53,9 +53,20 @@ export default function DiagnosticPanel({ client, apiKeys, searchDiagnostics, on
     }
   }, [client, apiKeys])
 
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [onClose])
+
   return (
     <div
       className="sheet-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="diagnostic-title"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose()
       }}
@@ -63,8 +74,8 @@ export default function DiagnosticPanel({ client, apiKeys, searchDiagnostics, on
       <div className="sheet">
         <aside className="sheet-side">
           <div className="sheet-head-row">
-            <h2>Diagnóstico</h2>
-            <button type="button" className="sheet-close" onClick={onClose}>
+            <h2 id="diagnostic-title">Diagnóstico</h2>
+            <button type="button" className="sheet-close" onClick={onClose} aria-label="Fechar diagnóstico" autoFocus>
               ✕
             </button>
           </div>

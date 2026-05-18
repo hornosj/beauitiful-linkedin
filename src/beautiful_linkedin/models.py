@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -69,6 +69,29 @@ class Lead(BaseModel):
     confidence_score: int = Field(ge=0, le=100)
     previously_consulted_at: Optional[str] = None
     consultation_note: Optional[str] = None
+    # Enrichment metadata. All fields are optional and additive — they
+    # describe how (and how confidently) the email/phone was populated.
+    # Defaults preserve the legacy shape of leads that were never enriched.
+    enrichment_source: Optional[str] = None  # "internal" | "lusha" | "apollo" | ...
+    enrichment_status: Optional[str] = None  # not_enriched|estimated|enriched|partial|failed
+    enrichment_confidence: Optional[int] = Field(default=None, ge=0, le=100)
+    email_type: Optional[str] = None  # work | personal | unknown
+    email_validation_status: Optional[str] = None  # valid | probable | risky | unknown
+    enriched_at: Optional[str] = None  # ISO timestamp
+    # Cross-provider verification trail.
+    #
+    # ``email_verified_by`` lists every source whose result matched the
+    # primary ``email`` exactly. When length >= 2 the UI shows a "verified"
+    # badge — two independent layers (e.g. internal pattern inference and
+    # Apollo) landed on the same address, which is a strong signal.
+    #
+    # ``email_alternatives`` collects e-mails that *other* sources returned
+    # but disagreed with the primary. We don't overwrite the primary, but
+    # we keep these so the user can see "Apollo says ana@acme.com.br
+    # instead". Each entry is a dict with ``email``, ``source``,
+    # ``confidence`` (0-100 or null), and ``found_at`` (ISO timestamp).
+    email_verified_by: list[str] = Field(default_factory=list)
+    email_alternatives: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ProspectingSummary(BaseModel):

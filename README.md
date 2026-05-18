@@ -57,6 +57,11 @@ cp .env.example .env
   - `APOLLO_API_KEY`
   - `LUSHA_API_KEY`
   - `APIFY_API_KEY` para o provider opcional `apify_linkedin`
+- Enriquecimento pago: a UI exibe R$/crédito como leitura. As APIs públicas
+  não retornam preço por crédito; se o seu plano tiver custo diferente dos
+  defaults do servidor, ajuste via `ENRICHMENT_COST_BRL_APOLLO`,
+  `ENRICHMENT_COST_BRL_LUSHA`, `ENRICHMENT_COST_BRL_SNOVIO` e/ou
+  `ENRICHMENT_COST_BRL_PDL`.
 
 > **Atenção sobre Apify/LinkedIn:** o provider `apify_linkedin` chama um Actor terceiro da Apify para LinkedIn Company Employees. Ele não entra no modo `auto` e deve ser selecionado explicitamente. Use apenas com base legal, permissão operacional e validação dos termos aplicáveis. O Beautiful LinkedIn não implementa login, automação de navegador local, proxy, captcha solver, mascaramento de IP ou técnicas de evasão.
 

@@ -5,11 +5,16 @@ import type {
   DiagnosticsResponse,
   EnrichLeadTableRequest,
   EnrichLeadTableResponse,
+  EnrichmentPricingResponse,
   ExperimentalSearchResponse,
   ExportLeadTableRequest,
   ExportLeadTableResponse,
   HealthResponse,
   ImportLeadTableRequest,
+  InternalEnrichRequest,
+  InternalEnrichResponse,
+  InternalEnrichStreamDoneEvent,
+  InternalEnrichStreamEvent,
   MergeLeadTablesRequest,
   PeopleSearchProbeRequest,
   PeopleSearchProbeResponse,
@@ -109,6 +114,91 @@ export class ApiClient {
       `/lead-tables/${encodeURIComponent(tableId)}/enrich`,
       payload
     )
+  }
+
+  getEnrichmentPricing(): Promise<EnrichmentPricingResponse> {
+    return this.get<EnrichmentPricingResponse>('/enrichment/pricing')
+  }
+
+  internalEnrichLeadTable(
+    tableId: string,
+    payload: InternalEnrichRequest
+  ): Promise<InternalEnrichResponse> {
+    return this.post<InternalEnrichResponse>(
+      `/lead-tables/${encodeURIComponent(tableId)}/internal-enrich`,
+      payload
+    )
+  }
+
+  /**
+   * Stream internal enrichment events. The server emits SSE frames the UI
+   * can render incrementally. The returned promise resolves with the
+   * final ``done`` payload (summary + refreshed table + leads).
+   *
+   * ``onEvent`` receives every event including phase transitions and
+   * per-lead updates. ``signal`` lets callers abort by aborting the
+   * underlying fetch.
+   */
+  async streamInternalEnrich(
+    tableId: string,
+    payload: InternalEnrichRequest,
+    onEvent: (event: InternalEnrichStreamEvent) => void,
+    signal?: AbortSignal
+  ): Promise<InternalEnrichStreamDoneEvent> {
+    const response = await fetch(
+      `${this.baseUrl}/lead-tables/${encodeURIComponent(tableId)}/internal-enrich/stream`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+        body: JSON.stringify(payload),
+        signal
+      }
+    )
+    if (!response.ok || !response.body) {
+      const text = await response.text().catch(() => '')
+      throw new ApiError(response.status, text || response.statusText, text)
+    }
+
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder('utf-8')
+    let buffer = ''
+    let done: InternalEnrichStreamDoneEvent | null = null
+
+    while (true) {
+      const chunk = await reader.read()
+      if (chunk.done) break
+      buffer += decoder.decode(chunk.value, { stream: true })
+
+      // SSE frames are separated by blank lines (\n\n). Each frame may
+      // contain comment lines (": heartbeat") or one or more "data:" lines.
+      const frames = buffer.split('\n\n')
+      buffer = frames.pop() ?? ''
+      for (const frame of frames) {
+        const dataLines = frame
+          .split('\n')
+          .filter((line) => line.startsWith('data:'))
+          .map((line) => line.slice(5).trimStart())
+        if (dataLines.length === 0) continue
+        const text = dataLines.join('\n')
+        try {
+          const event = JSON.parse(text) as InternalEnrichStreamEvent
+          onEvent(event)
+          if (event.type === 'done') {
+            done = event
+          } else if (event.type === 'error') {
+            throw new ApiError(500, event.message, event)
+          }
+        } catch (err) {
+          if (err instanceof ApiError) throw err
+          // Malformed frame — ignore but keep streaming.
+        }
+      }
+    }
+
+    if (!done) {
+      throw new ApiError(500, 'Stream encerrou sem evento "done".')
+    }
+    return done
   }
 
   mergeLeadTables(payload: MergeLeadTablesRequest): Promise<SavedLeadTableDetail> {

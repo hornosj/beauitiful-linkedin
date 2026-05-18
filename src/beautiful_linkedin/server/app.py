@@ -9,7 +9,11 @@ renderer accidentally forwarding the wrong scrape mode.
 
 from __future__ import annotations
 
+import json
+import logging
+import queue
 import threading
+import time
 import uuid
 from dataclasses import dataclass, field, replace
 from enum import Enum
@@ -17,6 +21,7 @@ from typing import Any, Callable
 
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 
 from beautiful_linkedin.cli import build_lead_filter
@@ -68,8 +73,21 @@ from beautiful_linkedin.storage.enrichment import (
     EnrichmentRunSummary,
     EnrichmentUpdate,
     LushaEnrichmentProvider,
+    PdlEnrichmentProvider,
+    ProviderRunLog,
     SnovioEnrichmentProvider,
     estimate_enrichment_cost,
+)
+from beautiful_linkedin.storage.company_email_harvester import (
+    CompanyEmailHarvester,
+)
+from beautiful_linkedin.storage.internal_enrichment import (
+    CompanyDomainResolver,
+    EmailValidator,
+    InternalEnrichmentOrchestrator,
+    InternalLeadEnrichmentService,
+    SmtpMailboxVerifier,
+    collect_company_domains,
 )
 from beautiful_linkedin.storage.saved_leads import (
     ImportColumnError,
@@ -78,6 +96,8 @@ from beautiful_linkedin.storage.saved_leads import (
 )
 
 VERSION = "0.1.0"
+
+logger = logging.getLogger(__name__)
 
 
 class RunStatus(str, Enum):
@@ -316,7 +336,12 @@ class EnrichmentEstimatePayload(BaseModel):
 class EnrichLeadTableRequest(BaseModel):
     lead_refs: list[str] = Field(min_length=1)
     fields: str = "email"  # "email" | "phone" | "both"
-    providers: list[str] = Field(default_factory=lambda: ["lusha", "apollo", "snovio"])
+    providers: list[str] = Field(
+        default_factory=lambda: ["lusha", "apollo", "snovio", "pdl"]
+    )
+    # DEPRECATED — mantido por compat com clientes antigos. O servidor
+    # ignora este campo e usa ``get_enrichment_pricing()`` como fonte da
+    # verdade. Veja ``GET /enrichment/pricing``.
     credit_costs_brl: dict[str, float] = Field(default_factory=dict)
     confirmed: bool = False
     apollo_webhook_url: str | None = None
@@ -335,12 +360,67 @@ class EnrichLeadTableRequest(BaseModel):
         return self
 
 
+class InternalEnrichRequest(BaseModel):
+    """Body for ``POST /lead-tables/{id}/internal-enrich``.
+
+    The first version only enriches e-mail. ``lead_refs`` scopes the run
+    to a subset of the table's leads; if omitted, every lead is processed.
+    """
+
+    lead_refs: list[str] | None = None
+    fields: str = "email"
+    confirmed: bool = True
+    company_domain: str | None = None
+
+    @model_validator(mode="after")
+    def _validate(self) -> "InternalEnrichRequest":
+        if self.fields != "email":
+            raise ValueError(
+                "Versão atual do enriquecimento interno só suporta fields='email'."
+            )
+        if self.company_domain is not None:
+            cleaned = _clean_internal_company_domain(self.company_domain)
+            if not cleaned:
+                raise ValueError(
+                    "company_domain deve ser um domínio corporativo válido (ex.: empresa.com.br)."
+                )
+            self.company_domain = cleaned
+        return self
+
+
+class InternalEnrichSummary(BaseModel):
+    requested_leads: int = 0
+    enriched_leads: int = 0
+    skipped_existing_email: int = 0
+    failed_missing_domain: int = 0
+    no_change: int = 0
+
+
+class InternalEnrichResponse(BaseModel):
+    status: str
+    summary: InternalEnrichSummary
+    table: SavedLeadTablePayload | None = None
+    leads: list[Lead] = Field(default_factory=list)
+
+
 class EnrichmentSummaryPayload(BaseModel):
     requested_leads: int = 0
     enriched_leads: int = 0
     updated_leads: int = 0
     providers_used: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
+    provider_logs: list["ProviderRunLogPayload"] = Field(default_factory=list)
+
+
+class ProviderRunLogPayload(BaseModel):
+    provider: str
+    requested_leads: int
+    matched_leads: int
+    updated_leads: int
+    estimated_credits: int
+    estimated_brl: float
+    status: str
+    message: str
 
 
 class EnrichLeadTableResponse(BaseModel):
@@ -349,6 +429,23 @@ class EnrichLeadTableResponse(BaseModel):
     summary: EnrichmentSummaryPayload = Field(default_factory=EnrichmentSummaryPayload)
     table: SavedLeadTablePayload | None = None
     leads: list[Lead] = Field(default_factory=list)
+
+
+class EnrichmentPricingItem(BaseModel):
+    provider: str
+    brl_per_credit: float
+    source: str  # "default" | "env_override"
+    env_var: str
+
+
+class EnrichmentPricingResponse(BaseModel):
+    items: list[EnrichmentPricingItem] = Field(default_factory=list)
+    currency: str = "BRL"
+    note: str = (
+        "As APIs de enriquecimento não expõem preço por crédito. Valores "
+        "são tabelados no servidor e podem ser ajustados via env vars "
+        "ENRICHMENT_COST_BRL_<PROVIDER>."
+    )
 
 
 class PeopleSearchProbeResponse(BaseModel):
@@ -695,6 +792,24 @@ def build_app(*, saved_leads_path: str | None = None) -> FastAPI:
         )
         return _probe_response(classification)
 
+    @app.get(
+        "/enrichment/pricing",
+        response_model=EnrichmentPricingResponse,
+    )
+    def enrichment_pricing() -> EnrichmentPricingResponse:
+        overrides = _env_override_pricing()
+        effective = get_enrichment_pricing()
+        items = [
+            EnrichmentPricingItem(
+                provider=provider,
+                brl_per_credit=effective[provider],
+                source="env_override" if provider in overrides else "default",
+                env_var=f"ENRICHMENT_COST_BRL_{provider.upper()}",
+            )
+            for provider in sorted(effective.keys())
+        ]
+        return EnrichmentPricingResponse(items=items)
+
     @app.get("/lead-tables", response_model=list[SavedLeadTablePayload])
     def list_lead_tables() -> list[SavedLeadTablePayload]:
         tables = get_saved_leads_store(app).list_tables()
@@ -788,10 +903,14 @@ def build_app(*, saved_leads_path: str | None = None) -> FastAPI:
                 detail="Nenhum lead selecionado foi encontrado na tabela.",
             )
 
+        # Pricing vem SEMPRE do servidor — o ``credit_costs_brl`` do payload
+        # é ignorado (mantido no schema só por compat). Operadores que
+        # queiram custos diferentes setam ``ENRICHMENT_COST_BRL_<PROVIDER>``
+        # no ambiente do sidecar.
         options = EnrichmentOptions(
             fields=payload.fields,  # type: ignore[arg-type]
             providers=payload.providers,
-            credit_costs_brl=payload.credit_costs_brl,
+            credit_costs_brl=get_enrichment_pricing(),
             apollo_webhook_url=payload.apollo_webhook_url,
         )
         estimate = estimate_enrichment_cost(selected, options)
@@ -819,6 +938,206 @@ def build_app(*, saved_leads_path: str | None = None) -> FastAPI:
             summary=_enrichment_summary_payload(summary),
             table=_table_to_payload(refreshed),
             leads=leads,
+        )
+
+    @app.post(
+        "/lead-tables/{table_id}/internal-enrich",
+        response_model=InternalEnrichResponse,
+    )
+    def internal_enrich_lead_table(
+        table_id: str, payload: InternalEnrichRequest
+    ) -> InternalEnrichResponse:
+        store = get_saved_leads_store(app)
+        try:
+            table = store.get_table(table_id)
+            saved_leads = store.list_leads(table_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        # Scope the run. When lead_refs is empty/None, enrich the whole table.
+        if payload.lead_refs:
+            selected = _select_leads(saved_leads, payload.lead_refs)
+        else:
+            selected = list(saved_leads)
+
+        if not selected:
+            raise HTTPException(
+                status_code=422,
+                detail="Nenhum lead encontrado para enriquecimento interno.",
+            )
+        selected = _apply_internal_domain_fallback(
+            selected,
+            payload.company_domain
+            or _clean_internal_company_domain(table.search_request.get("company_domain")),
+        )
+
+        existing_company_emails = [
+            (lead.person_name or "", lead.email or "")
+            for lead in saved_leads
+            if lead.email and lead.person_name
+        ]
+        # Aggregate every domain ever observed for each company across the
+        # entire table — including ones discovered by paid providers like
+        # Apollo. The orchestrator tries them 1-by-1 for leads whose own
+        # company_domain is missing or fails to validate.
+        company_domains = collect_company_domains(saved_leads)
+
+        updates = _run_internal_enrichment(
+            leads=selected,
+            existing_company_emails=existing_company_emails,
+            company_domains=company_domains,
+        )
+
+        counters = store.apply_internal_enrichment_updates(table_id, updates)
+        summary = InternalEnrichSummary(
+            requested_leads=len(selected),
+            enriched_leads=counters["enriched"],
+            skipped_existing_email=counters["skipped_existing_email"],
+            failed_missing_domain=counters["failed_missing_domain"],
+            no_change=counters["no_change"],
+        )
+        refreshed = store.get_table(table_id)
+        leads = store.list_leads(table_id)
+        return InternalEnrichResponse(
+            status="completed",
+            summary=summary,
+            table=_table_to_payload(refreshed),
+            leads=leads,
+        )
+
+    @app.post("/lead-tables/{table_id}/internal-enrich/stream")
+    def internal_enrich_stream(
+        table_id: str, payload: InternalEnrichRequest
+    ) -> StreamingResponse:
+        """Same work as the blocking endpoint, but streams progress events
+        as Server-Sent Events. The UI consumes this with ``EventSource``
+        and renders per-lead updates live.
+
+        The work runs on a background thread; the response generator pulls
+        events off a thread-safe queue and writes them as SSE frames. The
+        final frame is ``{"type": "done", ...}`` with the full summary so
+        the UI can refresh its lead list without an extra fetch.
+        """
+        store = get_saved_leads_store(app)
+        try:
+            table = store.get_table(table_id)
+            saved_leads = store.list_leads(table_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        selected = (
+            _select_leads(saved_leads, payload.lead_refs)
+            if payload.lead_refs
+            else list(saved_leads)
+        )
+        if not selected:
+            raise HTTPException(
+                status_code=422,
+                detail="Nenhum lead encontrado para enriquecimento interno.",
+            )
+        selected = _apply_internal_domain_fallback(
+            selected,
+            payload.company_domain
+            or _clean_internal_company_domain(table.search_request.get("company_domain")),
+        )
+
+        existing_company_emails = [
+            (lead.person_name or "", lead.email or "")
+            for lead in saved_leads
+            if lead.email and lead.person_name
+        ]
+        company_domains = collect_company_domains(saved_leads)
+        # Count every domain we may attempt, not just lead.company_domain.
+        # This is the number the UI shows in the "domínios" progress bar.
+        attempted_domains: set[str] = set()
+        for lead in selected:
+            own = (lead.company_domain or "").strip().lower()
+            if own:
+                attempted_domains.add(own)
+            for domain in company_domains.values():
+                for entry in domain:
+                    attempted_domains.add(entry)
+        unique_domain_total = len(attempted_domains)
+
+        events_queue: queue.Queue[dict[str, Any] | None] = queue.Queue()
+        cancel_event = threading.Event()
+
+        def push(event: dict[str, Any]) -> None:
+            events_queue.put(event)
+
+        def worker() -> None:
+            try:
+                push(
+                    {
+                        "type": "start",
+                        "total": len(selected),
+                        "unique_domains": unique_domain_total,
+                    }
+                )
+                updates = _run_internal_enrichment(
+                    leads=selected,
+                    existing_company_emails=existing_company_emails,
+                    company_domains=company_domains,
+                    on_event=push,
+                    cancel_check=cancel_event.is_set,
+                )
+                counters = store.apply_internal_enrichment_updates(
+                    table_id, updates
+                )
+                refreshed = store.get_table(table_id)
+                fresh_leads = store.list_leads(table_id)
+                push(
+                    {
+                        "type": "done",
+                        "summary": {
+                            "requested_leads": len(selected),
+                            "enriched_leads": counters["enriched"],
+                            "skipped_existing_email": counters[
+                                "skipped_existing_email"
+                            ],
+                            "failed_missing_domain": counters[
+                                "failed_missing_domain"
+                            ],
+                            "no_change": counters["no_change"],
+                        },
+                        "table": _table_to_payload(refreshed).model_dump(),
+                        "leads": [lead.model_dump(mode="json") for lead in fresh_leads],
+                    }
+                )
+            except Exception as exc:
+                logger.exception("internal enrichment stream failed")
+                push({"type": "error", "message": f"{type(exc).__name__}: {exc}"})
+            finally:
+                events_queue.put(None)  # sentinel
+
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+
+        def event_stream():
+            # Heartbeat helps Electron / nginx-style proxies keep the
+            # connection open during longer harvest phases.
+            last_beat = time.monotonic()
+            while True:
+                try:
+                    event = events_queue.get(timeout=10.0)
+                except queue.Empty:
+                    if time.monotonic() - last_beat > 9.0:
+                        yield ": heartbeat\n\n"
+                        last_beat = time.monotonic()
+                    continue
+                if event is None:
+                    return
+                last_beat = time.monotonic()
+                yield f"data: {json.dumps(event)}\n\n"
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "Connection": "keep-alive",
+            },
         )
 
     @app.post(
@@ -1058,6 +1377,255 @@ def _experimental_response(
     )
 
 
+def _default_company_email_harvester() -> CompanyEmailHarvester:
+    """Build the production harvester. Tests monkeypatch this helper to
+    return a no-op harvester so they stay offline."""
+    return CompanyEmailHarvester()
+
+
+def _default_domain_discoverer() -> Any:
+    """Production wiring for the free-source domain discoverer.
+
+    Composes crt.sh (HTTP) + SPF/DMARC (DNS TXT) + ccTLD-variant
+    generator, gated by the real MX resolver. Tests monkeypatch this
+    helper to return ``None`` so discovery is a no-op offline.
+    """
+    from beautiful_linkedin.storage.domain_discovery import (
+        CctldVariantGenerator,
+        CrtShClient,
+        DomainDiscoveryService,
+        SpfDmarcDiscoverer,
+    )
+
+    import httpx
+
+    def http_fetcher(url: str) -> tuple[int, str]:
+        try:
+            response = httpx.get(
+                url,
+                timeout=5.0,
+                headers={"User-Agent": "beautiful-linkedin/discovery"},
+                follow_redirects=True,
+            )
+            return response.status_code, response.text
+        except Exception:
+            return 0, ""
+
+    txt_resolver = _default_txt_resolver()
+    mx_resolver = _default_mx_resolver()
+
+    return DomainDiscoveryService(
+        crt_sh_client=CrtShClient(http_fetcher=http_fetcher),
+        spf_dmarc=SpfDmarcDiscoverer(txt_resolver=txt_resolver),
+        cctld_generator=CctldVariantGenerator(),
+        mx_checker=mx_resolver,
+    )
+
+
+def _default_txt_resolver() -> Callable[[str], list[str]]:
+    """Resolve TXT records using ``dnspython`` when available.
+
+    Falls back to a no-op when dnspython isn't installed — SPF/DMARC
+    discovery simply yields nothing in that case (other sources still
+    work). Same lazy-import pattern as the MX resolver so tests can
+    monkeypatch this helper.
+    """
+    try:
+        import dns.resolver  # type: ignore[import-not-found]
+    except Exception:
+        return lambda _domain: []
+
+    def _resolve(domain: str) -> list[str]:
+        cleaned = (domain or "").strip().lower()
+        if not cleaned:
+            return []
+        try:
+            answers = dns.resolver.resolve(cleaned, "TXT", lifetime=3.0)
+        except Exception:
+            return []
+        out: list[str] = []
+        for answer in answers:
+            # dnspython yields strings as TXT chunks; join into a single
+            # record before returning.
+            chunks = getattr(answer, "strings", None) or []
+            joined = "".join(
+                chunk.decode("utf-8", "ignore") if isinstance(chunk, bytes) else str(chunk)
+                for chunk in chunks
+            )
+            if joined:
+                out.append(joined)
+        return out
+
+    return _resolve
+
+
+def _build_internal_orchestrator(
+    *,
+    on_event: Callable[[dict[str, Any]], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+) -> InternalEnrichmentOrchestrator:
+    """Build an orchestrator wired with the production harvester / DNS /
+    SMTP defaults. Tests monkeypatch ``_default_*`` factories to stay
+    offline, so this helper always re-resolves them lazily."""
+
+    harvester = _default_company_email_harvester()
+
+    def harvest(domain: str) -> list[str]:
+        try:
+            results = harvester.harvest(domain)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("harvester %s falhou: %s", domain, exc)
+            return []
+        return [r.email.strip().lower() for r in results if "@" in r.email]
+
+    service = InternalLeadEnrichmentService(
+        validator=EmailValidator(
+            mx_resolver=_default_mx_resolver(),
+            mailbox_verifier=_default_mailbox_verifier(),
+        ),
+    )
+    return InternalEnrichmentOrchestrator(
+        service=service,
+        harvest_fn=harvest,
+        discoverer=_default_domain_discoverer(),
+        on_event=on_event,
+        cancel_check=cancel_check,
+    )
+
+
+def _run_internal_enrichment(
+    *,
+    leads: list[Lead],
+    existing_company_emails: list[tuple[str, str]],
+    company_domains: dict[str, list[str]] | None = None,
+    on_event: Callable[[dict[str, Any]], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+) -> list[tuple[Lead, Any]]:
+    """Synchronous wrapper used by both the blocking POST and the SSE
+    streamer. Returns ``[(lead, EnrichmentUpdate)]``."""
+
+    orchestrator = _build_internal_orchestrator(
+        on_event=on_event, cancel_check=cancel_check
+    )
+    return orchestrator.run(
+        leads,
+        existing_company_emails=existing_company_emails,
+        company_domains=company_domains,
+    )
+
+
+def _apply_internal_domain_fallback(
+    leads: list[Lead], company_domain: str | None
+) -> list[Lead]:
+    """Return copies with ``company_domain`` filled where the lead lacks it.
+
+    Saved People Search tables often come from LinkedIn URLs only. Internal
+    e-mail inference cannot start without the company's real mail domain, so
+    the UI/API can supply a table-level domain for this run.
+    """
+
+    domain = _clean_internal_company_domain(company_domain)
+    if not domain:
+        return leads
+    return [
+        lead
+        if (lead.company_domain or "").strip()
+        else lead.model_copy(update={"company_domain": domain})
+        for lead in leads
+    ]
+
+
+def _clean_internal_company_domain(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    raw = value.strip().lower()
+    if not raw:
+        return None
+    if "://" in raw:
+        from urllib.parse import urlparse
+
+        raw = urlparse(raw).netloc
+    raw = raw.split("/", 1)[0].split("?", 1)[0].strip()
+    if raw.startswith("www."):
+        raw = raw[4:]
+    if not raw or "linkedin.com" in raw or "." not in raw:
+        return None
+    allowed = set("abcdefghijklmnopqrstuvwxyz0123456789.-")
+    if any(char not in allowed for char in raw):
+        return None
+    return raw.strip(".") or None
+
+
+def _default_mailbox_verifier() -> Any:
+    """Build the free SMTP mailbox verifier used by internal enrichment."""
+    return SmtpMailboxVerifier(mx_hosts_resolver=_default_mx_hosts_resolver())
+
+
+def _default_mx_hosts_resolver() -> Callable[[str], list[str]]:
+    """Resolve MX hosts ordered by priority for SMTP recipient probing."""
+
+    try:
+        import dns.resolver  # type: ignore[import-not-found]
+    except Exception:
+
+        def _fallback(domain: str) -> list[str]:
+            cleaned = (domain or "").strip().lower()
+            return [cleaned] if cleaned else []
+
+        return _fallback
+
+    def _mx_hosts(domain: str) -> list[str]:
+        cleaned = (domain or "").strip().lower()
+        if not cleaned:
+            return []
+        try:
+            answers = dns.resolver.resolve(cleaned, "MX", lifetime=3.0)
+        except Exception:
+            return []
+        records: list[tuple[int, str]] = []
+        for answer in answers:
+            host = str(getattr(answer, "exchange", "")).rstrip(".")
+            if not host:
+                continue
+            preference = int(getattr(answer, "preference", 0))
+            records.append((preference, host))
+        return [host for _, host in sorted(records)]
+
+    return _mx_hosts
+
+
+def _default_mx_resolver() -> Any:
+    """Build a Callable[[str], bool] that checks whether a domain has MX
+    records. Uses ``dnspython`` when available, otherwise falls back to
+    ``socket.gethostbyname`` which only proves the domain resolves (a
+    weaker but still useful signal). The function-of-function shape is
+    intentional so tests can monkeypatch this module-level helper to
+    return a deterministic resolver."""
+
+    try:
+        import dns.resolver  # type: ignore[import-not-found]
+    except Exception:
+        import socket
+
+        def _socket_resolver(domain: str) -> bool:
+            try:
+                socket.gethostbyname(domain)
+            except Exception:
+                return False
+            return True
+
+        return _socket_resolver
+
+    def _mx_resolver(domain: str) -> bool:
+        try:
+            answers = dns.resolver.resolve(domain, "MX", lifetime=3.0)
+        except Exception:
+            return False
+        return any(answers)
+
+    return _mx_resolver
+
+
 def run_saved_lead_enrichment(
     *,
     store: SavedLeadsStore,
@@ -1066,27 +1634,134 @@ def run_saved_lead_enrichment(
     options: EnrichmentOptions,
     providers: list[Any],
 ) -> EnrichmentRunSummary:
-    updates: list[EnrichmentUpdate] = []
     errors: list[str] = []
     used: list[str] = []
+    provider_logs: list[ProviderRunLog] = []
+    enriched_lead_refs: set[str] = set()
+    total_updated = 0
     for provider in providers:
         name = str(getattr(provider, "name", provider.__class__.__name__))
+        estimate = estimate_enrichment_cost(
+            selected_leads,
+            EnrichmentOptions(
+                fields=options.fields,
+                providers=[name],
+                credit_costs_brl=options.credit_costs_brl,
+                apollo_webhook_url=options.apollo_webhook_url,
+            ),
+        )
+        provider_estimate = estimate.provider_estimates[0] if estimate.provider_estimates else None
         try:
             provider_updates = provider.enrich(selected_leads, options)
         except Exception as exc:
             errors.append(f"{name}: {type(exc).__name__}: {exc}")
+            provider_logs.append(
+                ProviderRunLog(
+                    provider=name,
+                    requested_leads=len(selected_leads),
+                    matched_leads=0,
+                    updated_leads=0,
+                    estimated_credits=provider_estimate.estimated_credits
+                    if provider_estimate
+                    else 0,
+                    estimated_brl=provider_estimate.estimated_brl
+                    if provider_estimate
+                    else 0.0,
+                    status="error",
+                    message=f"{_provider_label(name)} falhou: {type(exc).__name__}.",
+                )
+            )
             continue
+        # Surface HTTP errors the provider swallowed (e.g. Apollo 403 plan-gated).
+        provider_errors = getattr(provider, "errors", None) or []
+        for err in provider_errors:
+            errors.append(f"{name}: {err}")
+
+        matched_refs = {_lead_ref(update.lead) for update in provider_updates}
+        matched_refs.discard("")
+        no_data_leads = [
+            lead
+            for lead in selected_leads
+            if _lead_ref(lead) not in matched_refs
+            and _lead_ref(lead) not in enriched_lead_refs
+        ]
+        if no_data_leads:
+            store.mark_api_enrichment_attempt(
+                table_id,
+                no_data_leads,
+                provider=name,
+            )
+        provider_updated = 0
         if provider_updates:
             used.append(name)
-            updates.extend(provider_updates)
-    updated_count = store.apply_enrichment_updates(table_id, updates)
+            enriched_lead_refs.update(ref for ref in matched_refs if ref)
+            provider_updated = store.apply_enrichment_updates(table_id, provider_updates)
+            total_updated += provider_updated
+
+        matched_count = len(matched_refs)
+        status_value = "updated" if provider_updates else "no_data"
+        provider_logs.append(
+            ProviderRunLog(
+                provider=name,
+                requested_leads=len(selected_leads),
+                matched_leads=matched_count,
+                updated_leads=provider_updated,
+                estimated_credits=provider_estimate.estimated_credits
+                if provider_estimate
+                else 0,
+                estimated_brl=provider_estimate.estimated_brl
+                if provider_estimate
+                else 0.0,
+                status=status_value,
+                message=_provider_run_message(
+                    name=name,
+                    requested=len(selected_leads),
+                    matched=matched_count,
+                    options=options,
+                ),
+            )
+        )
     return EnrichmentRunSummary(
         requested_leads=len(selected_leads),
-        enriched_leads=len({id(update.lead) for update in updates}),
-        updated_leads=updated_count,
+        enriched_leads=len(enriched_lead_refs),
+        updated_leads=total_updated,
         providers_used=used,
         errors=errors,
+        provider_logs=provider_logs,
     )
+
+
+def _lead_ref(lead: Lead) -> str:
+    return lead.linkedin_url or lead.source_url or lead.person_name or ""
+
+
+def _provider_label(name: str) -> str:
+    labels = {
+        "apollo": "Apollo",
+        "lusha": "Lusha",
+        "snovio": "Snov.io",
+        "pdl": "PDL",
+    }
+    return labels.get(name, name)
+
+
+def _provider_run_message(
+    *,
+    name: str,
+    requested: int,
+    matched: int,
+    options: EnrichmentOptions,
+) -> str:
+    label = _provider_label(name)
+    if matched > 0:
+        return f"{label} consultou {requested} lead(s) e retornou dados para {matched}."
+    wanted: list[str] = []
+    if options.wants_email:
+        wanted.append("e-mail")
+    if options.wants_phone:
+        wanted.append("telefone")
+    target = " ou ".join(wanted) if wanted else "dados"
+    return f"{label} consultou {requested} lead(s), mas não retornou {target}."
 
 
 def _select_leads(leads: list[Lead], refs: list[str]) -> list[Lead]:
@@ -1107,7 +1782,7 @@ def _build_enrichment_providers(
     settings: Settings, options: EnrichmentOptions
 ) -> list[Any]:
     providers: list[Any] = []
-    names = [provider.strip().lower() for provider in options.providers]
+    names = _ordered_enrichment_provider_names(options)
     if "lusha" in names and settings.lusha_api_key:
         providers.append(LushaEnrichmentProvider(settings.lusha_api_key))
     if "apollo" in names and settings.apollo_api_key:
@@ -1123,7 +1798,80 @@ def _build_enrichment_providers(
                 client_secret=settings.snovio_client_secret,
             )
         )
-    return providers
+    if "pdl" in names and settings.people_data_labs_api_key:
+        providers.append(PdlEnrichmentProvider(settings.people_data_labs_api_key))
+    return sorted(
+        providers,
+        key=lambda provider: names.index(str(getattr(provider, "name", ""))),
+    )
+
+
+# Tabela canônica de R$/crédito por provider.
+#
+# As APIs públicas de Apollo/Lusha/Snov.io/PDL **não** expõem preço por
+# crédito (o preço depende do plano contratado). Por isso o servidor é a
+# fonte da verdade — a UI nunca edita esses valores; ela lê via
+# ``GET /enrichment/pricing`` e exibe read-only. Operadores que tenham plano
+# diferente podem sobrescrever via env var ``ENRICHMENT_COST_BRL_<PROVIDER>``
+# (ex.: ``ENRICHMENT_COST_BRL_APOLLO=0.18``).
+_DEFAULT_ENRICHMENT_COST_BRL: dict[str, float] = {
+    "snovio": 0.15,
+    "apollo": 0.30,
+    "pdl": 0.50,
+    "lusha": 3.00,
+}
+
+
+def _env_override_pricing() -> dict[str, float]:
+    """Read ENRICHMENT_COST_BRL_<PROVIDER> env vars and return overrides.
+
+    Invalid floats are silently ignored — the default stays in place rather
+    than 500'ing the endpoint because of a bad env value.
+    """
+    import os
+
+    overrides: dict[str, float] = {}
+    for name in _DEFAULT_ENRICHMENT_COST_BRL:
+        raw = os.environ.get(f"ENRICHMENT_COST_BRL_{name.upper()}")
+        if raw is None or not raw.strip():
+            continue
+        try:
+            value = float(raw.strip().replace(",", "."))
+        except ValueError:
+            continue
+        if value < 0:
+            continue
+        overrides[name] = value
+    return overrides
+
+
+def get_enrichment_pricing() -> dict[str, float]:
+    """Return the effective R$/credit table (defaults + env overrides)."""
+    table = dict(_DEFAULT_ENRICHMENT_COST_BRL)
+    table.update(_env_override_pricing())
+    return table
+
+
+def _ordered_enrichment_provider_names(options: EnrichmentOptions) -> list[str]:
+    seen: set[str] = set()
+    names: list[str] = []
+    for raw in options.providers:
+        name = raw.strip().lower()
+        if name not in {"apollo", "lusha", "snovio", "pdl"}:
+            continue
+        if name == "snovio" and not options.wants_email:
+            continue
+        if name in seen:
+            continue
+        seen.add(name)
+        names.append(name)
+    return sorted(
+        names,
+        key=lambda name: (
+            float(options.credit_costs_brl.get(name, _DEFAULT_ENRICHMENT_COST_BRL[name])),
+            name,
+        ),
+    )
 
 
 def _enrichment_estimate_payload(
@@ -1156,6 +1904,19 @@ def _enrichment_summary_payload(
         updated_leads=summary.updated_leads,
         providers_used=list(summary.providers_used),
         errors=list(summary.errors),
+        provider_logs=[
+            ProviderRunLogPayload(
+                provider=item.provider,
+                requested_leads=item.requested_leads,
+                matched_leads=item.matched_leads,
+                updated_leads=item.updated_leads,
+                estimated_credits=item.estimated_credits,
+                estimated_brl=item.estimated_brl,
+                status=item.status,
+                message=item.message,
+            )
+            for item in summary.provider_logs
+        ],
     )
 
 

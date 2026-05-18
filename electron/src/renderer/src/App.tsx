@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ApiClient, ApiError } from '../../shared/api'
 import {
   applyRolePresetToForm,
@@ -27,7 +27,17 @@ import ChromeBootstrapModal from './components/ChromeBootstrapModal'
 import SavedLeadsLibrary from './components/SavedLeadsLibrary'
 import SmallCompanyDialog from './components/SmallCompanyDialog'
 import ProbeProgress from './components/ProbeProgress'
-import type { PeopleSearchProbeResponse, ProbeEvent } from '../../shared/types'
+import InternalEnrichProgress from './components/InternalEnrichProgress'
+import LiveActivityBubbles, {
+  type LiveActivityItem
+} from './components/LiveActivityBubbles'
+import { EnrichmentRunnerProvider, useEnrichmentRunner } from './enrichment/EnrichmentRunnerContext'
+import EnrichmentRunPill from './enrichment/EnrichmentRunPill'
+import type {
+  InternalEnrichLeadEvent,
+  PeopleSearchProbeResponse,
+  ProbeEvent
+} from '../../shared/types'
 
 interface RunResult {
   leads: Lead[]
@@ -67,8 +77,12 @@ export default function App() {
   const [feedback, setFeedback] = useState<{ kind: 'error' | 'success'; message: string } | null>(
     null
   )
+  const [liveActivities, setLiveActivities] = useState<LiveActivityItem[]>([])
   const [tableQuery, setTableQuery] = useState('')
   const [tableFilter, setTableFilter] = useState<'all' | 'head' | 'growth'>('all')
+  const liveActivitySeqRef = useRef(0)
+  const liveActivityTimersRef = useRef<number[]>([])
+  const lastSearchActivityRef = useRef<string | null>(null)
 
   const client = useMemo(() => (baseUrl ? new ApiClient(baseUrl) : null), [baseUrl])
   const allLeads = useMemo(
@@ -179,6 +193,71 @@ export default function App() {
     return () => window.clearTimeout(t)
   }, [feedback])
 
+  useEffect(() => {
+    return () => {
+      liveActivityTimersRef.current.forEach((timer) => window.clearTimeout(timer))
+      liveActivityTimersRef.current = []
+    }
+  }, [])
+
+  const pushLiveActivity = useCallback(
+    (activity: Omit<LiveActivityItem, 'id'>) => {
+      const id = `activity-${Date.now()}-${liveActivitySeqRef.current++}`
+      setLiveActivities((current) => [{ id, ...activity }, ...current].slice(0, 4))
+      const timer = window.setTimeout(() => {
+        setLiveActivities((current) => current.filter((item) => item.id !== id))
+      }, 3600)
+      liveActivityTimersRef.current.push(timer)
+    },
+    []
+  )
+
+  useEffect(() => {
+    if (!result || visibleLeadCount === 0) return
+    const index = visibleLeadCount - 1
+    const lead = result.leads[index]
+    if (!lead) return
+    const key = `${result.summary.output_file}:${index}:${lead.linkedin_url ?? lead.source_url ?? lead.person_name ?? ''}`
+    if (lastSearchActivityRef.current === key) return
+    lastSearchActivityRef.current = key
+    pushLiveActivity({
+      title: 'Lead encontrado',
+      detail: formatLeadActivity(lead),
+      tone: 'success'
+    })
+  }, [result, visibleLeadCount, pushLiveActivity])
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const command = event.ctrlKey || event.metaKey
+      if (!command) return
+      if (event.key === 'Enter') {
+        event.preventDefault()
+        document.querySelector<HTMLFormElement>('form')?.requestSubmit()
+      } else if (event.key.toLowerCase() === 'n') {
+        event.preventDefault()
+        setView('search')
+        setForm(emptyFormState)
+        setErrors({})
+      } else if (event.key === ',') {
+        event.preventDefault()
+        setShowSettings(true)
+      } else if (event.shiftKey && event.key.toLowerCase() === 'd') {
+        event.preventDefault()
+        setTheme((value) => (value === 'light' ? 'dark' : 'light'))
+      } else if (event.key.toLowerCase() === 'f') {
+        event.preventDefault()
+        const selector =
+          view === 'leads'
+            ? 'input[aria-label="Filtrar leads salvos"]'
+            : 'input[aria-label="Filtrar leads"]'
+        document.querySelector<HTMLInputElement>(selector)?.focus()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [view])
+
   const updateForm = (patch: Partial<SearchFormState>) => {
     setForm((prev) => ({ ...prev, ...patch }))
   }
@@ -222,6 +301,7 @@ export default function App() {
     setRevealing(false)
     setVisibleLeadCount(0)
     setResult(null)
+    lastSearchActivityRef.current = null
     try {
       const response = await client.search(buildSearchRequestFromForm(effectiveForm, apiKeys))
       setResult(response)
@@ -355,25 +435,31 @@ export default function App() {
   const sidecarOk = baseUrl !== null
 
   return (
-    <div className="app-shell">
+    <EnrichmentRunnerProvider
+      client={client}
+      onError={(message) => setFeedback({ kind: 'error', message })}
+      onSuccess={(message) => setFeedback({ kind: 'success', message })}
+    >
+    <div className="flex flex-col h-screen w-screen overflow-hidden bg-bg text-ink font-sans">
       {/* Title bar */}
-      <div className="titlebar">
-        <div className="brand">
-          <div className="brand-mark">B</div>
+      <div className="h-11 bg-surface/60 backdrop-blur-xl border-b border-line flex items-center px-4 gap-3 relative z-50 shrink-0">
+        <div className="flex items-center gap-2.5 text-[13px] font-semibold text-ink tracking-tight select-none">
+          <div className="w-5 h-5 rounded-[6px] bg-gradient-to-br from-accent to-[#5856d6] flex items-center justify-center text-white text-[11px] font-bold shadow-[0_1px_2px_rgba(0,122,255,0.3)]">B</div>
           Beautiful LinkedIn
         </div>
         {form.companyName && (
-          <div className="tb-context">
+          <div className="text-[12px] font-normal text-ink-3 pl-3 ml-1 border-l border-line select-none">
             {form.companyName}
             {form.rolePreset && form.rolePreset !== 'custom'
               ? ` · ${labelForPreset(taxonomies, form.rolePreset)}`
               : ''}
           </div>
         )}
-        <div className="tb-actions">
+        <div className="flex items-center gap-1 ml-auto select-none">
           <button
             type="button"
             className="tb-btn"
+            aria-label="Alternar tema"
             onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}
             title="Alternar tema"
           >
@@ -382,6 +468,7 @@ export default function App() {
           <button
             type="button"
             className="tb-btn"
+            aria-label="Abrir diagnóstico"
             onClick={() => setShowDiagnostics(true)}
             title="Diagnóstico"
           >
@@ -390,6 +477,7 @@ export default function App() {
           <button
             type="button"
             className="tb-btn"
+            aria-label="Abrir preferências"
             onClick={() => setShowSettings(true)}
             title="Preferências"
           >
@@ -398,86 +486,89 @@ export default function App() {
         </div>
       </div>
 
-      {/* Sidebar */}
-      <aside className="sidebar">
-        <div className="nav-section">
-          <div className="nav-title">Workspace</div>
-          <div
-            className={`nav-item ${view === 'search' ? 'active' : ''}`}
-            onClick={() => setView('search')}
-          >
-            <span className="ico">⌕</span> Nova busca
-          </div>
-          <div
-            className={`nav-item ${view === 'leads' ? 'active' : ''}`}
-            onClick={() => setView('leads')}
-          >
-            <span className="ico">◴</span> Leads salvos
-            {totalLeads > 0 && <span className="badge">{totalLeads}</span>}
-          </div>
-          <div
-            className={`nav-item ${view === 'providers' ? 'active' : ''}`}
-            onClick={() => {
-              setView('providers')
-              setShowSettings(true)
-            }}
-          >
-            <span className="ico">⌬</span> Provedores
-            {configuredApiKeyCount > 0 && <span className="badge">{configuredApiKeyCount}</span>}
-          </div>
-        </div>
-
-        <div className="nav-section">
-          <div className="nav-title">Modos de coleta</div>
-          {(['people_search', 'api'] as ScrapeMode[]).map((m) => (
-            <div
-              key={m}
-              className={`nav-item ${form.scrapeMode === m ? 'active' : ''}`}
-              onClick={() => handleScrapeModeChange(m)}
-              title={
-                m === 'people_search'
-                  ? 'Usa funcionários visíveis na aba People do LinkedIn, sem visitar perfis.'
-                  : 'Usa as APIs estruturadas configuradas (Apollo, PDL, Coresignal etc.).'
-              }
+      <div className="flex flex-1 overflow-hidden max-md:flex-col">
+        {/* Sidebar */}
+        <aside className="w-[220px] bg-surface-2/40 backdrop-blur-md border-r border-line overflow-y-auto py-3.5 px-2.5 flex flex-col shrink-0 max-md:w-full max-md:max-h-[220px] max-md:border-r-0 max-md:border-b">
+          <nav className="mb-4.5" aria-label="Workspace">
+            <div className="text-[11px] font-semibold text-ink-3 px-2 pb-1.5 tracking-wide select-none">Workspace</div>
+            <button
+              type="button"
+              className={`sidebar-nav-btn ${view === 'search' ? 'bg-accent text-white shadow-sm' : 'text-ink-2 hover:bg-surface-3'}`}
+              aria-current={view === 'search' ? 'page' : undefined}
+              onClick={() => setView('search')}
             >
-              <span
-                className="ico"
-                style={{
-                  width: 8,
-                  height: 8,
-                  borderRadius: 99,
-                  background: 'var(--success)'
-                }}
-              />
-              {m === 'people_search' ? 'People Search' : 'API'}
-            </div>
-          ))}
-        </div>
+              <span className="w-4 h-4 grid place-items-center shrink-0">⌕</span> Nova busca
+            </button>
+            <button
+              type="button"
+              className={`sidebar-nav-btn ${view === 'leads' ? 'bg-accent text-white shadow-sm' : 'text-ink-2 hover:bg-surface-3'}`}
+              aria-current={view === 'leads' ? 'page' : undefined}
+              onClick={() => setView('leads')}
+            >
+              <span className="w-4 h-4 grid place-items-center shrink-0">◴</span> Leads salvos
+              {totalLeads > 0 && <span className={`ml-auto rounded-full px-1.5 py-0.5 text-[10px] font-mono leading-none flex items-center ${view === 'leads' ? 'bg-white/20 text-white' : 'bg-surface-3 text-ink-3'}`}>{totalLeads}</span>}
+            </button>
+            <button
+              type="button"
+              className={`sidebar-nav-btn ${view === 'providers' ? 'bg-accent text-white shadow-sm' : 'text-ink-2 hover:bg-surface-3'}`}
+              aria-current={view === 'providers' ? 'page' : undefined}
+              onClick={() => {
+                setView('providers')
+                setShowSettings(true)
+              }}
+            >
+              <span className="w-4 h-4 grid place-items-center shrink-0">⌬</span> Provedores
+              {configuredApiKeyCount > 0 && <span className={`ml-auto rounded-full px-1.5 py-0.5 text-[10px] font-mono leading-none flex items-center ${view === 'providers' ? 'bg-white/20 text-white' : 'bg-surface-3 text-ink-3'}`}>{configuredApiKeyCount}</span>}
+            </button>
+          </nav>
 
-        <div className="sidebar-foot">
-          <span className={`pulse ${sidecarOk ? '' : 'off'}`} />
-          <div>
-            <div style={{ fontWeight: 500, color: 'var(--ink-2)' }}>
-              {sidecarOk ? 'Sidecar conectado' : 'Sidecar offline'}
-            </div>
-            <div style={{ fontFamily: 'var(--mono)', fontSize: 10 }}>
-              {sidecarOk ? baseUrl : sidecarError ?? 'inicie o app pelo Electron'}
+          <nav className="mb-4.5" aria-label="Modos de coleta">
+            <div className="text-[11px] font-semibold text-ink-3 px-2 pb-1.5 tracking-wide select-none">Modos de coleta</div>
+            {(['people_search', 'api'] as ScrapeMode[]).map((m) => (
+              <button
+                key={m}
+                type="button"
+                className={`sidebar-nav-btn ${form.scrapeMode === m ? 'bg-surface border border-line shadow-sm text-ink font-medium' : 'text-ink-2 hover:bg-surface-3'}`}
+                aria-pressed={form.scrapeMode === m}
+                onClick={() => handleScrapeModeChange(m)}
+                title={
+                  m === 'people_search'
+                    ? 'Usa funcionários visíveis na aba People do LinkedIn, sem visitar perfis.'
+                    : 'Usa as APIs estruturadas configuradas (Apollo, PDL, Coresignal etc.).'
+                }
+              >
+                <span className="w-4 h-4 grid place-items-center shrink-0">
+                  <span className="w-2 h-2 rounded-full bg-success"></span>
+                </span>
+                {m === 'people_search' ? 'People Search' : 'API'}
+              </button>
+            ))}
+          </nav>
+
+          <div className="mt-auto px-2 pt-2.5 border-t border-line flex items-center gap-2 text-[11px] text-ink-3">
+            <span className={`w-1.5 h-1.5 rounded-full ${sidecarOk ? 'bg-success shadow-[0_0_0_rgba(52,199,89,0.5)] animate-[pulse_2s_infinite]' : 'bg-ink-4'}`} />
+            <div>
+              <div className="font-medium text-ink-2">
+                {sidecarOk ? 'Sidecar conectado' : 'Sidecar offline'}
+              </div>
+              <div className="font-mono text-[10px] leading-tight mt-0.5 max-w-[170px] truncate">
+                {sidecarOk ? baseUrl : sidecarError ?? 'inicie o app pelo Electron'}
+              </div>
             </div>
           </div>
-        </div>
-      </aside>
+        </aside>
 
-      {/* Main */}
-      <main className="main">
-        <div className="toolbar">
-          <span className="crumb">
-            Workspace <span className="sep">›</span>{' '}
-            <strong style={{ fontWeight: 600 }}>
-              {view === 'search' ? 'Nova busca' : view === 'leads' ? 'Leads salvos' : 'Workspace'}
-            </strong>
-          </span>
-          <span className="flex-1" />
-          <button className="pill-btn">
+        {/* Main */}
+        <main className="flex-1 min-w-0 overflow-y-auto overflow-x-hidden bg-bg relative">
+          <div className="sticky top-0 z-40 bg-bg/70 backdrop-blur-[14px] border-b border-line px-5 py-2.5 flex items-center gap-3 flex-wrap">
+            <span className="text-[13px] text-ink-2 font-medium">
+              Workspace <span className="text-ink-4 mx-1.5">›</span>{' '}
+              <strong className="font-semibold text-ink">
+                {view === 'search' ? 'Nova busca' : view === 'leads' ? 'Leads salvos' : 'Workspace'}
+              </strong>
+            </span>
+            <span className="flex-1" />
+          <button className="pill-btn max-sm:hidden">
             <span
               style={{
                 width: 6,
@@ -488,15 +579,15 @@ export default function App() {
             />
             v0.1.0
           </button>
-          <button className="pill-btn" onClick={() => setShowSettings(true)}>
+          <button className="pill-btn max-sm:hidden" onClick={() => setShowSettings(true)}>
             ⚙ Preferências{configuredApiKeyCount ? ` · ${configuredApiKeyCount}` : ''}
           </button>
           <button className="pill-btn primary" onClick={() => setView('search')}>
             + Nova
           </button>
-        </div>
+          </div>
 
-        <div style={{ padding: '24px 22px 60px', maxWidth: 1240 }}>
+          <div className="px-5 pt-6 pb-16 max-w-[1240px] mx-auto max-sm:px-3">
           <div className="hero">
             <div>
               <h1>Bem-vindo de volta.</h1>
@@ -563,55 +654,55 @@ export default function App() {
             </div>
           )}
 
-          {view === 'leads' ? (
-            <SavedLeadsLibrary
-              client={client}
-              currentLeads={result?.leads ?? []}
-              currentKeywords={parseKeywords(form.titles)}
-              currentSearchRequest={buildPersistedSearchRequest(form)}
-              onFeedback={(kind, message) => setFeedback({ kind, message })}
-            />
-          ) : (
-          <div
-            style={{ display: 'grid', gridTemplateColumns: '360px 1fr', gap: 18, alignItems: 'flex-start' }}
-          >
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-              <SearchForm
-                form={form}
-                errors={errors}
-                rolePresets={taxonomies?.role_presets ?? []}
-                seniority={taxonomies?.seniority ?? []}
-                scrapeModes={taxonomies?.scrape_modes ?? []}
-                onChange={updateForm}
-                onFilterChange={updateFilters}
-                onRolePresetChange={handleRolePresetChange}
-                onScrapeModeChange={handleScrapeModeChange}
-                onSubmit={handleSubmit}
-                running={running}
+          <div key={view} className="animate-fade-in-up duration-300">
+            {view === 'leads' ? (
+              <SavedLeadsLibrary
+                client={client}
+                currentLeads={result?.leads ?? []}
+                currentKeywords={parseKeywords(form.titles)}
+                currentSearchRequest={buildPersistedSearchRequest(form)}
+                onFeedback={(kind, message) => setFeedback({ kind, message })}
               />
-              <FilterPanel
-                filters={form.filters}
-                functions={taxonomies?.functions ?? []}
-                onChange={updateFilters}
-              />
-            </div>
+            ) : (
+              <div className="grid grid-cols-1 xl:grid-cols-[360px_minmax(0,1fr)] gap-[18px] items-start">
+                <div className="flex flex-col gap-[18px]">
+                  <SearchForm
+                    form={form}
+                    errors={errors}
+                    rolePresets={taxonomies?.role_presets ?? []}
+                    seniority={taxonomies?.seniority ?? []}
+                    scrapeModes={taxonomies?.scrape_modes ?? []}
+                    onChange={updateForm}
+                    onFilterChange={updateFilters}
+                    onRolePresetChange={handleRolePresetChange}
+                    onScrapeModeChange={handleScrapeModeChange}
+                    onSubmit={handleSubmit}
+                    running={running}
+                  />
+                  <FilterPanel
+                    filters={form.filters}
+                    functions={taxonomies?.functions ?? []}
+                    onChange={updateFilters}
+                  />
+                </div>
 
-            <ResultsTable
-              leads={filteredLeads}
-              total={allLeads.length}
-              summary={result?.summary ?? null}
-              loading={running || revealing}
-              pendingLeadCount={pendingLeadCount}
-              query={tableQuery}
-              onQueryChange={setTableQuery}
-              filter={tableFilter}
-              onFilterChange={setTableFilter}
-              onSaveCurrent={saveCurrentSearch}
-              saveCurrentDisabled={!client || !result?.leads.length}
-              suggestedSaveName={form.companyName || 'Leads salvos'}
-            />
+                <ResultsTable
+                  leads={filteredLeads}
+                  total={allLeads.length}
+                  summary={result?.summary ?? null}
+                  loading={running || revealing}
+                  pendingLeadCount={pendingLeadCount}
+                  query={tableQuery}
+                  onQueryChange={setTableQuery}
+                  filter={tableFilter}
+                  onFilterChange={setTableFilter}
+                  onSaveCurrent={saveCurrentSearch}
+                  saveCurrentDisabled={!client || !result?.leads.length}
+                  suggestedSaveName={form.companyName || 'Leads salvos'}
+                />
+              </div>
+            )}
           </div>
-          )}
         </div>
 
         {smallCompanyProbe && (
@@ -687,8 +778,75 @@ export default function App() {
             onClose={() => setShowDiagnostics(false)}
           />
         )}
-      </main>
+        </main>
+      </div>
+      <EnrichmentBackground onActivity={pushLiveActivity} />
+      <LiveActivityBubbles items={liveActivities} />
     </div>
+    </EnrichmentRunnerProvider>
+  )
+}
+
+/**
+ * Inner component that consumes the runner context — kept inside the
+ * provider so the modal and the floating chip share the same single
+ * source of truth across the whole app, regardless of which view is
+ * mounted at the time.
+ */
+function EnrichmentBackground(props: {
+  onActivity(activity: Omit<LiveActivityItem, 'id'>): void
+}) {
+  const { onActivity } = props
+  const { run, modalOpen, cancel, closeModal, dismiss } = useEnrichmentRunner()
+  const lastLeadEventRef = useRef<string | null>(null)
+  const lastDomainCountRef = useRef(0)
+
+  useEffect(() => {
+    if (!run?.running || run.domainsDone <= 0) return
+    if (run.domainsDone === lastDomainCountRef.current) return
+    lastDomainCountRef.current = run.domainsDone
+    onActivity({
+      title: 'Site da empresa analisado',
+      detail: `${run.domainsDone}/${run.uniqueDomains || '…'} domínios verificados`,
+      tone: 'neutral'
+    })
+  }, [run?.running, run?.domainsDone, run?.uniqueDomains, onActivity])
+
+  useEffect(() => {
+    const latest = run?.recentLeads[0]
+    if (!latest) return
+    const key = `${run?.meta.startedAt ?? 0}:${latest.lead_ref ?? latest.person_name ?? ''}:${latest.status}:${latest.email ?? ''}`
+    if (lastLeadEventRef.current === key) return
+    lastLeadEventRef.current = key
+    onActivity(formatEnrichmentActivity(latest))
+  }, [run?.meta.startedAt, run?.recentLeads, onActivity])
+
+  return (
+    <>
+      <InternalEnrichProgress
+        open={Boolean(run) && modalOpen}
+        running={Boolean(run?.running)}
+        phase={run?.phase ?? null}
+        totalLeads={run?.totalLeads ?? 0}
+        completed={run?.completed ?? 0}
+        domainsDone={run?.domainsDone ?? 0}
+        uniqueDomains={run?.uniqueDomains ?? 0}
+        recentLeads={run?.recentLeads ?? []}
+        summary={run?.summary ?? null}
+        errorMessage={run?.errorMessage ?? null}
+        onCancel={cancel}
+        onClose={() => {
+          if (run?.running) {
+            // Closing during a run minimises to the chip; the work keeps
+            // going in the background.
+            closeModal()
+          } else {
+            dismiss()
+          }
+        }}
+      />
+      <EnrichmentRunPill />
+    </>
   )
 }
 
@@ -737,6 +895,40 @@ function explainEmptyResult(
     parts.push(`${zero.length} provider(s) retornaram 0 registros`)
   }
   return `Busca sem leads. ${parts.join(' · ') || 'Veja o painel de Diagnóstico para detalhes.'} Abra Diagnóstico ↗`
+}
+
+function formatLeadActivity(lead: Lead): string {
+  const name = lead.person_name || 'Lead sem nome'
+  const title = lead.title ? ` · ${lead.title}` : ''
+  return `${name}${title}`
+}
+
+function formatEnrichmentActivity(
+  event: InternalEnrichLeadEvent
+): Omit<LiveActivityItem, 'id'> {
+  const person = event.person_name || 'Lead sem nome'
+  if (event.email) {
+    return {
+      title: 'E-mail encontrado',
+      detail: `${person} · ${event.email}`,
+      tone: 'success'
+    }
+  }
+  const label: Record<InternalEnrichLeadEvent['status'], string> = {
+    enriched: 'E-mail encontrado',
+    skipped_existing_email: 'Lead já tinha e-mail',
+    failed_missing_domain: 'Sem domínio para validar',
+    failed: 'Sem e-mail válido',
+    no_change: 'Sem mudança'
+  }
+  return {
+    title: label[event.status] ?? 'Lead processado',
+    detail: person,
+    tone:
+      event.status === 'failed' || event.status === 'failed_missing_domain'
+        ? 'warning'
+        : 'neutral'
+  }
 }
 
 function loadApiKeys(): ApiKeyOverrides {

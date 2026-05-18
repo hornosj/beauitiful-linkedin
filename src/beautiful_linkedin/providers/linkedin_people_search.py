@@ -32,10 +32,18 @@ from bs4 import BeautifulSoup, Tag
 from beautiful_linkedin.cookie_resolver import resolve_linkedin_li_at_cookie
 from beautiful_linkedin.models import CompanyInput, Lead
 from beautiful_linkedin.processing.company_size import parse_company_size_from_html
-from beautiful_linkedin.processing.lead_extractor import match_target_title
+from beautiful_linkedin.processing.lead_extractor import (
+    NO_RELATED_KEYWORDS_NOTE,
+    match_target_title,
+)
 from beautiful_linkedin.processing.normalizer import normalize_text
 from beautiful_linkedin.processing.scorer import score_lead
+from beautiful_linkedin.processing.title_validator import validate_lead_titles
 from beautiful_linkedin.providers.lead_provider import LeadProvider
+from beautiful_linkedin.providers.linkedin_people_search_progress import (
+    PeopleScrapeProgress,
+    ProgressStore,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -114,9 +122,9 @@ class PeopleSearchOptions:
     # Approximate number of new cards rendered by each "Exibir mais resultados"
     # click. Used to derive how many clicks the load-more loop needs to satisfy
     # ``max_results``. LinkedIn renders 12 cards per page by default on the
-    # People tab; users see less depending on the viewport, so 10 is a safe
+    # People tab; users see less depending on the viewport, so 8 is a safe
     # middle ground.
-    cards_per_cycle: int = 10
+    cards_per_cycle: int = 8
     # Hard cap on derived iterations, irrespective of max_results. Prevents an
     # accidental max_results=500 from clicking the button 50 times in a row.
     max_scrolls_cap: int = 50
@@ -166,11 +174,13 @@ class LinkedInPeopleSearchProvider(LeadProvider):
         cookie_browser: str = "auto",
         fetcher: PeopleListFetcher | None = None,
         options: PeopleSearchOptions | None = None,
+        progress_store: ProgressStore | None = None,
     ) -> None:
         self.cookie = cookie
         self.cookie_browser = cookie_browser
         self.options = options or PeopleSearchOptions()
         self._fetcher = fetcher
+        self._progress_store = progress_store
 
     def _effective_scrolls(self, max_results: int) -> int:
         """How many load-more iterations the fetcher should run.
@@ -238,18 +248,188 @@ class LinkedInPeopleSearchProvider(LeadProvider):
                 )
                 return []
 
-        seen: set[str] = set()
-        leads: list[Lead] = []
         title_terms = [t for t in (company.titles or []) if t and t.strip()]
-
-        # One request per company: LinkedIn renders each comma-separated
-        # keyword as its own filter chip. This lets us click "Exibir mais
-        # resultados" against the union of all wanted roles instead of doing N
-        # separate paginations.
+        if include_uncertain and title_terms:
+            logger.warning(
+                "linkedin_people_search: include_uncertain=True — validador estrito "
+                "DESABILITADO para esta busca (%s). Você pode receber cargos não "
+                "relacionados a %s.",
+                company.company_name,
+                title_terms,
+            )
         url = build_people_search_url(slug, title_terms if title_terms else None)
         scrolls = self._effective_scrolls(max_results)
+
+        progress = self._restore_or_create_progress(slug, title_terms)
+        leads = self._drive_iterative_scrape(
+            company=company,
+            fetcher=fetcher,
+            url=url,
+            li_at=li_at,
+            max_clicks=scrolls,
+            max_results=max_results,
+            include_uncertain=include_uncertain,
+            title_terms=title_terms,
+            progress=progress,
+        )
+        self._persist_progress(slug, title_terms, progress)
+
+        logger.info(
+            "linkedin_people_search: %d cards vistos para %s, %d viraram leads "
+            "(rejeitados conhecidos: %d, cliques: %d).",
+            progress.cards_seen_total,
+            company.company_name,
+            len(leads),
+            len(progress.rejected_urls),
+            progress.clicks_performed,
+        )
+        if title_terms and not include_uncertain:
+            return leads
+        return leads[:max_results]
+
+    # ------------------------------------------------------------------
+    # Iterative drive: click → extract → validate → maybe click again
+    # ------------------------------------------------------------------
+
+    def _restore_or_create_progress(
+        self, slug: str, title_terms: list[str]
+    ) -> PeopleScrapeProgress:
+        if self._progress_store is None:
+            return PeopleScrapeProgress()
+        existing = self._progress_store.load(company_slug=slug, titles=title_terms)
+        if existing is None:
+            return PeopleScrapeProgress()
+        # We keep ``rejected_urls``/``accepted_urls`` from the last run so a
+        # re-fetch on the same query short-circuits the validator. We reset
+        # the per-run counters (``clicks_performed`` / ``cards_seen_total``)
+        # because the new browser session starts fresh.
+        existing.clicks_performed = 0
+        existing.cards_seen_total = 0
+        return existing
+
+    def _persist_progress(
+        self, slug: str, title_terms: list[str], progress: PeopleScrapeProgress
+    ) -> None:
+        if self._progress_store is None:
+            return
         try:
-            html = fetcher.fetch_listing(url, li_at=li_at, scrolls=scrolls)
+            self._progress_store.save(
+                company_slug=slug, titles=title_terms, progress=progress
+            )
+        except Exception as exc:  # pragma: no cover - cache best-effort
+            logger.warning("linkedin_people_search: falha ao persistir progresso: %s", exc)
+
+    def _drive_iterative_scrape(
+        self,
+        *,
+        company: CompanyInput,
+        fetcher: Any,
+        url: str,
+        li_at: str,
+        max_clicks: int,
+        max_results: int,
+        include_uncertain: bool,
+        title_terms: list[str],
+        progress: PeopleScrapeProgress,
+    ) -> list[Lead]:
+        requested_title_label = ", ".join(title_terms)
+        accepted_leads: list[Lead] = []
+        seen_urls: set[str] = set()
+        target_matched_count = 0
+
+        def handle_step(click_index: int, html: str) -> bool:
+            """Process the listing after ``click_index`` clicks have happened.
+
+            Returns True to ask the fetcher to keep clicking, False to stop.
+            """
+            nonlocal target_matched_count
+            if click_index > 0:
+                progress.note_click()
+
+            cards = extract_cards_from_html(html or "")
+            progress.cards_seen_total = max(progress.cards_seen_total, len(cards))
+
+            for position_zero, card in enumerate(cards):
+                if card.profile_url in seen_urls:
+                    continue
+                seen_urls.add(card.profile_url)
+
+                if card.profile_url in progress.accepted_urls:
+                    # Already accepted on a previous run — rebuild the lead so
+                    # the caller still gets it, but don't re-validate.
+                    lead = _card_to_lead(
+                        company, card, True, requested_title_label
+                    )
+                    if lead is not None:
+                        if (
+                            title_terms
+                            and not include_uncertain
+                            and not lead.matched_title
+                        ):
+                            _mark_without_related_keywords(lead)
+                        if _counts_toward_people_search_target(
+                            lead, title_terms, include_uncertain
+                        ):
+                            target_matched_count += 1
+                        _annotate_lead(lead, progress, card.profile_url, position_zero + 1)
+                        accepted_leads.append(lead)
+                        if target_matched_count >= max_results:
+                            return False
+                    continue
+
+                # We always pass include_uncertain=True to _card_to_lead so
+                # the soft (substring/fuzzy) matcher inside it does not drop
+                # leads before our strict validator gets a chance. The
+                # validator below uses the wider alias map and is the single
+                # source of truth for "does the title match the search?".
+                lead = _card_to_lead(
+                    company, card, True, requested_title_label
+                )
+                if lead is None:
+                    progress.record_rejection(card.profile_url)
+                    continue
+
+                # Strict post-extraction validation against requested titles.
+                # When the user did not provide titles (general search) we
+                # accept everything. When the user opted into
+                # ``include_uncertain``, we skip the validator entirely so
+                # the legacy behaviour is preserved.
+                if title_terms and not include_uncertain:
+                    outcome = validate_lead_titles(
+                        [lead], title_terms, strict=True
+                    )
+                    if not outcome.valid:
+                        _mark_without_related_keywords(lead)
+                    else:
+                        target_matched_count += 1
+                else:
+                    target_matched_count += 1
+
+                progress.record_acceptance(
+                    card.profile_url, position=position_zero + 1
+                )
+                _annotate_lead(lead, progress, card.profile_url, position_zero + 1)
+                accepted_leads.append(lead)
+                if target_matched_count >= max_results:
+                    return False  # tell fetcher to stop clicking
+
+            # Not enough valid leads yet — keep clicking.
+            return True
+
+        # Prefer the iterative fetcher API if the fetcher exposes it.
+        try:
+            if hasattr(fetcher, "fetch_listing_iterative"):
+                fetcher.fetch_listing_iterative(
+                    url,
+                    li_at=li_at,
+                    max_clicks=max_clicks,
+                    on_step=handle_step,
+                )
+            else:
+                # Legacy one-shot fallback: fetch with the derived click budget
+                # and run a single validation pass.
+                html = fetcher.fetch_listing(url, li_at=li_at, scrolls=max_clicks)
+                handle_step(0, html)
         except LinkedInAuthError as exc:
             logger.warning("linkedin_people_search: %s", exc)
             return []
@@ -263,25 +443,7 @@ class LinkedInPeopleSearchProvider(LeadProvider):
             )
             return []
 
-        requested_title_label = ", ".join(title_terms)
-        cards = extract_cards_from_html(html or "")
-        for card in cards:
-            if card.profile_url in seen:
-                continue
-            seen.add(card.profile_url)
-            lead = _card_to_lead(company, card, include_uncertain, requested_title_label)
-            if lead is not None:
-                leads.append(lead)
-            if len(leads) >= max_results:
-                break
-
-        logger.info(
-            "linkedin_people_search: %d cards únicos para %s, %d viraram leads.",
-            len(seen),
-            company.company_name,
-            len(leads),
-        )
-        return leads[:max_results]
+        return accepted_leads
 
 
 # ---------------------------------------------------------------------------
@@ -460,6 +622,24 @@ def _anchor_inner_text(anchor: Tag) -> str | None:
 # ---------------------------------------------------------------------------
 
 
+def _annotate_lead(
+    lead: Lead,
+    progress: PeopleScrapeProgress,
+    profile_url: str,
+    position: int,
+) -> None:
+    """Stamp ``lead.consultation_note`` with provenance: how many "Exibir
+    mais resultados" clicks had happened when this lead surfaced, and at
+    which 1-indexed position it appeared in the listing."""
+    clicks = progress.clicks_at_extraction(profile_url) or progress.clicks_performed
+    plural = "" if clicks == 1 else "s"
+    note = f"Extraído após {clicks} clique{plural}, posição {position}."
+    if lead.consultation_note and note not in lead.consultation_note:
+        lead.consultation_note = f"{lead.consultation_note} {note}".strip()
+    else:
+        lead.consultation_note = note
+
+
 def _card_to_lead(
     company: CompanyInput,
     card: PeopleCard,
@@ -495,6 +675,23 @@ def _card_to_lead(
     )
     lead.confidence_score = score_lead(lead)
     return lead
+
+
+def _mark_without_related_keywords(lead: Lead) -> None:
+    lead.validation_status = "maybe_incorrect"
+    lead.validation_note = NO_RELATED_KEYWORDS_NOTE
+    lead.matched_title = None
+    lead.confidence_score = score_lead(lead)
+
+
+def _counts_toward_people_search_target(
+    lead: Lead,
+    title_terms: list[str],
+    include_uncertain: bool,
+) -> bool:
+    if not title_terms or include_uncertain:
+        return True
+    return bool(lead.matched_title)
 
 
 # ---------------------------------------------------------------------------
@@ -629,6 +826,25 @@ class CDPPeopleFetcher:
         self._connect = connect
 
     def fetch_listing(self, url: str, *, li_at: str, scrolls: int) -> str:
+        return self._run(url, max_clicks=scrolls, on_step=None)
+
+    def fetch_listing_iterative(
+        self,
+        url: str,
+        *,
+        li_at: str,
+        max_clicks: int,
+        on_step: Callable[[int, str], bool],
+    ) -> str:
+        return self._run(url, max_clicks=max_clicks, on_step=on_step)
+
+    def _run(
+        self,
+        url: str,
+        *,
+        max_clicks: int,
+        on_step: Callable[[int, str], bool] | None,
+    ) -> str:
         connect = self._connect or self._default_connect
         try:
             browser = connect(self._endpoint)
@@ -662,7 +878,12 @@ class CDPPeopleFetcher:
                 )
 
             _human_delay(self._options)
-            _expand_results(page, self._options, max_iterations=max(0, scrolls))
+            _expand_results(
+                page,
+                self._options,
+                max_iterations=max(0, max_clicks),
+                on_step=on_step,
+            )
             return page.content()
         finally:
             try:
@@ -688,6 +909,26 @@ class _PlaywrightPeopleFetcher:
         self._options = options
 
     def fetch_listing(self, url: str, *, li_at: str, scrolls: int) -> str:
+        return self._run(url, li_at=li_at, max_clicks=scrolls, on_step=None)
+
+    def fetch_listing_iterative(
+        self,
+        url: str,
+        *,
+        li_at: str,
+        max_clicks: int,
+        on_step: Callable[[int, str], bool],
+    ) -> str:
+        return self._run(url, li_at=li_at, max_clicks=max_clicks, on_step=on_step)
+
+    def _run(
+        self,
+        url: str,
+        *,
+        li_at: str,
+        max_clicks: int,
+        on_step: Callable[[int, str], bool] | None,
+    ) -> str:
         from playwright.sync_api import sync_playwright
 
         opts = self._options
@@ -729,7 +970,12 @@ class _PlaywrightPeopleFetcher:
                         "li_at provavelmente expirou."
                     )
                 _human_delay(opts)
-                _expand_results(page, opts, max_iterations=max(0, scrolls))
+                _expand_results(
+                    page,
+                    opts,
+                    max_iterations=max(0, max_clicks),
+                    on_step=on_step,
+                )
                 return page.content()
             finally:
                 browser.close()
@@ -786,8 +1032,20 @@ _CARD_COUNT_SELECTOR = (
 )
 
 
-def _expand_results(page: Any, opts: PeopleSearchOptions, *, max_iterations: int) -> None:
+def _expand_results(
+    page: Any,
+    opts: PeopleSearchOptions,
+    *,
+    max_iterations: int,
+    on_step: Callable[[int, str], bool] | None = None,
+) -> None:
     """Click 'Exibir mais resultados' (or scroll) until the list stops growing.
+
+    When ``on_step`` is provided, it is invoked after each successful click
+    (and once at the start, before any click) with ``(clicks_done, html)``.
+    Returning ``False`` from the callback stops the loop early — this is how
+    the provider drives the iterative validation cycle without re-launching
+    the browser.
 
     Behaviour is intentionally noisy on the timing axis: we hover before
     clicking, randomize wait windows between actions, and occasionally scroll
@@ -796,9 +1054,20 @@ def _expand_results(page: Any, opts: PeopleSearchOptions, *, max_iterations: int
     """
     import random
 
+    # Initial step (before any click) — let the caller inspect the first
+    # render and bail early if it already has what it needs.
+    if on_step is not None:
+        try:
+            initial_html = page.content() or ""
+        except Exception:
+            initial_html = ""
+        if not on_step(0, initial_html):
+            return
+
     if max_iterations <= 0:
         return
 
+    clicks_done = 0
     consecutive_no_growth = 0
     for _ in range(max_iterations):
         before = _count_cards(page)
@@ -859,6 +1128,14 @@ def _expand_results(page: Any, opts: PeopleSearchOptions, *, max_iterations: int
                 break
         else:
             consecutive_no_growth = 0
+        clicks_done += 1
+        if on_step is not None:
+            try:
+                snapshot = page.content() or ""
+            except Exception:
+                snapshot = ""
+            if not on_step(clicks_done, snapshot):
+                return
 
 
 def _find_load_more_button(page: Any) -> Any | None:

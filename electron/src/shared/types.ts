@@ -101,6 +101,33 @@ export interface Lead {
   confidence_score: number
   previously_consulted_at?: string | null
   consultation_note?: string | null
+  enrichment_source?: string | null
+  enrichment_status?: string | null
+  enrichment_confidence?: number | null
+  email_type?: string | null
+  email_validation_status?: string | null
+  enriched_at?: string | null
+  /**
+   * Sources that confirmed the primary `email` independently.
+   * Length >= 2 ⇒ the UI shows a "Verificado" badge — at least two
+   * different layers (internal + Apollo, internal + Lusha, etc.)
+   * landed on the same address.
+   */
+  email_verified_by?: string[]
+  /**
+   * E-mails that other providers proposed but disagreed with the
+   * primary. Kept so the user can audit "Apollo sugeriu X" without
+   * losing the trail. Each entry is the contract used by the backend
+   * in storage/saved_leads.py::_merge_email_verification.
+   */
+  email_alternatives?: EmailAlternative[]
+}
+
+export interface EmailAlternative {
+  email: string
+  source: string
+  confidence?: number | null
+  found_at?: string | null
 }
 
 export interface ProspectingSummary {
@@ -299,12 +326,154 @@ export interface ExperimentalSearchResponse {
 }
 
 export type EnrichmentFields = 'email' | 'phone' | 'both'
-export type EnrichmentProvider = 'apollo' | 'lusha' | 'snovio'
+export type EnrichmentProvider = 'apollo' | 'lusha' | 'snovio' | 'pdl'
+
+export interface EnrichmentPricingItem {
+  provider: string
+  brl_per_credit: number
+  source: 'default' | 'env_override' | string
+  env_var: string
+}
+
+export interface EnrichmentPricingResponse {
+  items: EnrichmentPricingItem[]
+  currency: string
+  note: string
+}
+
+export interface InternalEnrichRequest {
+  lead_refs?: string[]
+  fields: 'email'
+  confirmed: boolean
+  company_domain?: string | null
+}
+
+export interface InternalEnrichSummary {
+  requested_leads: number
+  enriched_leads: number
+  skipped_existing_email: number
+  failed_missing_domain: number
+  no_change: number
+}
+
+export interface InternalEnrichResponse {
+  status: 'completed'
+  summary: InternalEnrichSummary
+  table?: SavedLeadTable
+  leads: Lead[]
+}
+
+/**
+ * Streaming protocol for the SSE variant of internal enrichment.
+ *
+ * Phases run in order: ``discovering`` (crt.sh + SPF/DMARC + ccTLD
+ * variants), ``harvesting`` (per-domain HTTP), ``validating`` (per-lead
+ * MX/SMTP), and ``completed``. Per-lead events arrive during the
+ * validating phase; per-company ``discovery`` events arrive during the
+ * discovering phase; ``done`` carries the full summary + refreshed
+ * table so the UI doesn't need a follow-up GET.
+ */
+export type InternalEnrichPhase =
+  | 'discovering'
+  | 'harvesting'
+  | 'validating'
+  | 'completed'
+  | 'cancelled'
+
+export type InternalEnrichLeadStatus =
+  | 'enriched'
+  | 'skipped_existing_email'
+  | 'failed_missing_domain'
+  | 'failed'
+  | 'no_change'
+
+export interface InternalEnrichStartEvent {
+  type: 'start'
+  total: number
+  unique_domains: number
+}
+
+export interface InternalEnrichPhaseEvent {
+  type: 'phase'
+  phase: InternalEnrichPhase
+}
+
+export interface InternalEnrichDomainEvent {
+  type: 'domain'
+  domain: string
+  harvested: number
+  pattern: string | null
+}
+
+export interface InternalEnrichDiscoveryEvent {
+  type: 'discovery'
+  /** Display name of the company whose seed was probed. */
+  company: string
+  /** The strongest seed domain used to probe crt.sh/SPF/DMARC. */
+  seed: string
+  /** Count of new domains accepted by the MX gate. */
+  discovered: number
+  /** Each accepted new domain, ranked by source order. */
+  domains: string[]
+  /** Per-source breakdown so we can credit `crt_sh`, `spf_dmarc`, `cctld`. */
+  sources: Record<string, string[]>
+}
+
+export interface InternalEnrichLeadEvent {
+  type: 'lead'
+  lead_ref: string | null
+  person_name: string | null
+  company_name: string | null
+  status: InternalEnrichLeadStatus
+  email: string | null
+  confidence: number
+  /**
+   * Domain whose candidate eventually validated, or `null` when the
+   * orchestrator gave up. Always one of `tested_domains` when set.
+   */
+  chosen_domain?: string | null
+  /**
+   * Full ordered list of domains the orchestrator attempted before
+   * settling on `chosen_domain` (or failing). Useful to show the user
+   * which fallbacks were tried — e.g. `["acme.com", "acme.io"]` when
+   * the lead's column had `acme.com` but only `acme.io` validated.
+   */
+  tested_domains?: string[]
+}
+
+export interface InternalEnrichProgressEvent {
+  type: 'progress'
+  completed: number
+  total: number
+}
+
+export interface InternalEnrichStreamDoneEvent {
+  type: 'done'
+  summary: InternalEnrichSummary
+  table: SavedLeadTable
+  leads: Lead[]
+}
+
+export interface InternalEnrichStreamErrorEvent {
+  type: 'error'
+  message: string
+}
+
+export type InternalEnrichStreamEvent =
+  | InternalEnrichStartEvent
+  | InternalEnrichPhaseEvent
+  | InternalEnrichDiscoveryEvent
+  | InternalEnrichDomainEvent
+  | InternalEnrichLeadEvent
+  | InternalEnrichProgressEvent
+  | InternalEnrichStreamDoneEvent
+  | InternalEnrichStreamErrorEvent
 
 export interface EnrichLeadTableRequest {
   lead_refs: string[]
   fields: EnrichmentFields
   providers: EnrichmentProvider[]
+  /** @deprecated Servidor ignora — pricing vem de GET /enrichment/pricing. */
   credit_costs_brl?: Record<string, number>
   confirmed?: boolean
   apollo_webhook_url?: string | null
@@ -333,6 +502,18 @@ export interface EnrichmentSummary {
   updated_leads: number
   providers_used: string[]
   errors: string[]
+  provider_logs: EnrichmentProviderRunLog[]
+}
+
+export interface EnrichmentProviderRunLog {
+  provider: string
+  requested_leads: number
+  matched_leads: number
+  updated_leads: number
+  estimated_credits: number
+  estimated_brl: number
+  status: 'updated' | 'no_data' | 'error' | 'skipped' | string
+  message: string
 }
 
 export interface EnrichLeadTableResponse {

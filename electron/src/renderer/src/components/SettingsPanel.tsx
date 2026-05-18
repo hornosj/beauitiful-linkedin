@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { ApiKeyOverrides, CookieDiagnosticResponse } from '../../../shared/types'
 import { ApiClient } from '../../../shared/api'
 
@@ -154,9 +154,20 @@ export default function SettingsPanel(props: Props) {
     }
   }
 
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') props.onClose()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [props])
+
   return (
     <div
       className="sheet-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="settings-title"
       onClick={(e) => {
         if (e.target === e.currentTarget) props.onClose()
       }}
@@ -164,19 +175,21 @@ export default function SettingsPanel(props: Props) {
       <div className="sheet">
         <aside className="sheet-side">
           <div className="sheet-head-row">
-            <h2>Preferências</h2>
-            <button type="button" className="sheet-close" onClick={props.onClose}>
+            <h2 id="settings-title">Preferências</h2>
+            <button type="button" className="sheet-close" onClick={props.onClose} aria-label="Fechar preferências" autoFocus>
               ✕
             </button>
           </div>
           {TABS.map((t) => (
-            <div
+            <button
+              type="button"
               key={t.id}
               className={`nav-item ${tab === t.id ? 'active' : ''}`}
+              aria-pressed={tab === t.id}
               onClick={() => setTab(t.id)}
             >
               <span className="ico">{t.ico}</span> {t.lbl}
-            </div>
+            </button>
           ))}
         </aside>
 
@@ -196,6 +209,8 @@ export default function SettingsPanel(props: Props) {
                   <button
                     type="button"
                     className={`toggle ${props.theme === 'dark' ? 'on' : ''}`}
+                    aria-label="Alternar modo escuro"
+                    aria-pressed={props.theme === 'dark'}
                     onClick={() => props.setTheme(props.theme === 'dark' ? 'light' : 'dark')}
                   />
                 </div>
@@ -206,9 +221,10 @@ export default function SettingsPanel(props: Props) {
                   </div>
                   <div style={{ display: 'flex', gap: 6 }}>
                     {['#007aff', '#5856d6', '#34c759', '#ff9500', '#ff3b30'].map((c, i) => (
-                      <div
+                      <button
+                        type="button"
                         key={i}
-                        title={c}
+                        aria-label={`Selecionar cor ${c}`}
                         style={{
                           width: 18,
                           height: 18,
@@ -581,13 +597,13 @@ export default function SettingsPanel(props: Props) {
                     <div className="t">Encoding</div>
                     <div className="s">UTF-8 com BOM para Excel.</div>
                   </div>
-                  <button type="button" className="toggle on" />
+                  <button type="button" className="toggle on" aria-label="UTF-8 com BOM ativado" aria-pressed="true" />
                 </div>
                 <div className="row">
                   <div className="label">
                     <div className="t">Abrir após exportar</div>
                   </div>
-                  <button type="button" className="toggle on" />
+                  <button type="button" className="toggle on" aria-label="Abrir após exportar ativado" aria-pressed="true" />
                 </div>
               </div>
             </>
