@@ -17,7 +17,8 @@ from beautiful_linkedin.models import Lead
 logger = logging.getLogger(__name__)
 
 EnrichmentField = Literal["email", "phone", "both"]
-EnrichmentProviderName = Literal["apollo", "lusha", "snovio"]
+EnrichmentProviderName = Literal["apollo", "lusha", "snovio", "pdl"]
+_VALID_PROVIDERS = {"apollo", "lusha", "snovio", "pdl"}
 
 
 @dataclass(frozen=True)
@@ -71,6 +72,19 @@ class EnrichmentRunSummary:
     updated_leads: int
     providers_used: list[str]
     errors: list[str] = field(default_factory=list)
+    provider_logs: list["ProviderRunLog"] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ProviderRunLog:
+    provider: str
+    requested_leads: int
+    matched_leads: int
+    updated_leads: int
+    estimated_credits: int
+    estimated_brl: float
+    status: Literal["updated", "no_data", "error", "skipped"]
+    message: str
 
 
 def estimate_enrichment_cost(
@@ -127,9 +141,9 @@ def merge_enrichment_update(lead: Lead, update: EnrichmentUpdate) -> Lead:
 def _normalized_providers(providers: list[str]) -> list[str]:
     cleaned: list[str] = []
     seen: set[str] = set()
-    for provider in providers or ["apollo", "lusha", "snovio"]:
+    for provider in providers or list(_VALID_PROVIDERS):
         name = provider.strip().lower()
-        if name not in {"apollo", "lusha", "snovio"}:
+        if name not in _VALID_PROVIDERS:
             continue
         if name in seen:
             continue
@@ -161,6 +175,7 @@ class ApolloEnrichmentProvider:
         self.api_key = api_key
         self.timeout_seconds = timeout_seconds
         self.transport = transport
+        self.errors: list[str] = []
 
     def enrich(
         self, leads: list[Lead], options: EnrichmentOptions
@@ -170,6 +185,7 @@ class ApolloEnrichmentProvider:
                 "Apollo exige apollo_webhook_url HTTPS para enriquecimento de telefone."
             )
 
+        self.errors = []
         updates: list[EnrichmentUpdate] = []
         headers = {
             "accept": "application/json",
@@ -187,6 +203,7 @@ class ApolloEnrichmentProvider:
                     provider="Apollo Enrichment",
                     params=params,
                     json=None,
+                    errors=self.errors,
                 )
                 if not data:
                     continue
@@ -202,10 +219,22 @@ class ApolloEnrichmentProvider:
                             raw=data,
                         )
                     )
+        # Apollo returns the same error message for every lead when the API
+        # key lacks the /people/match scope. Dedupe so the UI shows it once.
+        self.errors = list(dict.fromkeys(self.errors))
         return updates
 
 
 class LushaEnrichmentProvider:
+    """Lusha Contact Enrichment v2 (batch).
+
+    A API ``/v2/person`` é batch: aceita ``contacts: [...]`` (1..100)
+    e ``metadata.filterBy`` ∈ {"emailAddresses", "phoneNumbers"} — esse
+    filtro define qual tipo de dado deve estar presente no resultado,
+    não como casar o input. Para enriquecer e-mail E telefone fazemos
+    duas chamadas (uma por filtro) porque a API não aceita ambos.
+    """
+
     name = "lusha"
     endpoint = "https://api.lusha.com/v2/person"
 
@@ -219,41 +248,63 @@ class LushaEnrichmentProvider:
         self.api_key = api_key
         self.timeout_seconds = timeout_seconds
         self.transport = transport
+        self.errors: list[str] = []
 
     def enrich(
         self, leads: list[Lead], options: EnrichmentOptions
     ) -> list[EnrichmentUpdate]:
-        updates: list[EnrichmentUpdate] = []
+        self.errors = []
+        if not leads:
+            return []
+
+        wanted_filters: list[str] = []
+        if options.wants_email:
+            wanted_filters.append("emailAddresses")
+        if options.wants_phone:
+            wanted_filters.append("phoneNumbers")
+        if not wanted_filters:
+            return []
+
         headers = {
             "accept": "application/json",
             "Content-Type": "application/json",
             "api_key": self.api_key,
         }
+        # contactId -> {"email": ..., "phone": ..., "raw": {...}}
+        per_contact: dict[str, dict[str, Any]] = {}
+
         with httpx.Client(
             timeout=self.timeout_seconds, transport=self.transport, headers=headers
         ) as client:
-            for lead in leads:
-                payload = _lusha_payload(lead, options)
+            for filter_by in wanted_filters:
+                payload = _lusha_batch_payload(leads, filter_by)
                 data = _safe_post_json(
                     client,
                     self.endpoint,
                     provider="Lusha Enrichment",
                     json=payload,
+                    errors=self.errors,
                 )
-                if not data:
-                    continue
-                email = _first_email(data)
-                phone = _first_phone(data)
-                if email or phone:
-                    updates.append(
-                        EnrichmentUpdate(
-                            lead=lead,
-                            provider=self.name,
-                            email=email,
-                            phone=phone,
-                            raw=data,
-                        )
+                _merge_lusha_response(per_contact, data, filter_by)
+        self.errors = list(dict.fromkeys(self.errors))
+
+        updates: list[EnrichmentUpdate] = []
+        for index, lead in enumerate(leads):
+            entry = per_contact.get(str(index))
+            if not entry:
+                continue
+            email = entry.get("email") if options.wants_email else None
+            phone = entry.get("phone") if options.wants_phone else None
+            if email or phone:
+                updates.append(
+                    EnrichmentUpdate(
+                        lead=lead,
+                        provider=self.name,
+                        email=email,
+                        phone=phone,
+                        raw=entry.get("raw") or {},
                     )
+                )
         return updates
 
 
@@ -279,10 +330,12 @@ class SnovioEnrichmentProvider:
         self.transport = transport
         self.poll_attempts = poll_attempts
         self.poll_sleep = poll_sleep
+        self.errors: list[str] = []
 
     def enrich(
         self, leads: list[Lead], options: EnrichmentOptions
     ) -> list[EnrichmentUpdate]:
+        self.errors = []
         if not options.wants_email:
             return []
 
@@ -290,6 +343,7 @@ class SnovioEnrichmentProvider:
         with httpx.Client(timeout=self.timeout_seconds, transport=self.transport) as client:
             token = self._access_token(client)
             if not token:
+                self.errors = list(dict.fromkeys(self.errors))
                 return []
             headers = {"authorization": f"Bearer {token}"}
             for lead in leads:
@@ -301,6 +355,7 @@ class SnovioEnrichmentProvider:
                     provider="Snovio Enrichment",
                     data=_snovio_start_payload(lead),
                     headers=headers,
+                    errors=self.errors,
                 )
                 task_hash = _dig(started, "data", "task_hash")
                 if not isinstance(task_hash, str) or not task_hash.strip():
@@ -316,6 +371,7 @@ class SnovioEnrichmentProvider:
                             raw=result,
                         )
                     )
+        self.errors = list(dict.fromkeys(self.errors))
         return updates
 
     def _access_token(self, client: httpx.Client) -> str | None:
@@ -328,6 +384,7 @@ class SnovioEnrichmentProvider:
                 "client_id": self.client_id,
                 "client_secret": self.client_secret,
             },
+            errors=self.errors,
         )
         token = data.get("access_token") if isinstance(data, dict) else None
         return token.strip() if isinstance(token, str) and token.strip() else None
@@ -343,6 +400,7 @@ class SnovioEnrichmentProvider:
                 provider="Snovio Enrichment",
                 params={"task_hash": task_hash},
                 headers=headers,
+                errors=self.errors,
             )
             if isinstance(data, dict):
                 result = data
@@ -351,6 +409,141 @@ class SnovioEnrichmentProvider:
             if attempt < self.poll_attempts - 1:
                 self.poll_sleep(1.0)
         return result
+
+
+class PdlEnrichmentProvider:
+    """People Data Labs Person Enrichment API (v5).
+
+    Endpoint ``GET /v5/person/enrich`` (também aceita POST). Cobra 1
+    crédito por match bem-sucedido (``status == 200``). Quando não acha,
+    retorna ``status == 404`` e não cobra. Auth via header ``X-Api-Key``.
+    Retorna e-mail e telefone na mesma chamada quando disponíveis.
+    """
+
+    name = "pdl"
+    endpoint = "https://api.peopledatalabs.com/v5/person/enrich"
+
+    def __init__(
+        self,
+        api_key: str,
+        *,
+        timeout_seconds: float = 20.0,
+        transport: httpx.BaseTransport | None = None,
+        min_likelihood: int = 6,
+    ) -> None:
+        self.api_key = api_key
+        self.timeout_seconds = timeout_seconds
+        self.transport = transport
+        self.min_likelihood = min_likelihood
+        self.errors: list[str] = []
+
+    def enrich(
+        self, leads: list[Lead], options: EnrichmentOptions
+    ) -> list[EnrichmentUpdate]:
+        self.errors = []
+        if not leads or (not options.wants_email and not options.wants_phone):
+            return []
+
+        updates: list[EnrichmentUpdate] = []
+        headers = {
+            "accept": "application/json",
+            "X-Api-Key": self.api_key,
+        }
+        with httpx.Client(
+            timeout=self.timeout_seconds, transport=self.transport, headers=headers
+        ) as client:
+            for lead in leads:
+                params = _pdl_params(lead, self.min_likelihood)
+                if not params:
+                    continue
+                data = _safe_get_json(
+                    client,
+                    self.endpoint,
+                    provider="PDL Enrichment",
+                    params=params,
+                    errors=self.errors,
+                )
+                if not data or data.get("status") != 200:
+                    continue
+                person = data.get("data")
+                if not isinstance(person, dict):
+                    continue
+                email = _pdl_pick_email(person) if options.wants_email else None
+                phone = _pdl_pick_phone(person) if options.wants_phone else None
+                if email or phone:
+                    updates.append(
+                        EnrichmentUpdate(
+                            lead=lead,
+                            provider=self.name,
+                            email=email,
+                            phone=phone,
+                            raw=data,
+                        )
+                    )
+        self.errors = list(dict.fromkeys(self.errors))
+        return updates
+
+
+def _pdl_params(lead: Lead, min_likelihood: int) -> dict[str, Any]:
+    """Build PDL v5 person/enrich query params.
+
+    PDL needs at least one strong identifier (profile/email/pdl_id) OR
+    name+company to consider the match valid. We return an empty dict
+    when none is available so the lead is skipped (no credit burned).
+    """
+    params: dict[str, Any] = {"min_likelihood": min_likelihood, "pretty": "false"}
+    has_anchor = False
+    if lead.linkedin_url:
+        params["profile"] = lead.linkedin_url
+        has_anchor = True
+    if lead.email:
+        params["email"] = lead.email
+        has_anchor = True
+    if lead.person_name:
+        params["name"] = lead.person_name
+    if lead.company_name:
+        params["company"] = lead.company_name
+    if lead.company_domain:
+        # PDL accepts comma-separated; passing one is fine.
+        params["company"] = params.get("company") or lead.company_domain
+    if not has_anchor and not (lead.person_name and (lead.company_name or lead.company_domain)):
+        return {}
+    return params
+
+
+def _pdl_pick_email(person: dict[str, Any]) -> str | None:
+    work_email = person.get("work_email")
+    if isinstance(work_email, str) and "@" in work_email:
+        return work_email.strip()
+    for key in ("emails", "personal_emails", "recommended_personal_email"):
+        value = person.get(key)
+        if isinstance(value, str) and "@" in value:
+            return value.strip()
+        if isinstance(value, list):
+            for entry in value:
+                if isinstance(entry, str) and "@" in entry:
+                    return entry.strip()
+                if isinstance(entry, dict):
+                    candidate = entry.get("address") or entry.get("email")
+                    if isinstance(candidate, str) and "@" in candidate:
+                        return candidate.strip()
+    return None
+
+
+def _pdl_pick_phone(person: dict[str, Any]) -> str | None:
+    mobile = person.get("mobile_phone")
+    if isinstance(mobile, str) and any(ch.isdigit() for ch in mobile):
+        return mobile.strip()
+    phones = person.get("phone_numbers")
+    if isinstance(phones, list):
+        for entry in phones:
+            if isinstance(entry, str) and any(ch.isdigit() for ch in entry):
+                return entry.strip()
+            if isinstance(entry, dict):
+                candidate = entry.get("number") or entry.get("phone")
+                if isinstance(candidate, str) and any(ch.isdigit() for ch in candidate):
+                    return candidate.strip()
+    return None
 
 
 def _apollo_params(lead: Lead, options: EnrichmentOptions) -> dict[str, Any]:
@@ -373,30 +566,58 @@ def _apollo_params(lead: Lead, options: EnrichmentOptions) -> dict[str, Any]:
     return params
 
 
-def _lusha_payload(lead: Lead, options: EnrichmentOptions) -> dict[str, Any]:
-    contact: dict[str, Any] = {}
-    filter_by = "nameAndCompany"
-    if lead.linkedin_url:
-        contact["linkedinUrl"] = lead.linkedin_url
-        filter_by = "linkedinUrl"
-    elif lead.email:
-        contact["email"] = lead.email
-        filter_by = "email"
-    else:
-        contact["fullName"] = lead.person_name or ""
-        contact["companyName"] = lead.company_name
-        if lead.company_domain:
-            contact["companyDomain"] = lead.company_domain
-
-    payload: dict[str, Any] = {
+def _lusha_batch_payload(leads: list[Lead], filter_by: str) -> dict[str, Any]:
+    contacts: list[dict[str, Any]] = []
+    for index, lead in enumerate(leads):
+        contact: dict[str, Any] = {"contactId": str(index)}
+        if lead.linkedin_url:
+            contact["linkedinUrl"] = lead.linkedin_url
+        if lead.person_name:
+            contact["fullName"] = lead.person_name
+        if lead.company_name or lead.company_domain:
+            company: dict[str, Any] = {"isCurrent": True}
+            if lead.company_name:
+                company["name"] = lead.company_name
+            if lead.company_domain:
+                company["domain"] = lead.company_domain
+            contact["companies"] = [company]
+        if lead.email and not lead.linkedin_url:
+            # only fall back to email when we have no LinkedIn URL to anchor by
+            contact["email"] = lead.email
+        contacts.append(contact)
+    return {
+        "contacts": contacts,
         "metadata": {"filterBy": filter_by},
-        "contact": contact,
     }
-    if options.wants_email:
-        payload["revealEmails"] = True
-    if options.wants_phone:
-        payload["revealPhones"] = True
-    return payload
+
+
+def _merge_lusha_response(
+    per_contact: dict[str, dict[str, Any]],
+    response: dict[str, Any],
+    filter_by: str,
+) -> None:
+    contacts_block = response.get("contacts")
+    if not isinstance(contacts_block, dict):
+        return
+    for contact_id, entry in contacts_block.items():
+        if not isinstance(entry, dict):
+            continue
+        bucket = per_contact.setdefault(str(contact_id), {"raw": {}})
+        # Keep last raw response for debugging; merge if there were two calls.
+        raw_bucket = bucket.setdefault("raw", {})
+        if isinstance(raw_bucket, dict):
+            raw_bucket[filter_by] = entry
+        data = entry.get("data") if isinstance(entry, dict) else None
+        if not isinstance(data, dict):
+            continue
+        if filter_by == "emailAddresses":
+            email = _first_email(data.get("emailAddresses")) or _first_email(data)
+            if email and not bucket.get("email"):
+                bucket["email"] = email
+        elif filter_by == "phoneNumbers":
+            phone = _first_phone(data.get("phoneNumbers")) or _first_phone(data)
+            if phone and not bucket.get("phone"):
+                bucket["phone"] = phone
 
 
 def _snovio_start_payload(lead: Lead) -> dict[str, str]:
@@ -426,6 +647,7 @@ def _safe_post_json(
     json: dict[str, Any] | None = None,
     data: dict[str, Any] | None = None,
     headers: dict[str, str] | None = None,
+    errors: list[str] | None = None,
 ) -> dict[str, Any]:
     try:
         response = client.post(endpoint, params=params, json=json, data=data, headers=headers)
@@ -433,14 +655,41 @@ def _safe_post_json(
         parsed = response.json()
     except httpx.HTTPStatusError as exc:
         log_http_error(logger, provider=provider, error=exc, context=endpoint)
+        if errors is not None:
+            errors.append(_summarize_http_error(exc))
         return {}
     except (httpx.TransportError, ValueError) as exc:
         log_transport_error(logger, provider=provider, error=exc, endpoint=endpoint)
+        if errors is not None:
+            errors.append(f"{type(exc).__name__}: {exc}")
         return {}
     except Exception as exc:  # pragma: no cover - defensive boundary
         log_unexpected_error(logger, provider=provider, error=exc, context=endpoint)
+        if errors is not None:
+            errors.append(f"{type(exc).__name__}: {exc}")
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _summarize_http_error(exc: httpx.HTTPStatusError) -> str:
+    """Compact human-readable summary of an HTTP error for UI display."""
+    status = exc.response.status_code
+    body = (exc.response.text or "").strip()
+    snippet = body[:240]
+    # Try to extract Apollo-style {"error": "...", "error_code": "..."}.
+    try:
+        parsed = exc.response.json()
+        if isinstance(parsed, dict):
+            for key in ("error", "message", "detail"):
+                if isinstance(parsed.get(key), str):
+                    snippet = parsed[key][:240]
+                    break
+            code = parsed.get("error_code")
+            if isinstance(code, str):
+                snippet = f"{snippet} ({code})"
+    except (ValueError, AttributeError):
+        pass
+    return f"HTTP {status}: {snippet}".strip()
 
 
 def _safe_get_json(
@@ -450,6 +699,7 @@ def _safe_get_json(
     provider: str,
     params: dict[str, Any] | None = None,
     headers: dict[str, str] | None = None,
+    errors: list[str] | None = None,
 ) -> dict[str, Any]:
     try:
         response = client.get(endpoint, params=params, headers=headers)
@@ -457,12 +707,18 @@ def _safe_get_json(
         parsed = response.json()
     except httpx.HTTPStatusError as exc:
         log_http_error(logger, provider=provider, error=exc, context=endpoint)
+        if errors is not None:
+            errors.append(_summarize_http_error(exc))
         return {}
     except (httpx.TransportError, ValueError) as exc:
         log_transport_error(logger, provider=provider, error=exc, endpoint=endpoint)
+        if errors is not None:
+            errors.append(f"{type(exc).__name__}: {exc}")
         return {}
     except Exception as exc:  # pragma: no cover - defensive boundary
         log_unexpected_error(logger, provider=provider, error=exc, context=endpoint)
+        if errors is not None:
+            errors.append(f"{type(exc).__name__}: {exc}")
         return {}
     return parsed if isinstance(parsed, dict) else {}
 

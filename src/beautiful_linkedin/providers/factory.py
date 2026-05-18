@@ -17,6 +17,9 @@ from beautiful_linkedin.providers.linkedin_people_search import (
     LinkedInPeopleSearchProvider,
     PeopleSearchOptions,
 )
+from beautiful_linkedin.providers.linkedin_people_search_progress import (
+    ProgressStore,
+)
 from beautiful_linkedin.providers.linkedin_playwright import (
     LinkedInPlaywrightProvider,
     PlaywrightCollectorOptions,
@@ -153,6 +156,7 @@ def build_lead_providers(
                         cdp_enabled=settings.linkedin_cdp_enabled,
                         cards_per_cycle=settings.linkedin_cards_per_cycle,
                     ),
+                    progress_store=ProgressStore(cache) if cache is not None else None,
                 )
             )
         elif name in {

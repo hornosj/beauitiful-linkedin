@@ -1,161 +1,212 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1120" viewBox="0 0 1600 1120" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1280" viewBox="0 0 1800 1280" role="img" aria-labelledby="title desc">
   <title id="title">Beautiful LinkedIn - Arquitetura do Projeto</title>
-  <desc id="desc">Diagrama em camadas da CLI Python, sidecar FastAPI, app Electron React, orquestrador de prospeccao, providers externos, processamento e saidas.</desc>
+  <desc id="desc">Diagrama de arquitetura mostrando interfaces Electron e CLI, sidecar FastAPI, pipeline Python, providers externos, processamento, persistencia e saidas.</desc>
   <defs>
     <style>
-      .bg { fill: #f7f9fc; }
-      .panel { fill: #ffffff; stroke: #c9d3e6; stroke-width: 2; }
-      .panel-title { font: 700 22px Arial, sans-serif; fill: #1d2738; }
-      .title { font: 700 34px Arial, sans-serif; fill: #111827; }
-      .subtitle { font: 400 16px Arial, sans-serif; fill: #536174; }
-      .box { fill: #ffffff; stroke: #7e8da8; stroke-width: 2; rx: 12; }
-      .box-blue { fill: #e9f3ff; stroke: #3b82f6; }
-      .box-green { fill: #eaf8ef; stroke: #22a06b; }
-      .box-orange { fill: #fff3df; stroke: #f59e0b; }
-      .box-purple { fill: #f2edff; stroke: #8b5cf6; }
-      .box-red { fill: #fff0f0; stroke: #ef4444; }
-      .box-gray { fill: #f1f5f9; stroke: #64748b; }
-      .label { font: 700 16px Arial, sans-serif; fill: #172033; }
-      .small { font: 400 13px Arial, sans-serif; fill: #344154; }
-      .tiny { font: 400 12px Arial, sans-serif; fill: #526070; }
-      .mono { font: 400 12px Consolas, monospace; fill: #334155; }
-      .arrow { stroke: #42526b; stroke-width: 2.4; fill: none; marker-end: url(#arrowhead); }
-      .arrow-soft { stroke: #7c8798; stroke-width: 2; fill: none; marker-end: url(#arrowheadSoft); stroke-dasharray: 6 5; }
-      .divider { stroke: #d6deeb; stroke-width: 2; stroke-dasharray: 7 7; }
+      .bg { fill: #f6f8fb; }
+      .title { font: 700 38px Arial, sans-serif; fill: #111827; }
+      .subtitle { font: 400 17px Arial, sans-serif; fill: #566273; }
+      .section { fill: #ffffff; stroke: #d5deec; stroke-width: 2; }
+      .sectionLabel { font: 700 18px Arial, sans-serif; fill: #263142; letter-spacing: .3px; }
+      .card { fill: #ffffff; stroke: #8d9bb0; stroke-width: 2; rx: 12; }
+      .blue { fill: #eaf3ff; stroke: #3f7ddc; }
+      .teal { fill: #e7f8f4; stroke: #14967f; }
+      .green { fill: #eef9ee; stroke: #2f9d57; }
+      .amber { fill: #fff4df; stroke: #d98b16; }
+      .purple { fill: #f2edff; stroke: #8a62d8; }
+      .red { fill: #fff0f0; stroke: #df4b4b; }
+      .gray { fill: #f1f5f9; stroke: #64748b; }
+      .ink { font: 700 17px Arial, sans-serif; fill: #172033; }
+      .small { font: 400 13.5px Arial, sans-serif; fill: #3d4b5f; }
+      .tiny { font: 400 12px Arial, sans-serif; fill: #657386; }
+      .mono { font: 400 12px Consolas, "Courier New", monospace; fill: #334155; }
+      .pill { fill: #ffffff; stroke: #c9d3e4; stroke-width: 1.4; }
+      .arrow { stroke: #43536a; stroke-width: 2.5; fill: none; marker-end: url(#arrow); }
+      .arrowSoft { stroke: #7b8799; stroke-width: 2.1; fill: none; marker-end: url(#arrowSoft); stroke-dasharray: 7 6; }
+      .bus { stroke: #bac5d6; stroke-width: 2; fill: none; stroke-dasharray: 8 8; }
     </style>
-    <marker id="arrowhead" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#42526b" />
+    <marker id="arrow" viewBox="0 0 10 10" refX="8.8" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#43536a" />
     </marker>
-    <marker id="arrowheadSoft" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#7c8798" />
+    <marker id="arrowSoft" viewBox="0 0 10 10" refX="8.8" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#7b8799" />
     </marker>
   </defs>
 
-  <rect class="bg" width="1600" height="1120" />
-  <text x="60" y="62" class="title">Beautiful LinkedIn - arquitetura atual</text>
-  <text x="60" y="92" class="subtitle">CLI Python + FastAPI sidecar + Electron/React para descoberta publica de leads B2B</text>
+  <rect class="bg" width="1800" height="1280" />
+  <text x="70" y="70" class="title">Beautiful LinkedIn - arquitetura do projeto</text>
+  <text x="70" y="102" class="subtitle">App desktop Electron/React + sidecar FastAPI + pipeline Python para descoberta, curadoria e exportacao de leads B2B publicos.</text>
 
-  <!-- Presentation / entrypoints -->
-  <rect x="50" y="130" width="1500" height="205" class="panel" rx="18" />
-  <text x="78" y="168" class="panel-title">1. Entradas e interfaces</text>
+  <!-- User inputs and desktop shell -->
+  <rect x="60" y="140" width="1680" height="205" class="section" rx="18" />
+  <text x="88" y="178" class="sectionLabel">1. Interfaces e entrada</text>
 
-  <rect x="90" y="198" width="285" height="92" class="box box-blue" />
-  <text x="112" y="226" class="label">CLI Typer / Rich</text>
-  <text x="112" y="250" class="mono">beautiful-linkedin</text>
-  <text x="112" y="270" class="small">search, from-csv, linkedin-*</text>
+  <rect x="100" y="212" width="245" height="86" class="card blue" />
+  <text x="124" y="240" class="ink">Usuario</text>
+  <text x="124" y="263" class="small">empresa, dominio, URL</text>
+  <text x="124" y="282" class="small">cargos, filtros, modo</text>
 
-  <rect x="450" y="198" width="315" height="92" class="box box-purple" />
-  <text x="472" y="226" class="label">Electron main process</text>
-  <text x="472" y="250" class="mono">electron/src/main</text>
-  <text x="472" y="270" class="small">inicia o sidecar Python local</text>
+  <rect x="420" y="206" width="280" height="98" class="card blue" />
+  <text x="444" y="235" class="ink">CLI Python</text>
+  <text x="444" y="258" class="mono">beautiful-linkedin</text>
+  <text x="444" y="278" class="small">Typer, Rich, modo interativo</text>
 
-  <rect x="820" y="198" width="310" height="92" class="box box-purple" />
-  <text x="842" y="226" class="label">Renderer React</text>
-  <text x="842" y="250" class="mono">electron/src/renderer</text>
-  <text x="842" y="270" class="small">formulario, filtros, tabela</text>
+  <rect x="760" y="206" width="285" height="98" class="card purple" />
+  <text x="784" y="235" class="ink">Electron main</text>
+  <text x="784" y="258" class="mono">electron/src/main</text>
+  <text x="784" y="278" class="small">inicia sidecar e gerencia Chrome</text>
 
-  <rect x="1185" y="198" width="300" height="92" class="box box-blue" />
-  <text x="1207" y="226" class="label">FastAPI local</text>
-  <text x="1207" y="250" class="mono">/health /taxonomies /search</text>
-  <text x="1207" y="270" class="small">loopback 127.0.0.1</text>
+  <rect x="1100" y="206" width="285" height="98" class="card purple" />
+  <text x="1124" y="235" class="ink">Renderer React</text>
+  <text x="1124" y="258" class="mono">electron/src/renderer</text>
+  <text x="1124" y="278" class="small">formulario, filtros, resultados</text>
 
-  <path d="M765 244 L820 244" class="arrow" />
-  <text x="780" y="232" class="tiny">preload + fetch</text>
-  <path d="M1130 244 L1185 244" class="arrow" />
-  <text x="1138" y="232" class="tiny">HTTP</text>
+  <rect x="1440" y="206" width="245" height="98" class="card gray" />
+  <text x="1464" y="235" class="ink">Chrome/CDP helper</text>
+  <text x="1464" y="258" class="mono">chrome.ts</text>
+  <text x="1464" y="278" class="small">probe e bootstrap LinkedIn</text>
 
-  <!-- Core orchestration -->
-  <rect x="50" y="375" width="1500" height="285" class="panel" rx="18" />
-  <text x="78" y="413" class="panel-title">2. Nucleo Python de prospeccao</text>
+  <path d="M345 255 L420 255" class="arrow" />
+  <path d="M345 255 C380 190 724 190 760 255" class="arrow" />
+  <path d="M1045 255 L1100 255" class="arrow" />
+  <path d="M1385 255 L1440 255" class="arrowSoft" />
 
-  <rect x="90" y="455" width="245" height="102" class="box box-gray" />
-  <text x="112" y="483" class="label">Config &amp; modos</text>
-  <text x="112" y="507" class="mono">config.py</text>
-  <text x="112" y="527" class="mono">scrape_modes.py</text>
-  <text x="112" y="545" class="small">env, limites, providers</text>
+  <!-- API sidecar -->
+  <rect x="60" y="390" width="1680" height="215" class="section" rx="18" />
+  <text x="88" y="428" class="sectionLabel">2. API local e contratos</text>
 
-  <rect x="410" y="445" width="330" height="122" class="box box-green" />
-  <text x="438" y="476" class="label">Orquestrador central</text>
-  <text x="438" y="502" class="mono">runner.run_prospecting()</text>
-  <text x="438" y="525" class="small">monta engines, providers e cache</text>
-  <text x="438" y="545" class="small">executa jobs paralelos e limites</text>
+  <rect x="115" y="465" width="315" height="96" class="card teal" />
+  <text x="139" y="494" class="ink">FastAPI sidecar</text>
+  <text x="139" y="517" class="mono">src/beautiful_linkedin/server/app.py</text>
+  <text x="139" y="537" class="small">loopback local; nao expor na rede</text>
 
-  <rect x="815" y="455" width="285" height="102" class="box box-orange" />
-  <text x="837" y="483" class="label">Fabricas</text>
-  <text x="837" y="507" class="mono">providers/factory.py</text>
-  <text x="837" y="527" class="mono">search/factory.py</text>
-  <text x="837" y="545" class="small">selecionam fontes ativas</text>
+  <rect x="500" y="455" width="275" height="116" class="card teal" />
+  <text x="524" y="484" class="ink">Search &amp; runs</text>
+  <text x="524" y="507" class="mono">/search</text>
+  <text x="524" y="527" class="mono">/search/start /runs</text>
+  <text x="524" y="547" class="small">execucao sync e background</text>
 
-  <rect x="1165" y="455" width="310" height="102" class="box box-gray" />
-  <text x="1187" y="483" class="label">Modelos compartilhados</text>
-  <text x="1187" y="507" class="mono">CompanyInput, Lead</text>
-  <text x="1187" y="527" class="mono">ProspectingResult</text>
-  <text x="1187" y="545" class="small">contrato entre CLI, API e UI</text>
+  <rect x="845" y="455" width="275" height="116" class="card teal" />
+  <text x="869" y="484" class="ink">Diagnosticos</text>
+  <text x="869" y="507" class="mono">/health /taxonomies</text>
+  <text x="869" y="527" class="mono">/diagnostics</text>
+  <text x="869" y="547" class="small">API keys, cookie, taxonomias</text>
 
-  <path d="M232 290 L232 455" class="arrow" />
-  <path d="M1335 290 L1335 370 Q1335 445 740 506" class="arrow" />
-  <path d="M335 506 L410 506" class="arrow" />
-  <path d="M740 506 L815 506" class="arrow" />
-  <path d="M1100 506 L1165 506" class="arrow" />
+  <rect x="1190" y="455" width="275" height="116" class="card teal" />
+  <text x="1214" y="484" class="ink">Leads salvos</text>
+  <text x="1214" y="507" class="mono">/lead-tables</text>
+  <text x="1214" y="527" class="small">CRUD, import, merge, export</text>
+  <text x="1214" y="547" class="small">experimental-search</text>
 
-  <!-- External sources -->
-  <rect x="50" y="700" width="1500" height="215" class="panel" rx="18" />
-  <text x="78" y="738" class="panel-title">3. Fontes de dados e coleta</text>
+  <rect x="1510" y="455" width="185" height="116" class="card teal" />
+  <text x="1532" y="484" class="ink">Enriquecimento</text>
+  <text x="1532" y="507" class="mono">/enrich</text>
+  <text x="1532" y="527" class="small">email e telefone</text>
+  <text x="1532" y="547" class="small">estimativa de custo</text>
 
-  <rect x="90" y="772" width="305" height="92" class="box box-orange" />
-  <text x="112" y="800" class="label">APIs estruturadas</text>
-  <text x="112" y="824" class="small">PDL, Coresignal, Apollo, Lusha</text>
-  <text x="112" y="844" class="small">Apify LinkedIn Actor opcional</text>
+  <path d="M902 304 L902 390" class="arrow" />
+  <path d="M1242 304 L1242 390" class="arrow" />
+  <path d="M637 571 L637 635" class="arrow" />
+  <path d="M1328 571 L1328 1058" class="arrowSoft" />
+  <path d="M1602 571 L1602 1058" class="arrowSoft" />
 
-  <rect x="445" y="772" width="310" height="92" class="box box-orange" />
-  <text x="467" y="800" class="label">Busca publica web</text>
-  <text x="467" y="824" class="small">SearxNG, Serper, Google CSE</text>
-  <text x="467" y="844" class="small">DuckDuckGo, Google/Bing HTML</text>
+  <!-- Python core -->
+  <rect x="60" y="650" width="1680" height="260" class="section" rx="18" />
+  <text x="88" y="688" class="sectionLabel">3. Nucleo Python de prospeccao</text>
 
-  <rect x="805" y="772" width="315" height="92" class="box box-orange" />
-  <text x="827" y="800" class="label">Fontes publicas opcionais</text>
-  <text x="827" y="824" class="small">TheOrg, RocketReach publico</text>
-  <text x="827" y="844" class="small">Common Crawl CDX/WARC</text>
+  <rect x="115" y="728" width="250" height="116" class="card gray" />
+  <text x="139" y="757" class="ink">Config e modos</text>
+  <text x="139" y="780" class="mono">config.py</text>
+  <text x="139" y="800" class="mono">scrape_modes.py</text>
+  <text x="139" y="820" class="small">api | serp | cookie | people</text>
 
-  <rect x="1170" y="772" width="315" height="92" class="box box-red" />
-  <text x="1192" y="800" class="label">LinkedIn com risco</text>
-  <text x="1192" y="824" class="small">cookie li_at, Sales Navigator</text>
-  <text x="1192" y="844" class="small">Playwright exige aceite explicito</text>
+  <rect x="430" y="718" width="315" height="136" class="card green" />
+  <text x="454" y="747" class="ink">Orquestrador</text>
+  <text x="454" y="770" class="mono">runner.run_prospecting()</text>
+  <text x="454" y="790" class="small">balanceia providers, paralelismo,</text>
+  <text x="454" y="810" class="small">timeouts, cache, dedupe e output</text>
+  <text x="454" y="832" class="tiny">ThreadPoolExecutor por empresa/fonte</text>
 
-  <path d="M955 557 L250 772" class="arrow" />
-  <path d="M955 557 L600 772" class="arrow" />
-  <path d="M955 557 L965 772" class="arrow" />
-  <path d="M955 557 L1325 772" class="arrow" />
+  <rect x="810" y="728" width="265" height="116" class="card amber" />
+  <text x="834" y="757" class="ink">Factories</text>
+  <text x="834" y="780" class="mono">providers/factory.py</text>
+  <text x="834" y="800" class="mono">search/factory.py</text>
+  <text x="834" y="820" class="small">selecionam fontes ativas</text>
 
-  <!-- Processing / persistence -->
-  <rect x="50" y="955" width="1500" height="120" class="panel" rx="18" />
-  <text x="78" y="993" class="panel-title">4. Processamento, persistencia e saida</text>
+  <rect x="1140" y="718" width="255" height="136" class="card green" />
+  <text x="1164" y="747" class="ink">Processamento</text>
+  <text x="1164" y="770" class="mono">processing/*</text>
+  <text x="1164" y="790" class="small">extracao, normalizacao, scoring,</text>
+  <text x="1164" y="810" class="small">filtros, taxonomias e dedupe</text>
+  <text x="1164" y="832" class="tiny">LeadFilter + role/function/seniority</text>
 
-  <rect x="90" y="1018" width="235" height="42" class="box box-green" />
-  <text x="110" y="1045" class="label">extracao &amp; scoring</text>
+  <rect x="1460" y="728" width="235" height="116" class="card gray" />
+  <text x="1484" y="757" class="ink">Modelos</text>
+  <text x="1484" y="780" class="mono">models.py</text>
+  <text x="1484" y="800" class="small">CompanyInput, Lead,</text>
+  <text x="1484" y="820" class="small">ProspectingResult</text>
 
-  <rect x="370" y="1018" width="245" height="42" class="box box-green" />
-  <text x="390" y="1045" class="label">normalizacao &amp; dedupe</text>
+  <path d="M430 786 L365 786" class="arrowSoft" />
+  <path d="M365 786 L430 786" class="arrow" />
+  <path d="M745 786 L810 786" class="arrow" />
+  <path d="M1075 786 L1140 786" class="arrow" />
+  <path d="M1395 786 L1460 786" class="arrowSoft" />
 
-  <rect x="660" y="1018" width="250" height="42" class="box box-green" />
-  <text x="680" y="1045" class="label">filtros e taxonomias</text>
+  <!-- External data sources -->
+  <rect x="60" y="955" width="1045" height="210" class="section" rx="18" />
+  <text x="88" y="993" class="sectionLabel">4. Fontes externas e coleta</text>
 
-  <rect x="955" y="1018" width="240" height="42" class="box box-gray" />
-  <text x="975" y="1045" class="label">SQLite cache opcional</text>
+  <rect x="115" y="1030" width="220" height="84" class="card amber" />
+  <text x="137" y="1058" class="ink">APIs estruturadas</text>
+  <text x="137" y="1081" class="small">PDL, Coresignal,</text>
+  <text x="137" y="1100" class="small">Apollo, Lusha, Apify</text>
 
-  <rect x="1240" y="1018" width="245" height="42" class="box box-blue" />
-  <text x="1260" y="1045" class="label">CSV / XLSX / UI</text>
+  <rect x="380" y="1030" width="220" height="84" class="card amber" />
+  <text x="402" y="1058" class="ink">Busca publica</text>
+  <text x="402" y="1081" class="small">SearxNG, Serper,</text>
+  <text x="402" y="1100" class="small">Google, Bing, DDG</text>
 
-  <path d="M242 864 L208 1018" class="arrow" />
-  <path d="M600 864 L208 1018" class="arrow" />
-  <path d="M965 864 L208 1018" class="arrow" />
-  <path d="M1328 864 L208 1018" class="arrow" />
-  <path d="M325 1039 L370 1039" class="arrow" />
-  <path d="M615 1039 L660 1039" class="arrow" />
-  <path d="M910 1039 L955 1039" class="arrow-soft" />
-  <path d="M910 1039 L1240 1039" class="arrow" />
+  <rect x="645" y="1030" width="205" height="84" class="card amber" />
+  <text x="667" y="1058" class="ink">Fontes publicas</text>
+  <text x="667" y="1081" class="small">TheOrg, RocketReach,</text>
+  <text x="667" y="1100" class="small">Common Crawl, sites</text>
 
-  <!-- Notes -->
-  <line x1="60" y1="352" x2="1540" y2="352" class="divider" />
-  <text x="60" y="1100" class="tiny">Observacao: .env e segredos nao foram lidos; o diagrama foi inferido de CLAUDE.md, README.md, pyproject.toml e codigo fonte.</text>
+  <rect x="895" y="1030" width="165" height="84" class="card red" />
+  <text x="917" y="1058" class="ink">LinkedIn</text>
+  <text x="917" y="1081" class="small">li_at, People,</text>
+  <text x="917" y="1100" class="small">Sales/Nav, Playwright</text>
+
+  <path d="M925 844 L925 930 L340 930 L340 1015 L225 1015 L225 1030" class="arrow" />
+  <path d="M940 844 L940 942 L610 942 L610 1015 L490 1015 L490 1030" class="arrow" />
+  <path d="M956 844 L956 942 L858 942 L858 1015 L748 1015 L748 1030" class="arrow" />
+  <path d="M972 844 L972 1030" class="arrow" />
+
+  <!-- Persistence and outputs -->
+  <rect x="1160" y="955" width="580" height="210" class="section" rx="18" />
+  <text x="1188" y="993" class="sectionLabel">5. Persistencia e saidas</text>
+
+  <rect x="1205" y="1030" width="210" height="84" class="card gray" />
+  <text x="1227" y="1058" class="ink">SQLite cache</text>
+  <text x="1227" y="1081" class="mono">data/cache.sqlite</text>
+  <text x="1227" y="1100" class="small">cache + historico consultado</text>
+
+  <rect x="1465" y="1030" width="230" height="84" class="card gray" />
+  <text x="1487" y="1058" class="ink">Leads salvos</text>
+  <text x="1487" y="1081" class="mono">data/saved_leads.sqlite</text>
+  <text x="1487" y="1100" class="small">tabelas, import, merge, enrich</text>
+
+  <rect x="1225" y="1135" width="205" height="64" class="card blue" />
+  <text x="1247" y="1163" class="ink">Arquivos</text>
+  <text x="1247" y="1185" class="small">CSV e XLSX em output/</text>
+
+  <rect x="1490" y="1135" width="185" height="64" class="card blue" />
+  <text x="1512" y="1163" class="ink">UI</text>
+  <text x="1512" y="1185" class="small">tabela e biblioteca</text>
+
+  <path d="M1268 854 C1268 910 1310 980 1310 1030" class="arrowSoft" />
+  <path d="M1268 854 C1200 980 1328 1085 1328 1135" class="arrow" />
+  <path d="M1328 1114 L1328 1135" class="arrow" />
+  <path d="M1580 1114 L1580 1135" class="arrow" />
+
+  <text x="88" y="1232" class="tiny">Gerado a partir de README.md, pyproject.toml, electron/package.json e arquivos-chave em src/beautiful_linkedin e electron/src. Segredos de .env nao foram lidos.</text>
 </svg>

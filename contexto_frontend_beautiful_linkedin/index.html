@@ -1,0 +1,1673 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Beautiful LinkedIn - Mock Electron</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Roboto+Mono:wght@400;500&display=swap');
+
+    :root {
+      --bg: #f5f5f7;
+      --surface: #ffffff;
+      --surface-2: #fafafa;
+      --surface-3: #f0f0f3;
+      --line: #e5e5ea;
+      --line-2: #d6d6db;
+      --ink: #1d1d1f;
+      --ink-2: #3a3a3e;
+      --ink-3: #6e6e73;
+      --ink-4: #a1a1a6;
+      --accent: #007aff;
+      --accent-2: #0066d6;
+      --accent-tint: rgba(0, 122, 255, 0.08);
+      --success: #34c759;
+      --warn: #ff9500;
+      --risky: #ff3b30;
+      --mono: "Roboto Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+      --shadow-md: 0 8px 30px rgba(15, 15, 17, 0.08), 0 1px 2px rgba(15, 15, 17, 0.08);
+      --shadow-lg: 0 30px 80px rgba(0, 0, 0, 0.22), 0 8px 24px rgba(0, 0, 0, 0.12);
+    }
+    html.dark {
+      --bg: #1c1c1e;
+      --surface: #2c2c2e;
+      --surface-2: #242426;
+      --surface-3: #38383a;
+      --line: #38383a;
+      --line-2: #48484a;
+      --ink: #f5f5f7;
+      --ink-2: #d1d1d6;
+      --ink-3: #98989d;
+      --ink-4: #6e6e73;
+      --accent: #0a84ff;
+      --accent-2: #409cff;
+      --accent-tint: rgba(10, 132, 255, 0.16);
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      background: var(--bg);
+      color: var(--ink);
+      font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 13px;
+      line-height: 1.45;
+      letter-spacing: -0.005em;
+      -webkit-font-smoothing: antialiased;
+      overflow: hidden;
+    }
+    button, input, select, textarea { font: inherit; }
+    button { border: 0; }
+    code, pre, .mono { font-family: var(--mono); }
+    a { color: inherit; }
+
+    .app {
+      display: grid;
+      grid-template-rows: 44px 1fr;
+      height: 100vh;
+      width: 100vw;
+      overflow: hidden;
+      background: var(--bg);
+    }
+    .titlebar {
+      height: 44px;
+      background: color-mix(in srgb, var(--surface) 84%, transparent);
+      backdrop-filter: blur(18px);
+      border-bottom: 0.5px solid var(--line);
+      display: flex;
+      align-items: center;
+      padding: 0 16px;
+      gap: 12px;
+      z-index: 50;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--ink);
+      user-select: none;
+    }
+    .brand-mark {
+      width: 22px;
+      height: 22px;
+      border-radius: 6px;
+      background: linear-gradient(135deg, var(--accent), #5856d6);
+      display: grid;
+      place-items: center;
+      color: white;
+      font-size: 12px;
+      font-weight: 700;
+      box-shadow: 0 1px 2px rgba(0, 122, 255, 0.3);
+    }
+    .tb-context {
+      font-size: 12px;
+      color: var(--ink-3);
+      padding-left: 12px;
+      margin-left: 4px;
+      border-left: 0.5px solid var(--line);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .tb-actions { display: flex; gap: 4px; margin-left: auto; }
+    .tb-btn {
+      height: 28px;
+      min-width: 28px;
+      padding: 0 8px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--ink-3);
+      border-radius: 6px;
+      cursor: pointer;
+      background: transparent;
+    }
+    .tb-btn:hover { background: var(--surface-3); color: var(--ink); }
+
+    .workspace { display: grid; grid-template-columns: 220px 1fr; min-height: 0; }
+    .sidebar {
+      background: color-mix(in srgb, var(--surface-2) 78%, transparent);
+      backdrop-filter: blur(12px);
+      border-right: 0.5px solid var(--line);
+      overflow-y: auto;
+      padding: 14px 10px;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+    .nav-section { margin-bottom: 18px; }
+    .nav-title {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--ink-3);
+      padding: 0 8px 6px;
+      letter-spacing: 0.01em;
+      user-select: none;
+    }
+    .nav-item {
+      width: 100%;
+      min-height: 32px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 6px 8px;
+      margin-bottom: 1px;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--ink-2);
+      font-size: 13px;
+      text-align: left;
+      cursor: pointer;
+      user-select: none;
+    }
+    .nav-item:hover { background: var(--surface-3); }
+    .nav-item.active {
+      background: var(--accent);
+      color: white;
+      box-shadow: var(--shadow-sm);
+    }
+    .nav-item.secondary-active {
+      background: var(--surface);
+      color: var(--ink);
+      border: 0.5px solid var(--line);
+      box-shadow: var(--shadow-sm);
+    }
+    .nav-item .ico {
+      width: 16px;
+      height: 16px;
+      display: grid;
+      place-items: center;
+      flex-shrink: 0;
+    }
+    .badge {
+      margin-left: auto;
+      border-radius: 99px;
+      padding: 1px 7px;
+      font: 10px var(--mono);
+      background: var(--surface-3);
+      color: var(--ink-3);
+    }
+    .active .badge { background: rgba(255, 255, 255, 0.22); color: white; }
+    .sidebar-foot {
+      margin-top: auto;
+      padding: 10px 8px;
+      border-top: 0.5px solid var(--line);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11px;
+      color: var(--ink-3);
+      min-width: 0;
+    }
+    .pulse {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--success);
+      box-shadow: 0 0 0 0 rgba(52, 199, 89, 0.5);
+      animation: pulse 2s infinite;
+      flex: 0 0 auto;
+    }
+    .main { overflow: auto; min-width: 0; background: var(--bg); position: relative; }
+    .toolbar {
+      position: sticky;
+      top: 0;
+      z-index: 40;
+      background: color-mix(in srgb, var(--bg) 76%, transparent);
+      backdrop-filter: saturate(180%) blur(14px);
+      border-bottom: 0.5px solid var(--line);
+      padding: 10px 22px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .crumb { font-size: 13px; color: var(--ink-2); font-weight: 500; }
+    .crumb strong { color: var(--ink); }
+    .sep { color: var(--ink-4); margin: 0 6px; }
+    .content {
+      padding: 24px 20px 64px;
+      max-width: 1240px;
+      margin: 0 auto;
+    }
+    .hero {
+      background: var(--surface);
+      border-radius: 14px;
+      box-shadow: var(--shadow-md);
+      padding: 22px 26px;
+      margin-bottom: 18px;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 24px;
+      align-items: center;
+    }
+    .hero h1 {
+      margin: 0 0 4px;
+      font-size: 22px;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+    }
+    .hero p { margin: 0; color: var(--ink-3); font-size: 13px; overflow-wrap: anywhere; }
+    .stat-strip {
+      display: flex;
+      border-radius: 8px;
+      overflow: hidden;
+      border: 0.5px solid var(--line);
+    }
+    .stat {
+      padding: 8px 16px;
+      background: var(--surface-2);
+      border-right: 0.5px solid var(--line);
+      min-width: 96px;
+    }
+    .stat:last-child { border-right: 0; }
+    .stat .v {
+      font-size: 22px;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      line-height: 1.1;
+      font-variant-numeric: tabular-nums;
+    }
+    .stat .l { font-size: 11px; color: var(--ink-3); font-weight: 500; margin-top: 2px; }
+    .grid-main {
+      display: grid;
+      grid-template-columns: 360px minmax(0, 1fr);
+      gap: 18px;
+      align-items: start;
+    }
+    .stack { display: flex; flex-direction: column; gap: 18px; }
+    .card {
+      background: var(--surface);
+      border-radius: 14px;
+      box-shadow: var(--shadow-md);
+      overflow: hidden;
+      min-width: 0;
+    }
+    .card-head {
+      padding: 14px 18px 10px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      border-bottom: 0.5px solid var(--line);
+    }
+    .card-head h3 {
+      margin: 0;
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--ink);
+    }
+    .muted { font-size: 12px; color: var(--ink-3); }
+    .card-body { padding: 14px 18px 18px; }
+    .form-row { margin-bottom: 14px; }
+    .form-label {
+      display: block;
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--ink-3);
+      margin-bottom: 5px;
+      letter-spacing: 0.01em;
+    }
+    .input {
+      width: 100%;
+      min-width: 0;
+      height: 32px;
+      padding: 0 11px;
+      background: var(--surface-2);
+      border: 0.5px solid var(--line-2);
+      border-radius: 7px;
+      font-size: 13px;
+      color: var(--ink);
+      outline: none;
+      transition: border-color 120ms, background-color 120ms, box-shadow 120ms;
+    }
+    .input:focus {
+      border-color: var(--accent);
+      background: var(--surface);
+      box-shadow: 0 0 0 3px var(--accent-tint);
+    }
+    textarea.input { height: auto; padding: 8px 11px; resize: vertical; }
+    .input-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .field-hint { margin-top: 6px; font-size: 11px; color: var(--ink-3); line-height: 1.4; }
+    .chips { display: flex; flex-wrap: wrap; gap: 5px; }
+    .chip {
+      height: 24px;
+      padding: 0 10px;
+      background: var(--surface-2);
+      border: 0.5px solid var(--line-2);
+      border-radius: 99px;
+      font-size: 12px;
+      color: var(--ink-2);
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .chip.on { background: var(--accent); border-color: transparent; color: white; }
+    .checkbox { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink-2); cursor: pointer; }
+    .checkbox input, .saved-check { accent-color: var(--accent); width: 14px; height: 14px; }
+    .seg {
+      display: grid;
+      gap: 4px;
+      background: var(--surface-3);
+      padding: 3px;
+      border-radius: 8px;
+    }
+    .seg.two { grid-template-columns: repeat(2, 1fr); }
+    .seg.three { grid-template-columns: repeat(3, 1fr); }
+    .seg-item {
+      text-align: center;
+      padding: 6px 0;
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--ink-2);
+      border-radius: 6px;
+      cursor: pointer;
+      background: transparent;
+    }
+    .seg-item.on { background: var(--surface); color: var(--ink); box-shadow: var(--shadow-sm); }
+    .pill-btn, .btn-ghost {
+      min-height: 28px;
+      padding: 0 12px;
+      border-radius: 7px;
+      background: var(--surface);
+      border: 0.5px solid var(--line-2);
+      color: var(--ink-2);
+      font-size: 12px;
+      font-weight: 500;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      cursor: pointer;
+      box-shadow: var(--shadow-sm);
+      white-space: nowrap;
+    }
+    .pill-btn:hover, .btn-ghost:hover { background: var(--surface-3); }
+    .pill-btn.primary, .btn-primary {
+      background: var(--accent);
+      color: white;
+      border-color: transparent;
+      box-shadow: 0 1px 2px rgba(0, 122, 255, 0.4);
+    }
+    .pill-btn.primary:hover, .btn-primary:hover { background: var(--accent-2); }
+    .pill-btn.danger { color: var(--risky); }
+    .btn-primary {
+      width: 100%;
+      height: 36px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      margin-top: 4px;
+    }
+    .btn-primary:disabled, .pill-btn:disabled { opacity: 0.65; cursor: default; }
+    .spinner {
+      width: 13px;
+      height: 13px;
+      border-radius: 50%;
+      border: 1.5px solid rgba(255,255,255,0.4);
+      border-top-color: white;
+      animation: spin 700ms linear infinite;
+    }
+    .table-tools {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 12px;
+      border-bottom: 0.5px solid var(--line);
+      background: var(--surface-2);
+    }
+    .search-input {
+      flex: 1;
+      max-width: 280px;
+      height: 26px;
+      padding: 0 10px 0 28px;
+      background: var(--surface);
+      border: 0.5px solid var(--line-2);
+      border-radius: 6px;
+      font-size: 12px;
+      color: var(--ink);
+      outline: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%236e6e73' stroke-width='1.5'%3E%3Ccircle cx='7' cy='7' r='4.5'/%3E%3Cpath d='M10.5 10.5L13.5 13.5'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: 8px center;
+      background-size: 14px;
+    }
+    .seg-mini { display: inline-flex; background: var(--surface-3); padding: 2px; border-radius: 6px; }
+    .seg-mini button {
+      background: transparent;
+      padding: 4px 10px;
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--ink-2);
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    .seg-mini button.on { background: var(--surface); color: var(--ink); box-shadow: var(--shadow-sm); }
+    .table-scroll { overflow: auto; max-height: calc(100vh - 306px); }
+    table { width: 100%; border-collapse: collapse; }
+    table.leads { min-width: 760px; font-size: 13px; }
+    table.leads th {
+      text-align: left;
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--ink-3);
+      padding: 10px 14px;
+      border-bottom: 0.5px solid var(--line);
+      letter-spacing: 0.01em;
+      background: color-mix(in srgb, var(--surface) 86%, transparent);
+      position: sticky;
+      top: 0;
+      backdrop-filter: blur(12px);
+    }
+    table.leads td { padding: 12px 14px; border-bottom: 0.5px solid var(--line); vertical-align: middle; color: var(--ink-2); }
+    table.leads tr:hover { background: var(--surface-2); }
+    .person { display: flex; align-items: center; gap: 10px; min-width: 0; }
+    .avatar {
+      width: 30px;
+      height: 30px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      font-size: 12px;
+      font-weight: 600;
+      color: white;
+      flex-shrink: 0;
+    }
+    .nm { font-weight: 500; line-height: 1.2; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .hd { font-size: 11px; color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .lead-badges { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+    .lead-badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 18px;
+      padding: 1px 6px;
+      border-radius: 5px;
+      font-size: 10px;
+      font-weight: 600;
+      line-height: 1.2;
+      border: 0.5px solid transparent;
+      white-space: nowrap;
+    }
+    .lead-badge.warning { color: #9a4f00; background: rgba(255,149,0,0.14); border-color: rgba(255,149,0,0.28); }
+    .lead-badge.consulted { color: var(--ink-2); background: var(--surface-3); border-color: var(--line-2); }
+    .src-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      height: 20px;
+      padding: 0 7px;
+      background: var(--surface-3);
+      border-radius: 4px;
+      font: 10px var(--mono);
+      color: var(--ink-2);
+      white-space: nowrap;
+    }
+    .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; display: inline-block; }
+    .score-bar { display: flex; align-items: center; justify-content: flex-end; gap: 8px; font-variant-numeric: tabular-nums; }
+    .score-bar .bar { width: 56px; height: 5px; background: var(--surface-3); border-radius: 99px; overflow: hidden; }
+    .score-bar .bar > span { display: block; height: 100%; border-radius: 99px; }
+    .score-bar .v { font: 600 12px var(--mono); color: var(--ink); width: 24px; text-align: right; }
+    .summary-line {
+      padding: 8px 14px;
+      border-bottom: 0.5px solid var(--line);
+      background: var(--surface-2);
+      font-size: 11px;
+      color: var(--ink-3);
+    }
+    .notice {
+      margin-bottom: 14px;
+      padding: 10px 14px;
+      border-radius: 10px;
+      font-size: 12px;
+      background: rgba(52,199,89,0.10);
+      color: #1d6f3f;
+      border: 0.5px solid rgba(52,199,89,0.25);
+    }
+    .notice.error { background: rgba(255,59,48,0.08); color: var(--risky); border-color: rgba(255,59,48,0.25); }
+    .view { display: none; animation: fade-up 220ms cubic-bezier(0.16,1,0.3,1) both; }
+    .view.active { display: block; }
+
+    .library-layout { display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 18px; align-items: start; }
+    .table-list { list-style: none; padding: 0; margin: 0; }
+    .table-item {
+      width: 100%;
+      display: grid;
+      gap: 2px;
+      text-align: left;
+      padding: 10px 12px;
+      border-bottom: 0.5px solid var(--line);
+      background: transparent;
+      color: var(--ink-2);
+      cursor: pointer;
+    }
+    .table-item:hover, .table-item.active { background: var(--surface-2); }
+    .table-item.active { box-shadow: inset 3px 0 0 var(--accent); }
+    .table-title { font-weight: 600; color: var(--ink); }
+    .table-meta { font-size: 11px; color: var(--ink-3); }
+    .library-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .saved-leads-table { min-width: 920px; font-size: 12px; table-layout: fixed; }
+    .saved-leads-table th {
+      padding: 9px 10px;
+      border-bottom: 0.5px solid var(--line);
+      color: var(--ink-3);
+      font-weight: 600;
+      text-align: left;
+      white-space: nowrap;
+    }
+    .saved-leads-table td { padding: 8px 10px; border-bottom: 0.5px solid color-mix(in srgb, var(--line) 70%, transparent); vertical-align: top; color: var(--ink-2); }
+    .saved-cell-strong { display: block; color: var(--ink); font-weight: 500; overflow-wrap: anywhere; }
+    .saved-cell-wrap { display: block; overflow-wrap: anywhere; line-height: 1.35; }
+    .saved-link { color: var(--ink-2); text-decoration: none; white-space: nowrap; }
+    .saved-link:hover { color: var(--accent); }
+    .api-consult-btn {
+      min-height: 24px;
+      max-width: 190px;
+      padding: 3px 8px;
+      border-radius: 6px;
+      border: 0.5px solid rgba(0,122,255,0.22);
+      background: rgba(0,122,255,0.07);
+      color: var(--ink-2);
+      font-size: 10.5px;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: normal;
+      line-height: 1.25;
+    }
+    .api-consult-btn.empty { border-color: rgba(255,149,0,0.28); background: rgba(255,149,0,0.10); }
+    .api-consult-btn .hover { display: none; }
+    .api-consult-btn:hover .idle { display: none; }
+    .api-consult-btn:hover .hover { display: inline; }
+
+    .sheet-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.32);
+      display: none;
+      place-items: center;
+      z-index: 100;
+      padding: 24px;
+      animation: fade 160ms ease-out;
+    }
+    .sheet-overlay.open { display: grid; }
+    .sheet {
+      width: min(820px, 100%);
+      height: min(620px, 92vh);
+      background: var(--bg);
+      border-radius: 14px;
+      box-shadow: var(--shadow-lg);
+      display: grid;
+      grid-template-columns: 200px 1fr;
+      overflow: hidden;
+      border: 0.5px solid var(--line);
+      animation: pop 200ms cubic-bezier(0.2, 0.8, 0.3, 1.1);
+    }
+    .dialog-card {
+      width: min(440px, 100%);
+      background: var(--surface);
+      border-radius: 14px;
+      box-shadow: var(--shadow-lg);
+      border: 0.5px solid var(--line);
+      overflow: hidden;
+      animation: pop 200ms cubic-bezier(0.2,0.8,0.3,1.1);
+    }
+    .sheet-side { background: var(--surface-2); border-right: 0.5px solid var(--line); padding: 14px 8px; overflow-y: auto; }
+    .sheet-head-row { padding: 0 8px 12px; display: flex; align-items: center; justify-content: space-between; }
+    .sheet-head-row h2 { margin: 0; font-size: 14px; font-weight: 600; }
+    .sheet-close {
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      background: var(--surface-3);
+      color: var(--ink-2);
+      cursor: pointer;
+      display: grid;
+      place-items: center;
+      font-size: 11px;
+    }
+    .sheet-close:hover { background: var(--line-2); }
+    .sheet-body { overflow-y: auto; padding: 22px 26px 30px; }
+    .sheet-body h3 { margin: 0 0 4px; font-size: 18px; font-weight: 600; letter-spacing: -0.015em; }
+    .dek { font-size: 12px; color: var(--ink-3); margin: 0 0 18px; }
+    .sheet-section-title { padding: 8px 2px; font-size: 11px; font-weight: 500; color: var(--ink-3); text-transform: uppercase; letter-spacing: 0.04em; }
+    .sheet-section { background: var(--surface); border-radius: 10px; margin-bottom: 14px; overflow: hidden; box-shadow: var(--shadow-sm); }
+    .row { display: flex; align-items: center; gap: 14px; padding: 11px 14px; border-top: 0.5px solid var(--line); background: var(--surface); }
+    .row:first-child { border-top: 0; }
+    .row .label { flex: 1; min-width: 0; }
+    .row .t { font-size: 13px; font-weight: 500; color: var(--ink); }
+    .row .s { font-size: 11px; color: var(--ink-3); margin-top: 1px; overflow-wrap: anywhere; }
+    .toggle {
+      width: 38px;
+      height: 22px;
+      background: var(--line-2);
+      border-radius: 99px;
+      position: relative;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .toggle::after {
+      content: "";
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: white;
+      transition: transform 180ms;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+    }
+    .toggle.on { background: var(--success); }
+    .toggle.on::after { transform: translateX(16px); }
+    .key-input {
+      display: flex;
+      align-items: center;
+      background: var(--surface-2);
+      border: 0.5px solid var(--line-2);
+      border-radius: 7px;
+      overflow: hidden;
+      height: 30px;
+      width: 100%;
+    }
+    .key-input input {
+      flex: 1;
+      min-width: 0;
+      border: 0;
+      outline: none;
+      background: transparent;
+      padding: 0 10px;
+      font: 12px var(--mono);
+      color: var(--ink);
+    }
+    .key-input button {
+      background: transparent;
+      border-left: 0.5px solid var(--line-2);
+      padding: 0 10px;
+      height: 30px;
+      color: var(--ink-3);
+      font-size: 11px;
+      cursor: pointer;
+    }
+    .api-row { padding: 12px 14px; border-top: 0.5px solid var(--line); }
+    .api-row:first-child { border-top: 0; }
+    .api-meta { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+    .api-name { font-size: 13px; font-weight: 500; color: var(--ink); }
+    .api-tag { font: 10px var(--mono); color: var(--ink-3); background: var(--surface-3); padding: 1px 6px; border-radius: 4px; }
+    .api-status { margin-left: auto; font-size: 11px; color: var(--success); display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+    .api-status.off { color: var(--ink-3); }
+    .api-status.warn { color: #b46500; }
+    .api-desc { font-size: 11px; color: var(--ink-3); margin-bottom: 8px; line-height: 1.45; }
+    .src-env { color: #137333; background: rgba(52,199,89,0.16); }
+    .src-ui { color: #6f4cdb; background: rgba(88,86,214,0.16); }
+    .src-missing { color: var(--ink-3); background: var(--surface-3); }
+
+    .enrich-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 60;
+      display: none;
+      place-items: center;
+      padding: 24px;
+    }
+    .enrich-overlay.open { display: grid; }
+    .enrich-overlay-backdrop { position: absolute; inset: 0; background: rgba(15,15,17,0.36); backdrop-filter: blur(6px); }
+    .enrich-modal {
+      position: relative;
+      width: min(520px, 100%);
+      max-height: min(680px, 92vh);
+      background: var(--surface);
+      border: 0.5px solid var(--line);
+      border-radius: 16px;
+      box-shadow: 0 24px 60px -20px rgba(15,15,17,0.28), 0 6px 18px -10px rgba(15,15,17,0.18);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      animation: pop 220ms cubic-bezier(0.16,1,0.3,1);
+    }
+    .enrich-modal-header { padding: 18px 20px 12px; border-bottom: 0.5px solid var(--line); }
+    .enrich-modal-title { display: flex; align-items: center; gap: 10px; }
+    .enrich-modal-title h3 { margin: 0; font-size: 15px; font-weight: 600; }
+    .enrich-modal-sub { margin: 6px 0 0; font-size: 12.5px; color: var(--ink-3); line-height: 1.45; }
+    .enrich-modal-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 4px rgba(0,122,255,0.16); animation: enrich-pulse 1400ms infinite; }
+    .enrich-modal-body { padding: 16px 20px 4px; display: flex; flex-direction: column; gap: 14px; overflow-y: auto; }
+    .enrich-progress { display: flex; flex-direction: column; gap: 6px; }
+    .enrich-progress-header { display: flex; justify-content: space-between; align-items: baseline; font-size: 12px; color: var(--ink-3); }
+    .enrich-progress-label { color: var(--ink-2); font-weight: 500; }
+    .enrich-progress-track { height: 4px; border-radius: 99px; background: var(--surface-3); overflow: hidden; }
+    .enrich-progress-fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-2)); border-radius: 99px; transform-origin: left; transition: width 260ms ease; }
+    .enrich-lead-feed { list-style: none; margin: 0; padding: 10px 0 0; display: flex; flex-direction: column; gap: 2px; border-top: 0.5px solid var(--line); }
+    .enrich-lead-row { display: grid; grid-template-columns: 10px 1fr auto; align-items: center; gap: 10px; padding: 6px 4px; border-radius: 6px; font-size: 12.5px; color: var(--ink-2); animation: fade-up 260ms both; }
+    .enrich-lead-name { font-weight: 500; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .enrich-lead-company { font-size: 11px; color: var(--ink-3); }
+    .enrich-summary-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 4px; }
+    .enrich-summary-card { background: var(--surface-2); border: 0.5px solid var(--line); border-radius: 10px; padding: 10px 8px; display: flex; flex-direction: column; align-items: center; gap: 2px; }
+    .enrich-summary-card.success { border-color: rgba(52,199,89,0.35); background: rgba(52,199,89,0.08); }
+    .enrich-summary-value { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
+    .enrich-summary-label { font-size: 10.5px; color: var(--ink-3); text-align: center; }
+    .enrich-modal-footer { padding: 12px 20px 16px; border-top: 0.5px solid var(--line); display: flex; justify-content: flex-end; gap: 8px; }
+    .enrich-pill {
+      position: fixed;
+      z-index: 55;
+      right: 22px;
+      bottom: 22px;
+      display: none;
+      grid-template-columns: auto 1fr auto;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 10px 8px 12px;
+      background: var(--surface);
+      border: 0.5px solid var(--line-2);
+      border-radius: 999px;
+      color: var(--ink);
+      cursor: pointer;
+      box-shadow: 0 18px 38px -16px rgba(15,15,17,0.30), 0 4px 12px -6px rgba(15,15,17,0.18);
+      min-width: 240px;
+      max-width: 380px;
+      overflow: hidden;
+      animation: fade-up 260ms both;
+    }
+    .enrich-pill.show { display: inline-grid; }
+    .enrich-pill-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--success); box-shadow: 0 0 0 4px rgba(52,199,89,0.18); }
+    .enrich-pill-table { font-size: 11px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .enrich-pill-status { font-size: 12.5px; font-weight: 500; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .enrich-pill-track { position: absolute; left: 0; bottom: 0; height: 2px; width: 100%; background: var(--surface-3); overflow: hidden; }
+    .enrich-pill-track::after { content: ""; display: block; height: 100%; width: 100%; background: var(--success); }
+
+    .toast {
+      position: fixed;
+      bottom: 26px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: var(--ink);
+      color: var(--bg);
+      padding: 9px 16px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 500;
+      box-shadow: var(--shadow-lg);
+      z-index: 200;
+      display: none;
+      align-items: center;
+      gap: 8px;
+      max-width: min(720px, calc(100vw - 32px));
+    }
+    .toast.show { display: flex; animation: fade-up 180ms both; }
+    .toast.error { background: var(--risky); color: white; }
+    .hidden { display: none !important; }
+    .right { text-align: right; }
+    .spacer { flex: 1; }
+    .nowrap { white-space: nowrap; }
+    .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    @keyframes pulse { to { box-shadow: 0 0 0 6px rgba(52,199,89,0); } }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes pop { from { opacity: 0; transform: scale(0.96); } to { opacity: 1; transform: scale(1); } }
+    @keyframes fade-up { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes enrich-pulse { 50% { box-shadow: 0 0 0 6px rgba(0,122,255,0.06); } }
+
+    @media (max-width: 1050px) {
+      .grid-main, .library-layout { grid-template-columns: 1fr; }
+      .table-scroll { max-height: none; }
+    }
+    @media (max-width: 780px) {
+      body { overflow: auto; }
+      .app { height: auto; min-height: 100vh; }
+      .workspace { grid-template-columns: 1fr; }
+      .sidebar { border-right: 0; border-bottom: 0.5px solid var(--line); max-height: 235px; }
+      .hero { grid-template-columns: 1fr; }
+      .stat-strip { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .stat { min-width: 0; }
+      .sheet { grid-template-columns: 1fr; height: min(720px, 92vh); }
+      .sheet-side { border-right: 0; border-bottom: 0.5px solid var(--line); display: flex; gap: 6px; overflow-x: auto; }
+      .sheet-head-row { min-width: 190px; }
+      .sheet-side .nav-item { white-space: nowrap; }
+    }
+    @media (max-width: 560px) {
+      .content { padding: 18px 12px 48px; }
+      .hero { padding: 18px; }
+      .input-grid { grid-template-columns: 1fr; }
+      .table-tools { align-items: stretch; flex-direction: column; }
+      .search-input { max-width: none; width: 100%; }
+      .stat-strip, .enrich-summary-grid { grid-template-columns: 1fr; }
+      .toolbar .pill-btn:not(.primary) { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="titlebar">
+      <div class="brand"><div class="brand-mark">B</div>Beautiful LinkedIn</div>
+      <div class="tb-context" id="titleContext">Nubank · Marketing / Growth</div>
+      <div class="tb-actions">
+        <button class="tb-btn" id="themeBtn" title="Alternar tema" aria-label="Alternar tema">🌙</button>
+        <button class="tb-btn" data-open="diagnostics" title="Diagnóstico" aria-label="Abrir diagnóstico">⚕</button>
+        <button class="tb-btn" data-open="settings" title="Preferências" aria-label="Abrir preferências">⚙</button>
+      </div>
+    </header>
+
+    <div class="workspace">
+      <aside class="sidebar">
+        <nav class="nav-section" aria-label="Workspace">
+          <div class="nav-title">Workspace</div>
+          <button class="nav-item active" data-view-btn="search"><span class="ico">⌕</span>Nova busca</button>
+          <button class="nav-item" data-view-btn="leads"><span class="ico">◴</span>Leads salvos <span class="badge" id="savedCount">24</span></button>
+          <button class="nav-item" data-open="settings" data-settings-tab="providers"><span class="ico">⌬</span>Provedores <span class="badge">7</span></button>
+        </nav>
+        <nav class="nav-section" aria-label="Modos de coleta">
+          <div class="nav-title">Modos de coleta</div>
+          <button class="nav-item secondary-active" data-mode="people_search"><span class="ico"><span class="dot" style="color: var(--success)"></span></span>People Search</button>
+          <button class="nav-item" data-mode="api"><span class="ico"><span class="dot" style="color: var(--success)"></span></span>API</button>
+        </nav>
+        <div class="sidebar-foot">
+          <span class="pulse"></span>
+          <div class="truncate">
+            <div style="font-weight: 500; color: var(--ink-2)">Sidecar conectado</div>
+            <div class="mono truncate" style="font-size: 10px; line-height: 1.2">http://127.0.0.1:8123</div>
+          </div>
+        </div>
+      </aside>
+
+      <main class="main">
+        <div class="toolbar">
+          <span class="crumb">Workspace <span class="sep">›</span> <strong id="crumbCurrent">Nova busca</strong></span>
+          <span class="spacer"></span>
+          <button class="pill-btn"><span class="dot" style="color: var(--success)"></span>v0.1.0</button>
+          <button class="pill-btn" data-open="settings">⚙ Preferências · 7</button>
+          <button class="pill-btn primary" data-view-btn="search">+ Nova</button>
+        </div>
+
+        <div class="content">
+          <section class="hero">
+            <div>
+              <h1>Bem-vindo de volta.</h1>
+              <p id="heroCopy">Última busca: 24 leads únicos · arquivo output/nubank_marketing_growth.csv.</p>
+            </div>
+            <div class="stat-strip">
+              <div class="stat"><div class="v" id="statTotal">24</div><div class="l">Leads totais</div></div>
+              <div class="stat"><div class="v" id="statRaw">47</div><div class="l">Brutos</div></div>
+              <div class="stat"><div class="v">51<span style="font-size:14px;color:var(--ink-3)">%</span></div><div class="l">Taxa de match</div></div>
+              <div class="stat"><div class="v" style="color:var(--success)">7</div><div class="l">APIs ativas</div></div>
+            </div>
+          </section>
+
+          <div id="feedback" class="notice">Busca finalizada · 24 leads únicos · output/nubank_marketing_growth.csv</div>
+
+          <section class="view active" id="view-search">
+            <div class="grid-main">
+              <div class="stack">
+                <form class="card" id="searchForm">
+                  <div class="card-head"><h3>Parâmetros da busca</h3><span class="muted">Ctrl + ↵</span></div>
+                  <div class="card-body">
+                    <div class="form-row">
+                      <label class="form-label" for="company">Empresa</label>
+                      <input id="company" class="input" value="Nubank" placeholder="Nubank">
+                    </div>
+                    <div class="form-row">
+                      <div class="input-grid">
+                        <div><label class="form-label" for="domain">Domínio</label><input id="domain" class="input mono" value="nubank.com.br"></div>
+                        <div><label class="form-label" for="max">Máx. leads</label><input id="max" type="number" class="input mono" value="50"></div>
+                      </div>
+                    </div>
+                    <div class="form-row">
+                      <label class="form-label" for="linkedin">URL no LinkedIn (opcional)</label>
+                      <input id="linkedin" class="input mono" value="https://www.linkedin.com/company/nubank/people/">
+                      <div class="field-hint">Pode colar a URL completa da aba <strong>People</strong> (ex.: <code>/company/mercadolivre-com/people/</code>) — usamos diretamente.</div>
+                    </div>
+                    <div class="form-row">
+                      <label class="form-label" for="preset">Perfil de cargo</label>
+                      <select id="preset" class="input">
+                        <option>Marketing / Growth</option>
+                        <option>Vendas / Comercial</option>
+                        <option>RH / People / Talent</option>
+                        <option>Produto</option>
+                        <option>Tecnologia</option>
+                        <option>C-Level</option>
+                      </select>
+                    </div>
+                    <div class="form-row">
+                      <label class="form-label" for="titles">Palavras-chave</label>
+                      <textarea id="titles" class="input" rows="2">marketing, growth, cmo, head of marketing, demand generation</textarea>
+                      <label class="checkbox" style="margin-top:6px"><input type="checkbox" id="generalSearch">Busca geral (sem keywords — traz todos os funcionários visíveis)</label>
+                    </div>
+                    <div class="form-row">
+                      <label class="form-label">Senioridade</label>
+                      <div class="chips">
+                        <button type="button" class="chip on">C-level / Founder</button>
+                        <button type="button" class="chip on">VP</button>
+                        <button type="button" class="chip on">Director</button>
+                        <button type="button" class="chip on">Head of</button>
+                        <button type="button" class="chip">Manager</button>
+                        <button type="button" class="chip">Senior</button>
+                      </div>
+                    </div>
+                    <div class="form-row">
+                      <label class="form-label">Modo de coleta</label>
+                      <div class="seg two">
+                        <button type="button" class="seg-item on" data-mode-select="people_search">PEOPLE_SEARCH</button>
+                        <button type="button" class="seg-item" data-mode-select="api">API</button>
+                      </div>
+                      <div class="field-hint" id="modeHint">Busca via /company/&lt;empresa&gt;/people com CDP. Lê cards do listing direto, sem abrir perfis.</div>
+                    </div>
+                    <div class="form-row">
+                      <label class="form-label" for="output">Arquivo de saída</label>
+                      <input id="output" class="input mono" value="output/nubank_marketing_growth.csv">
+                    </div>
+                    <div class="form-row">
+                      <label class="checkbox"><input type="checkbox" id="uncertain">Incluir leads sem match claro de cargo</label>
+                    </div>
+                    <button class="btn-primary" id="runSearchBtn" type="submit">Buscar leads <span style="opacity:.7;font-size:11px">Ctrl↵</span></button>
+                  </div>
+                </form>
+
+                <section class="card">
+                  <div class="card-head"><h3>Filtros avançados</h3><span class="muted">vazio = manter todos</span></div>
+                  <div class="card-body">
+                    <div class="form-row">
+                      <label class="form-label">Função</label>
+                      <div class="chips">
+                        <button type="button" class="chip on">Marketing</button>
+                        <button type="button" class="chip on">Growth</button>
+                        <button type="button" class="chip">Sales</button>
+                        <button type="button" class="chip">People</button>
+                        <button type="button" class="chip">Tecnologia</button>
+                      </div>
+                    </div>
+                    <div class="form-row">
+                      <div class="input-grid">
+                        <div><label class="form-label">Localização</label><input class="input" value="brasil, sao paulo"></div>
+                        <div><label class="form-label">Excluir títulos</label><input class="input" value="recruiter, headhunter"></div>
+                      </div>
+                    </div>
+                    <div class="form-row">
+                      <div class="input-grid">
+                        <div><label class="form-label">Confiança mínima</label><input class="input mono" value="60"></div>
+                        <label class="checkbox" style="align-items:flex-end;padding-bottom:6px"><input type="checkbox" checked>Descartar não-classificados</label>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+              </div>
+
+              <section class="card">
+                <div class="card-head">
+                  <h3>Resultados <span style="color:var(--ink-3);font-weight:400;font-size:13px;margin-left:6px" id="resultsCount">· 24 leads</span></h3>
+                  <button class="pill-btn primary" id="saveCurrentBtn">Salvar busca atual</button>
+                </div>
+                <div class="table-tools">
+                  <input class="search-input" id="leadFilter" aria-label="Filtrar leads" placeholder="Filtrar leads…">
+                  <span class="spacer"></span>
+                  <div class="seg-mini" id="resultSegments">
+                    <button class="on" data-result-filter="all">Todos</button>
+                    <button data-result-filter="head">Head</button>
+                    <button data-result-filter="growth">Growth</button>
+                  </div>
+                </div>
+                <div class="summary-line" id="summaryLine">brutos: 47 · únicos: 24 · já consultados: 6 · talvez incorretos: 2 · arquivo: output/nubank_marketing_growth.csv</div>
+                <div class="table-scroll">
+                  <table class="leads">
+                    <thead><tr><th style="width:34%">Pessoa</th><th>Cargo</th><th style="width:110px">Empresa</th><th style="width:130px">Fonte</th><th class="right" style="width:160px">Score</th></tr></thead>
+                    <tbody id="resultsBody"></tbody>
+                  </table>
+                </div>
+              </section>
+            </div>
+          </section>
+
+          <section class="view" id="view-leads">
+            <div class="library-layout">
+              <aside class="card">
+                <div class="card-head"><h3>Tabelas salvas</h3><span class="muted">3 tabelas</span></div>
+                <ul class="table-list">
+                  <li><button class="table-item active" data-table="nubank"><span class="table-title">Nubank · Marketing Growth</span><span class="table-meta">24 leads · enriquecido · hoje 00:42</span></button></li>
+                  <li><button class="table-item" data-table="mercado"><span class="table-title">Mercado Livre · Vendas</span><span class="table-meta">18 leads · parcial · ontem 22:10</span></button></li>
+                  <li><button class="table-item" data-table="ifood"><span class="table-title">iFood · People</span><span class="table-meta">14 leads · sem enriquecimento · 17/05</span></button></li>
+                </ul>
+                <div class="card-body" style="display:grid;gap:8px">
+                  <button class="pill-btn primary" id="saveFromLibrary">Salvar busca atual</button>
+                  <button class="pill-btn" id="importBtn">Importar CSV/XLSX</button>
+                  <button class="pill-btn" id="mergeBtn">Mesclar tabelas</button>
+                </div>
+              </aside>
+
+              <section class="card">
+                <div class="card-head">
+                  <div>
+                    <h3 id="activeTableName">Nubank · Marketing Growth</h3>
+                    <div class="muted">keywords: marketing, growth, cmo · 24 leads</div>
+                  </div>
+                  <div class="library-actions">
+                    <button class="pill-btn" id="exportBtn">Exportar CSV</button>
+                    <button class="pill-btn" id="experimentalBtn">Puxar mais leads</button>
+                    <button class="pill-btn" id="internalEnrichBtn">Enriquecer interno</button>
+                    <button class="pill-btn primary" id="paidEnrichBtn">Enriquecer APIs</button>
+                  </div>
+                </div>
+                <div class="card-body" id="enrichmentBox" style="border-bottom:0.5px solid var(--line)">
+                  <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:10px">
+                    <strong>Enriquecimento pago</strong>
+                    <span class="muted">Selecione leads, estime custo e confirme.</span>
+                  </div>
+                  <div class="library-actions" style="margin-bottom:10px">
+                    <label class="checkbox"><input type="checkbox" checked data-provider="lusha">Lusha</label>
+                    <label class="checkbox"><input type="checkbox" checked data-provider="apollo">Apollo</label>
+                    <label class="checkbox"><input type="checkbox" checked data-provider="pdl">PDL</label>
+                    <label class="checkbox"><input type="checkbox" data-provider="snovio">Snov.io</label>
+                    <span class="spacer"></span>
+                    <div class="seg-mini"><button class="on">Cascata</button><button>Paralelo</button></div>
+                  </div>
+                  <div class="notice hidden" id="estimateNotice" style="margin:0 0 10px">Estimativa: 8 leads × email+phone · teto R$ 41,20 em cascata. Apollo telefone exige webhook HTTPS configurado.</div>
+                  <button class="pill-btn" id="estimateBtn">Calcular gasto</button>
+                  <button class="pill-btn primary" id="confirmPaidBtn">▶ Iniciar cascata</button>
+                </div>
+                <div class="card-body" style="padding-bottom:0">
+                  <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
+                    <button class="pill-btn primary" data-preset="all">Tabela completa</button>
+                    <button class="pill-btn" data-preset="rh">Tabela de RH</button>
+                    <button class="pill-btn" data-preset="people">Tabela de People</button>
+                    <button class="pill-btn" data-preset="tech">Tabela de Tecnologia</button>
+                    <button class="pill-btn" data-preset="sales">Tabela de Vendas</button>
+                    <button class="pill-btn" data-preset="marketing">Tabela de Marketing</button>
+                  </div>
+                  <div id="experimentalResult" class="notice hidden" style="margin-bottom:10px">Busca experimental: 31 candidato(s) · 26 ignorado(s) por duplicidade · <strong>5 novo(s)</strong> · buscadores: SearxNG, DuckDuckGo</div>
+                  <input class="input" id="savedFilter" aria-label="Filtrar leads salvos" placeholder="Filtrar por nome, cargo ou empresa" style="margin-bottom:12px">
+                </div>
+                <div style="overflow:auto;min-width:0">
+                  <table class="saved-leads-table">
+                    <thead><tr><th style="width:42px"></th><th>Pessoa</th><th>Cargo</th><th>Contato</th><th>Consulta</th><th>Empresa</th><th class="right">Score</th><th>LinkedIn</th></tr></thead>
+                    <tbody id="savedBody"></tbody>
+                  </table>
+                </div>
+              </section>
+            </div>
+          </section>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <div class="sheet-overlay" id="settingsSheet" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+    <div class="sheet">
+      <aside class="sheet-side">
+        <div class="sheet-head-row"><h2 id="settings-title">Preferências</h2><button class="sheet-close" data-close="settings">✕</button></div>
+        <button class="nav-item" data-tab="general"><span class="ico">⚙</span>Geral</button>
+        <button class="nav-item" data-tab="account"><span class="ico">◯</span>Conta</button>
+        <button class="nav-item active" data-tab="api"><span class="ico">⎈</span>Chaves de API</button>
+        <button class="nav-item" data-tab="providers"><span class="ico">⌬</span>Provedores</button>
+        <button class="nav-item" data-tab="export"><span class="ico">↧</span>Exportação</button>
+        <button class="nav-item" data-tab="shortcuts"><span class="ico">⌘</span>Atalhos</button>
+        <button class="nav-item" data-tab="about"><span class="ico">ⓘ</span>Sobre</button>
+      </aside>
+      <div class="sheet-body">
+        <section class="settings-tab hidden" data-tab-panel="general">
+          <h3>Geral</h3><p class="dek">Aparência e comportamento padrão do aplicativo.</p>
+          <div class="sheet-section-title">Aparência</div>
+          <div class="sheet-section">
+            <div class="row"><div class="label"><div class="t">Modo escuro</div><div class="s">Troca entre claro e escuro.</div></div><button class="toggle" id="darkToggle"></button></div>
+            <div class="row"><div class="label"><div class="t">Cor de acento</div><div class="s">Muda a cor primária dos botões e destaques.</div></div><div style="display:flex;gap:6px"><span style="width:18px;height:18px;border-radius:50%;background:#007aff;box-shadow:0 0 0 2px var(--surface),0 0 0 3.5px var(--accent)"></span><span style="width:18px;height:18px;border-radius:50%;background:#5856d6"></span><span style="width:18px;height:18px;border-radius:50%;background:#34c759"></span><span style="width:18px;height:18px;border-radius:50%;background:#ff9500"></span><span style="width:18px;height:18px;border-radius:50%;background:#ff3b30"></span></div></div>
+          </div>
+        </section>
+        <section class="settings-tab hidden" data-tab-panel="account">
+          <h3>Conta</h3><p class="dek">Informações da sua conta local. Credenciais ficam no cofre seguro do sistema.</p>
+          <div class="sheet-section-title">Modo recomendado: Chrome aberto (CDP)</div>
+          <div class="sheet-section" style="padding:12px"><p class="dek" style="margin-bottom:8px"><strong>Não desloga você do LinkedIn.</strong> O app conecta ao Chrome que você já tem aberto via remote debugging.</p><pre style="font-family:var(--mono);font-size:11px;background:var(--surface-3);padding:8px;border-radius:4px;overflow:auto;margin:0">"C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222</pre></div>
+          <div class="sheet-section-title">Fallback: cookie li_at (pode deslogar)</div>
+          <div class="sheet-section"><div class="api-row"><div class="api-meta"><span class="api-name">Cookie li_at</span><span class="api-tag">LINKEDIN_LI_AT_COOKIE</span><span class="api-status off"><span class="dot"></span> em branco</span></div><div class="api-desc">Cole o valor de li_at quando a detecção automática falhar.</div><div class="key-input"><input type="password" placeholder="AQED…"><button>Revelar</button></div></div><div class="row"><div class="label"><div class="t">Testar detecção</div><div class="s">Mostra qual backend funcionou.</div></div><button class="pill-btn" id="cookieDiagBtn">Testar agora</button></div></div>
+        </section>
+        <section class="settings-tab" data-tab-panel="api">
+          <h3>Chaves de API</h3><p class="dek">Configure as chaves dos provedores que você usa. Tudo é guardado localmente; nada vai para o repositório.</p>
+          <div class="sheet-section" id="apiFields"></div>
+        </section>
+        <section class="settings-tab hidden" data-tab-panel="providers">
+          <h3>Provedores e buscadores</h3><p class="dek">Status dos provedores baseados nas chaves configuradas.</p>
+          <div class="sheet-section-title">Lead providers</div>
+          <div class="sheet-section" id="providerRows"></div>
+          <div class="sheet-section-title">Search engines</div>
+          <div class="sheet-section" id="engineRows"></div>
+        </section>
+        <section class="settings-tab hidden" data-tab-panel="export">
+          <h3>Exportação</h3><p class="dek">Como o produto final é entregue.</p>
+          <div class="sheet-section"><div class="row"><div class="label"><div class="t">Formato padrão</div><div class="s">CSV ou XLSX.</div></div><select class="input" style="width:120px;height:28px"><option>CSV</option><option>XLSX</option></select></div><div class="row"><div class="label"><div class="t">Encoding</div><div class="s">UTF-8 com BOM para Excel.</div></div><button class="toggle on"></button></div><div class="row"><div class="label"><div class="t">Abrir após exportar</div></div><button class="toggle on"></button></div></div>
+        </section>
+        <section class="settings-tab hidden" data-tab-panel="shortcuts">
+          <h3>Atalhos</h3><p class="dek">Atalhos globais do app.</p>
+          <div class="sheet-section" id="shortcutRows"></div>
+        </section>
+        <section class="settings-tab hidden" data-tab-panel="about">
+          <h3>Sobre</h3><p class="dek">Beautiful LinkedIn é uma CLI Python com interface desktop, escrita para descobrir leads com postura de pesquisador. Licença MIT.</p>
+          <div class="sheet-section"><div class="row"><div class="label"><div class="t">Versão</div></div><div class="mono muted">0.1.0</div></div><div class="row"><div class="label"><div class="t">Verificar atualizações</div></div><button class="pill-btn">Verificar agora</button></div></div>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <div class="sheet-overlay" id="diagnosticsSheet" role="dialog" aria-modal="true" aria-labelledby="diagnostic-title">
+    <div class="sheet">
+      <aside class="sheet-side"><div class="sheet-head-row"><h2 id="diagnostic-title">Diagnóstico</h2><button class="sheet-close" data-close="diagnostics">✕</button></div><p class="dek" style="padding:0 12px">Por que sua busca retornou o que retornou. Sem mascarar o problema.</p></aside>
+      <div class="sheet-body">
+        <h3>Última busca — por provider</h3><p class="dek">Cada provider relata registros brutos, leads aceitos, descartes e erros HTTP.</p>
+        <div class="sheet-section" id="diagnosticRows"></div>
+        <h3 style="margin-top:18px">Chaves carregadas no sidecar</h3><p class="dek"><strong>.env</strong> = arquivo local. <strong>UI</strong> = digitado em Preferências. Chaves em branco caem para fallback público.</p>
+        <div class="sheet-section" id="diagnosticKeys"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="sheet-overlay" id="riskDialog">
+    <div class="dialog-card">
+      <div class="card-body" style="padding:18px">
+        <h3 style="margin:0 0 8px;font-size:16px">Modo de coleta arriscado</h3>
+        <p style="margin:0;color:var(--ink-2)">O modo browser abre um navegador logado fora do CDP e pode bloquear ou deslogar a conta. Este mock demonstra o fluxo de confirmação exigido por <code>accept_risk=true</code>.</p>
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px"><button class="pill-btn" data-close="risk">Cancelar</button><button class="pill-btn danger" data-close="risk">Aceitar risco</button></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="sheet-overlay" id="chromeDialog">
+    <div class="dialog-card">
+      <div class="card-body" style="padding:18px">
+        <h3 style="margin:0 0 8px;font-size:16px">Preparar Chrome via CDP</h3>
+        <p style="margin:0 0 12px;color:var(--ink-2)">Abra o Chrome com remote debugging e acesse <code>https://www.linkedin.com/company/nubank/people/</code>. Quando estiver logado, continue a busca.</p>
+        <div class="notice" style="margin:0 0 12px">cdp_alive: true · linkedin_state: logged_in · target: /company/nubank/</div>
+        <div style="display:flex;justify-content:flex-end;gap:8px"><button class="pill-btn" data-close="chrome">Cancelar</button><button class="pill-btn primary" id="chromeReadyBtn">Continuar</button></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="sheet-overlay" id="smallCompanyDialog">
+    <div class="dialog-card">
+      <div class="card-body" style="padding:18px">
+        <h3 style="margin:0 0 8px;font-size:16px">Empresa pequena detectada</h3>
+        <p style="margin:0;color:var(--ink-2)">A aba People retornou poucos funcionários para a combinação de keywords. Você pode rodar busca geral para trazer todos os cards visíveis.</p>
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px;flex-wrap:wrap"><button class="pill-btn" data-close="small">Cancelar</button><button class="pill-btn" id="continueKeywords">Continuar com keywords</button><button class="pill-btn primary" id="generalPeopleSearch">Busca geral</button></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="enrich-overlay" id="enrichModal">
+    <div class="enrich-overlay-backdrop"></div>
+    <div class="enrich-modal">
+      <div class="enrich-modal-header"><div class="enrich-modal-title"><span class="enrich-modal-dot"></span><h3>Enriquecimento interno</h3></div><p class="enrich-modal-sub" id="enrichSub">Inferindo e-mails profissionais por domínio e padrões conhecidos.</p></div>
+      <div class="enrich-modal-body">
+        <div class="enrich-progress"><div class="enrich-progress-header"><span class="enrich-progress-label">Leads processados</span><span id="enrichMetric">0/24</span></div><div class="enrich-progress-track"><div class="enrich-progress-fill" id="enrichFill" style="width:2%"></div></div></div>
+        <div class="enrich-progress"><div class="enrich-progress-header"><span class="enrich-progress-label">Domínios concluídos</span><span id="domainMetric">0/3</span></div><div class="enrich-progress-track"><div class="enrich-progress-fill" id="domainFill" style="width:2%"></div></div></div>
+        <ul class="enrich-lead-feed" id="enrichFeed"></ul>
+        <div class="enrich-summary-grid hidden" id="enrichSummary"><div class="enrich-summary-card success"><div class="enrich-summary-value">9</div><div class="enrich-summary-label">atualizados</div></div><div class="enrich-summary-card"><div class="enrich-summary-value">15</div><div class="enrich-summary-label">sem mudança</div></div><div class="enrich-summary-card"><div class="enrich-summary-value">3</div><div class="enrich-summary-label">domínios</div></div><div class="enrich-summary-card"><div class="enrich-summary-value">0</div><div class="enrich-summary-label">APIs pagas</div></div></div>
+      </div>
+      <div class="enrich-modal-footer"><button class="pill-btn" id="minimizeEnrich">Minimizar</button><button class="pill-btn primary hidden" id="closeEnrich">Fechar</button></div>
+    </div>
+  </div>
+  <button class="enrich-pill" id="enrichPill"><span class="enrich-pill-dot"></span><span><span class="enrich-pill-table">Nubank · Marketing Growth</span><span class="enrich-pill-status">Enriquecimento interno concluído · 9 atualizados</span></span><span>↗</span><span class="enrich-pill-track"></span></button>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    const leads = [
+      {name:"Marina Costa", title:"Head of Growth Marketing", company:"Nubank", source:"linkedin_people", score:98, url:"linkedin.com/in/marina-costa", email:"marina.costa@nubank.com.br", phone:"+55 11 94002-0188", note:"Extraido apos 1 clique, posicao 2.", consulted:"LUSHA"},
+      {name:"Rafael Lima", title:"Director of Performance Marketing", company:"Nubank", source:"apollo", score:95, url:"linkedin.com/in/rafael-lima", email:"rafael.lima@nubank.com.br", phone:"", consulted:"APOLLO"},
+      {name:"Bianca Souza", title:"Growth Strategy Lead", company:"Nubank", source:"linkedin_people", score:92, url:"linkedin.com/in/bianca-souza", email:"", phone:"", note:"Extraido apos 2 cliques, posicao 8."},
+      {name:"Thiago Martins", title:"CMO Brazil", company:"Nubank", source:"pdl", score:90, url:"linkedin.com/in/thiago-martins", email:"thiago.martins@nubank.com.br", phone:"+55 11 98822-2001", consulted:"PDL"},
+      {name:"Camila Rocha", title:"Demand Generation Manager", company:"Nubank", source:"serp", score:86, url:"linkedin.com/in/camila-rocha", email:"", phone:"", maybe:true},
+      {name:"Lucas Pereira", title:"Head of Brand", company:"Nubank", source:"linkedin_people", score:84, url:"linkedin.com/in/lucas-pereira", email:"lucas.pereira@nubank.com.br", phone:"", note:"Extraido apos 3 cliques, posicao 13."},
+      {name:"Fernanda Alves", title:"Lifecycle Marketing Lead", company:"Nubank", source:"apollo", score:82, url:"linkedin.com/in/fernanda-alves", email:"", phone:"", consulted:"APOLLO_EMPTY"},
+      {name:"Gustavo Moreira", title:"Senior Growth Analyst", company:"Nubank", source:"searxng", score:76, url:"linkedin.com/in/gustavo-moreira", email:"gustavo.moreira@nubank.com.br", phone:""},
+      {name:"Paula Mendes", title:"Product Marketing Director", company:"Nubank", source:"linkedin_people", score:74, url:"linkedin.com/in/paula-mendes", email:"", phone:"", note:"Extraido apos 4 cliques, posicao 20."},
+      {name:"Joao Carvalho", title:"Marketing Operations", company:"Nubank", source:"duckduckgo", score:67, url:"linkedin.com/in/joao-carvalho", email:"", phone:"", maybe:true}
+    ];
+    const savedExtra = [
+      {name:"Daniela Teixeira", title:"VP Marketing LatAm", company:"Nubank", source:"coresignal", score:96, url:"linkedin.com/in/daniela-teixeira", email:"daniela.teixeira@nubank.com.br", phone:"+55 11 95500-3311", consulted:"LUSHA"},
+      {name:"Andre Oliveira", title:"CRM Growth Manager", company:"Nubank", source:"serper", score:81, url:"linkedin.com/in/andre-oliveira", email:"", phone:""},
+      {name:"Patricia Freitas", title:"People Analytics Lead", company:"Nubank", source:"linkedin_people", score:71, url:"linkedin.com/in/patricia-freitas", email:"", phone:""},
+      {name:"Eduardo Ramos", title:"Sales Enablement Manager", company:"Nubank", source:"apollo", score:70, url:"linkedin.com/in/eduardo-ramos", email:"", phone:""}
+    ];
+    const allSaved = leads.concat(savedExtra);
+    const apiFields = [
+      ["Serper","SERPER_API_KEY","Pesquisa Google via API. Primeira opção quando SearxNG estiver fora.",true,true],
+      ["Brave Search","BRAVE_SEARCH_API_KEY","Busca alternativa, sem cota agressiva.",true,false],
+      ["Google CSE","GOOGLE_CUSTOM_SEARCH_API_KEY","Custom Search Engine. Precisa do CX abaixo.",true,true],
+      ["Google CSE CX","GOOGLE_CUSTOM_SEARCH_CX","Identificador do mecanismo CSE.",false,true],
+      ["SearxNG","SEARXNG_BASE_URL","Self-hosted. Prioridade quando configurado.",false,true],
+      ["People Data Labs","PEOPLE_DATA_LABS_API_KEY","Resolução de company_id e enriquecimento.",true,true],
+      ["Apollo.io","APOLLO_API_KEY","Estratégia by-company antes do search legado.",true,true],
+      ["Coresignal","CORESIGNAL_API_KEY","Dados de empresa em larga escala.",true,false],
+      ["Lusha","LUSHA_API_KEY","Contatos verificados; respeita opt-out e LGPD.",true,true],
+      ["Apify Actor","APIFY_API_KEY","Scraper TypeScript em linkedin-api-scrapper/.",true,false],
+      ["LinkedIn li_at","LINKEDIN_LI_AT_COOKIE","Cookie usado pelo modo Cookie. Mantenha local.",true,false]
+    ];
+
+    let resultFilter = "all";
+    let running = false;
+
+    function initials(name) {
+      return name.split(/\s+/).slice(0, 2).map(p => p[0]).join("").toUpperCase();
+    }
+    function colorFor(seed) {
+      const colors = ["#ff9500","#ff3b30","#5856d6","#34c759","#007aff","#ff2d55","#af52de","#5ac8fa"];
+      let hash = 0;
+      for (let i = 0; i < seed.length; i++) hash = (hash * 31 + seed.charCodeAt(i)) | 0;
+      return colors[Math.abs(hash) % colors.length];
+    }
+    function scoreColor(score) {
+      if (score >= 95) return "#34c759";
+      if (score >= 85) return "#007aff";
+      if (score >= 70) return "#ff9500";
+      return "#ff3b30";
+    }
+    function toast(message, kind = "success") {
+      const el = document.getElementById("toast");
+      el.className = `toast show ${kind === "error" ? "error" : ""}`;
+      el.textContent = message;
+      clearTimeout(el._timer);
+      el._timer = setTimeout(() => el.classList.remove("show"), 2800);
+    }
+    function resultRows() {
+      const query = document.getElementById("leadFilter").value.toLowerCase();
+      return leads.filter(l => {
+        const bySeg = resultFilter === "all" || (resultFilter === "head" && /head|director|vp|cmo/i.test(l.title)) || (resultFilter === "growth" && /growth/i.test(l.title));
+        const byQuery = !query || `${l.name} ${l.title}`.toLowerCase().includes(query);
+        return bySeg && byQuery;
+      });
+    }
+    function leadRow(l, index) {
+      return `<tr style="animation-delay:${Math.min(index, 8) * 35}ms">
+        <td><div class="person"><div class="avatar" style="background:${colorFor(l.name)}">${initials(l.name)}</div><div style="min-width:0"><div class="nm">${l.name}</div><a class="hd" href="https://www.${l.url}" target="_blank">${l.url}</a><div class="lead-badges">${l.maybe ? '<span class="lead-badge warning">Talvez incorreto</span>' : ''}${l.note ? `<span class="lead-badge consulted">${l.note}</span>` : ''}</div></div></div></td>
+        <td>${l.title}</td><td>${l.company}</td>
+        <td><span class="src-tag"><span class="dot" style="color:var(--ink-4)"></span>${l.source}</span></td>
+        <td class="right"><div class="score-bar"><div class="bar"><span style="width:${l.score}%;background:${scoreColor(l.score)}"></span></div><span class="v">${l.score}</span></div><div style="margin-top:7px;display:flex;justify-content:flex-end;gap:6px"><button class="pill-btn" style="min-height:24px;padding:0 9px" onclick="toast('Abrindo ${l.name} no LinkedIn')">Visitar</button><button class="pill-btn" style="min-height:24px;padding:0 9px" onclick="toast('Nome copiado: ${l.name}')">Copiar</button></div></td>
+      </tr>`;
+    }
+    function renderResults() {
+      const rows = resultRows();
+      document.getElementById("resultsCount").textContent = `· ${rows.length} leads`;
+      document.getElementById("resultsBody").innerHTML = rows.map(leadRow).join("");
+    }
+    function apiButton(l) {
+      if (!l.consulted) return '<span style="color:var(--ink-3)">—</span>';
+      const empty = l.consulted.endsWith("_EMPTY");
+      const label = l.consulted.replace("_EMPTY", "");
+      return `<button class="api-consult-btn ${empty ? "empty" : ""}" onclick="toast('${empty ? "API consultada sem dado novo" : "Dados retornados via " + label}')"><span class="idle">Já consultado via API ${label}</span><span class="hover">Verificar consulta</span></button>`;
+    }
+    function savedRow(l, index) {
+      return `<tr><td><input class="saved-check" type="checkbox" ${index < 8 ? "checked" : ""}></td><td><span class="saved-cell-strong">${l.name}</span></td><td><span class="saved-cell-wrap">${l.title}</span></td><td><span class="saved-cell-wrap">${l.email || "—"}</span>${l.phone ? `<div style="color:var(--ink-3)">${l.phone}</div>` : ""}</td><td>${apiButton(l)}</td><td><span class="saved-cell-wrap">${l.company}</span></td><td class="right mono">${l.score}</td><td><a class="saved-link" href="https://www.${l.url}" target="_blank">abrir ↗</a></td></tr>`;
+    }
+    function renderSaved() {
+      const query = document.getElementById("savedFilter").value.toLowerCase();
+      document.getElementById("savedBody").innerHTML = allSaved
+        .filter(l => !query || `${l.name} ${l.title} ${l.company}`.toLowerCase().includes(query))
+        .map(savedRow).join("");
+    }
+    function switchView(view) {
+      document.querySelectorAll(".view").forEach(v => v.classList.toggle("active", v.id === `view-${view}`));
+      document.querySelectorAll("[data-view-btn]").forEach(b => b.classList.toggle("active", b.dataset.viewBtn === view));
+      document.getElementById("crumbCurrent").textContent = view === "leads" ? "Leads salvos" : "Nova busca";
+    }
+    function openSheet(id) {
+      document.getElementById(id + "Sheet")?.classList.add("open");
+    }
+    function closeSheet(id) {
+      document.getElementById(id + "Sheet")?.classList.remove("open");
+    }
+    function setSettingsTab(tab) {
+      document.querySelectorAll("[data-tab]").forEach(b => b.classList.toggle("active", b.dataset.tab === tab));
+      document.querySelectorAll("[data-tab-panel]").forEach(p => p.classList.toggle("hidden", p.dataset.tabPanel !== tab));
+    }
+    function renderSettings() {
+      document.getElementById("apiFields").innerHTML = apiFields.map(([name, env, desc, secret, configured]) => `<div class="api-row"><div class="api-meta"><span class="api-name">${name}</span><span class="api-tag">${env}</span><span class="api-status ${configured ? "" : "off"}"><span class="dot"></span>${configured ? "configurado" : "em branco"}</span></div><div class="api-desc">${desc}</div><div class="key-input"><input type="${secret ? "password" : "text"}" value="${configured ? (secret ? "••••••••••••••••" : env === "SEARXNG_BASE_URL" ? "http://localhost:8080" : "mock-value") : ""}" placeholder="Cole sua chave ${name}…"><button>${secret ? "Revelar" : "Editar"}</button></div></div>`).join("");
+      const providers = [["People Data Labs", true],["Apollo.io", true],["Coresignal", false],["Lusha", true],["Apify LinkedIn Actor", false]];
+      const engines = [["SearxNG (local)", true, "Prioridade quando configurado"],["Serper", true, "Google via API"],["Brave Search", false, "Alternativa sem login"],["Google CSE", true, "Precisa de CX"]];
+      document.getElementById("providerRows").innerHTML = providers.map(([n, on]) => `<div class="row"><div class="label"><div class="t">${n}</div><div class="s mono">${n.toLowerCase().replaceAll(" ","_")}_api_key</div></div><span class="api-status ${on ? "" : "off"}"><span class="dot"></span>${on ? "ativo" : "desligado"}</span></div>`).join("");
+      document.getElementById("engineRows").innerHTML = engines.map(([n, on, d]) => `<div class="row"><div class="label"><div class="t">${n}</div><div class="s">${d}</div></div><span class="api-status ${on ? "" : "off"}"><span class="dot"></span>${on ? "ativo" : "desligado"}</span></div>`).join("");
+      document.getElementById("shortcutRows").innerHTML = [["Buscar leads","Ctrl ↵"],["Nova busca","Ctrl N"],["Abrir preferências","Ctrl ,"],["Alternar modo escuro","Ctrl ⇧ D"],["Filtrar resultados","Ctrl F"],["Exportar CSV","Ctrl E"]].map(([n,k]) => `<div class="row"><div class="label"><div class="t">${n}</div></div><kbd class="mono" style="font-size:11px;background:var(--surface-3);padding:3px 7px;border-radius:5px">${k}</kbd></div>`).join("");
+    }
+    function renderDiagnostics() {
+      const ds = [
+        ["linkedin_people_search","Nubank",34,18,6,10,"",["CDP ativo em http://127.0.0.1:9222","Loop parou ao atingir max_results"]],
+        ["apollo","Nubank",8,4,0,2,"",["API consultada com estrategia by-company"]],
+        ["pdl","Nubank",5,2,1,1,"",["company_id resolvido"]],
+        ["duckduckgo","Nubank",0,0,0,0,"timeout apos fallback HTML",[]]
+      ];
+      document.getElementById("diagnosticRows").innerHTML = ds.map(([p,c,raw,acc,disc,err,errMsg,notes]) => `
+        <div class="api-row">
+          <div class="api-meta">
+            <span class="api-name mono">${p}</span>
+            <span class="api-tag">${c}</span>
+            ${errMsg ? `<span class="api-status off">${errMsg}</span>` : `<span class="api-status"><span class="dot"></span>${acc} aceitos</span>`}
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin:8px 0;font-size:11px">
+            <div><div style="font-weight:600;color:var(--ink)">${raw}</div><div style="color:var(--ink-3)">brutos</div></div>
+            <div><div style="font-weight:600;color:var(--ink)">${acc}</div><div style="color:var(--ink-3)">aceitos</div></div>
+            <div><div style="font-weight:600;color:var(--ink)">${disc}</div><div style="color:var(--ink-3)">descartes</div></div>
+            <div><div style="font-weight:600;color:var(--risky)">${err}</div><div style="color:var(--ink-3)">erros</div></div>
+          </div>
+          ${notes.length ? `<div style="font-size:11px;color:var(--ink-3)">${notes.map(n=>`· ${n}`).join("<br>")}</div>` : ""}
+        </div>`).join("");
+
+      const diagKeys = [
+        ["SERPER_API_KEY","env"],["PEOPLE_DATA_LABS_API_KEY","env"],["APOLLO_API_KEY","env"],
+        ["LUSHA_API_KEY","ui"],["SEARXNG_BASE_URL","env"],["LINKEDIN_LI_AT_COOKIE","missing"],
+        ["CORESIGNAL_API_KEY","missing"]
+      ];
+      document.getElementById("diagnosticKeys").innerHTML = diagKeys.map(([k,src]) =>
+        `<div class="row"><div class="label"><div class="t mono" style="font-size:12px">${k}</div></div>
+         <span class="api-tag src-${src}">${src === "env" ? ".env" : src === "ui" ? "UI" : "—"}</span></div>`
+      ).join("");
+    }
+
+    /* ── Enrichment animation ── */
+    let enrichTimer = null;
+    function runEnrichAnimation() {
+      const fill = document.getElementById("enrichFill");
+      const domFill = document.getElementById("domainFill");
+      const metric = document.getElementById("enrichMetric");
+      const domMetric = document.getElementById("domainMetric");
+      const feed = document.getElementById("enrichFeed");
+      const sub = document.getElementById("enrichSub");
+      const names = allSaved.map(l => l.name);
+      const domains = ["nubank.com.br","nubank.com","nu.com.br"];
+      let i = 0;
+      let d = 0;
+      fill.style.width = "2%";
+      domFill.style.width = "2%";
+      feed.innerHTML = "";
+      document.getElementById("enrichSummary").classList.add("hidden");
+      document.getElementById("closeEnrich").classList.add("hidden");
+      sub.textContent = "Inferindo e-mails profissionais por domínio e padrões conhecidos.";
+      clearInterval(enrichTimer);
+      enrichTimer = setInterval(() => {
+        if (i >= names.length) {
+          clearInterval(enrichTimer);
+          fill.style.width = "100%";
+          domFill.style.width = "100%";
+          metric.textContent = `${names.length}/${names.length}`;
+          domMetric.textContent = `${domains.length}/${domains.length}`;
+          sub.textContent = "Concluído — 9 e-mails inferidos com padrão first.last@domínio.";
+          document.getElementById("enrichSummary").classList.remove("hidden");
+          document.getElementById("closeEnrich").classList.remove("hidden");
+          document.getElementById("minimizeEnrich").classList.add("hidden");
+          return;
+        }
+        i++;
+        if (i % 4 === 0 && d < domains.length) d++;
+        const pct = Math.round((i / names.length) * 100);
+        fill.style.width = pct + "%";
+        domFill.style.width = Math.round((d / domains.length) * 100) + "%";
+        metric.textContent = `${i}/${names.length}`;
+        domMetric.textContent = `${d}/${domains.length}`;
+        const icons = ["✓","✓","✓","·","✓","✗","✓","✓","·","·","✓","✓","✗","✓"];
+        const icon = icons[i % icons.length];
+        const color = icon === "✓" ? "var(--success)" : icon === "✗" ? "var(--risky)" : "var(--ink-4)";
+        const li = document.createElement("li");
+        li.className = "enrich-lead-row";
+        li.style.animationDelay = "0ms";
+        li.innerHTML = `<span style="color:${color};font-weight:700">${icon}</span>
+          <span><span class="enrich-lead-name">${names[i-1]}</span>
+          <span class="enrich-lead-company"> · ${allSaved[i-1]?.company || "Nubank"}</span></span>
+          <span style="font-size:11px;color:var(--ink-3);font-family:var(--mono)">${icon==="✓" ? "inferido" : icon==="✗" ? "falhou" : "pulado"}</span>`;
+        feed.prepend(li);
+        if (feed.children.length > 7) feed.lastChild.remove();
+      }, 180);
+    }
+
+    /* ── Fake search simulation ── */
+    function runFakeSearch() {
+      if (running) return;
+      running = true;
+      const btn = document.getElementById("runSearchBtn");
+      btn.innerHTML = '<span class="spinner"></span> Buscando…';
+      btn.disabled = true;
+      document.getElementById("feedback").className = "notice hidden";
+      let elapsed = 0;
+      const steps = [
+        [600, () => toast("Conectando ao Chrome CDP…")],
+        [1400, () => toast("Abrindo /company/nubank/people…")],
+        [2400, () => toast("Loop iterativo: clique 1 · 24 cards extraídos")],
+        [3200, () => toast("Validando títulos com filtro estrito…")],
+        [4000, () => {
+          btn.innerHTML = 'Buscar leads <span style="opacity:.7;font-size:11px">Ctrl↵</span>';
+          btn.disabled = false;
+          running = false;
+          renderResults();
+          document.getElementById("feedback").className = "notice";
+          document.getElementById("feedback").textContent = "Busca finalizada · 24 leads únicos · output/nubank_marketing_growth.csv";
+          toast("Busca finalizada · 24 leads encontrados ✓");
+        }]
+      ];
+      steps.forEach(([delay, fn]) => setTimeout(fn, delay));
+    }
+
+    /* ── Init ── */
+    renderResults();
+    renderSaved();
+    renderSettings();
+    renderDiagnostics();
+    setSettingsTab("api");
+
+    /* ── View switching ── */
+    document.querySelectorAll("[data-view-btn]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const view = btn.dataset.viewBtn;
+        switchView(view);
+        if (view === "leads") renderSaved();
+      });
+    });
+
+    /* ── Settings / sheets open ── */
+    document.querySelectorAll("[data-open]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const id = btn.dataset.open;
+        openSheet(id);
+        if (id === "settings" && btn.dataset.settingsTab) {
+          setSettingsTab(btn.dataset.settingsTab);
+        }
+      });
+    });
+
+    /* ── Close buttons ── */
+    document.querySelectorAll("[data-close]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const id = btn.dataset.close;
+        if (id === "settings") closeSheet("settings");
+        else if (id === "diagnostics") closeSheet("diagnostics");
+        else if (id === "risk") document.getElementById("riskDialog").classList.remove("open");
+        else if (id === "chrome") document.getElementById("chromeDialog").classList.remove("open");
+        else if (id === "small") document.getElementById("smallCompanyDialog").classList.remove("open");
+      });
+    });
+
+    /* Close sheets by clicking backdrop */
+    document.querySelectorAll(".sheet-overlay").forEach(overlay => {
+      overlay.addEventListener("click", e => {
+        if (e.target === overlay) overlay.classList.remove("open");
+      });
+    });
+
+    /* ── Settings tabs ── */
+    document.querySelectorAll("[data-tab]").forEach(btn => {
+      btn.addEventListener("click", () => setSettingsTab(btn.dataset.tab));
+    });
+
+    /* ── Theme toggle ── */
+    const themeBtn = document.getElementById("themeBtn");
+    const darkToggle = document.getElementById("darkToggle");
+    function applyTheme(dark) {
+      document.documentElement.classList.toggle("dark", dark);
+      themeBtn.textContent = dark ? "☀️" : "🌙";
+      darkToggle.classList.toggle("on", dark);
+    }
+    themeBtn.addEventListener("click", () => applyTheme(!document.documentElement.classList.contains("dark")));
+    darkToggle.addEventListener("click", () => applyTheme(!document.documentElement.classList.contains("dark")));
+
+    /* ── Search form ── */
+    document.getElementById("searchForm").addEventListener("submit", e => {
+      e.preventDefault();
+      runFakeSearch();
+    });
+    document.addEventListener("keydown", e => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+        e.preventDefault();
+        runFakeSearch();
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === ",") {
+        e.preventDefault();
+        openSheet("settings");
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "n") {
+        e.preventDefault();
+        switchView("search");
+      }
+    });
+
+    /* ── Result filter ── */
+    document.getElementById("leadFilter").addEventListener("input", renderResults);
+    document.querySelectorAll("[data-result-filter]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        resultFilter = btn.dataset.resultFilter;
+        document.querySelectorAll("[data-result-filter]").forEach(b => b.classList.toggle("on", b === btn));
+        renderResults();
+      });
+    });
+
+    /* ── Saved filter ── */
+    document.getElementById("savedFilter").addEventListener("input", renderSaved);
+
+    /* ── Mode selector ── */
+    const modeHints = {
+      people_search: "Busca via /company/<empresa>/people com CDP. Lê cards do listing direto, sem abrir perfis.",
+      api: "APIs externas (Apollo, PDL, Lusha, Coresignal) + busca pública. Recomendado para alto volume.",
+    };
+    document.querySelectorAll("[data-mode-select]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const m = btn.dataset.modeSelect;
+        document.querySelectorAll("[data-mode-select]").forEach(b => b.classList.toggle("on", b === btn));
+        document.getElementById("modeHint").textContent = modeHints[m] || "";
+      });
+    });
+    document.querySelectorAll("[data-mode]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll("[data-mode]").forEach(b => b.classList.remove("secondary-active"));
+        btn.classList.add("secondary-active");
+      });
+    });
+
+    /* ── Chips toggle ── */
+    document.querySelectorAll(".chip").forEach(chip => {
+      chip.addEventListener("click", () => chip.classList.toggle("on"));
+    });
+
+    /* ── Preset tabs (saved leads) ── */
+    document.querySelectorAll("[data-preset]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll("[data-preset]").forEach(b => b.classList.remove("primary"));
+        btn.classList.add("primary");
+        toast(`Filtro: ${btn.textContent}`);
+      });
+    });
+
+    /* ── Table item selection ── */
+    const tableData = {
+      nubank: { name: "Nubank · Marketing Growth", meta: "keywords: marketing, growth, cmo · 24 leads" },
+      mercado: { name: "Mercado Livre · Vendas", meta: "keywords: sales, vendas, account executive · 18 leads" },
+      ifood: { name: "iFood · People", meta: "keywords: rh, talent, people · 14 leads" }
+    };
+    document.querySelectorAll(".table-item").forEach(btn => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll(".table-item").forEach(b => b.classList.remove("active"));
+        btn.classList.add("active");
+        const data = tableData[btn.dataset.table];
+        if (data) {
+          document.getElementById("activeTableName").textContent = data.name;
+          document.getElementById("activeTableName").nextElementSibling.textContent = data.meta;
+          document.getElementById("titleContext").textContent = data.name;
+        }
+        renderSaved();
+        toast(`Tabela "${btn.querySelector(".table-title").textContent}" carregada`);
+      });
+    });
+
+    /* ── Library action buttons ── */
+    document.getElementById("saveCurrentBtn")?.addEventListener("click", () => {
+      toast("Busca atual salva · 24 leads");
+      document.getElementById("savedCount").textContent = "25";
+    });
+    document.getElementById("saveFromLibrary")?.addEventListener("click", () => toast("Busca atual salva · 24 leads"));
+    document.getElementById("importBtn")?.addEventListener("click", () => toast("Simulação: selecione um arquivo CSV/XLSX"));
+    document.getElementById("mergeBtn")?.addEventListener("click", () => toast("Selecione ao menos 2 tabelas para mesclar", "error"));
+    document.getElementById("exportBtn")?.addEventListener("click", () => toast("CSV exportado em output/nubank_marketing_growth.csv ✓"));
+    document.getElementById("experimentalBtn")?.addEventListener("click", () => {
+      toast("Busca experimental iniciada…");
+      setTimeout(() => {
+        document.getElementById("experimentalResult").classList.remove("hidden");
+        toast("5 leads novos adicionados via busca experimental ✓");
+      }, 1800);
+    });
+
+    /* ── Internal enrichment ── */
+    document.getElementById("internalEnrichBtn")?.addEventListener("click", () => {
+      document.getElementById("enrichModal").classList.add("open");
+      document.getElementById("minimizeEnrich").classList.remove("hidden");
+      document.getElementById("enrichPill").classList.remove("show");
+      runEnrichAnimation();
+    });
+    document.getElementById("minimizeEnrich")?.addEventListener("click", () => {
+      document.getElementById("enrichModal").classList.remove("open");
+      document.getElementById("enrichPill").classList.add("show");
+    });
+    document.getElementById("closeEnrich")?.addEventListener("click", () => {
+      clearInterval(enrichTimer);
+      document.getElementById("enrichModal").classList.remove("open");
+      document.getElementById("enrichPill").classList.remove("show");
+      toast("Enriquecimento interno concluído · 9 atualizados ✓");
+    });
+    document.getElementById("enrichPill")?.addEventListener("click", () => {
+      document.getElementById("enrichModal").classList.add("open");
+      document.getElementById("enrichPill").classList.remove("show");
+    });
+
+    /* ── Paid enrichment ── */
+    document.getElementById("paidEnrichBtn")?.addEventListener("click", () => {
+      document.getElementById("enrichmentBox").classList.toggle("hidden");
+    });
+    document.getElementById("estimateBtn")?.addEventListener("click", () => {
+      document.getElementById("estimateNotice").classList.remove("hidden");
+      toast("Estimativa calculada: teto R$ 41,20");
+    });
+    document.getElementById("confirmPaidBtn")?.addEventListener("click", () => {
+      toast("Cascata de enriquecimento iniciada…");
+      setTimeout(() => toast("LUSHA: R$ 14,40 · 8 atualizados ✓"), 1200);
+    });
+
+    /* ── Dialogs ── */
+    document.getElementById("chromeReadyBtn")?.addEventListener("click", () => {
+      document.getElementById("chromeDialog").classList.remove("open");
+      toast("Chrome CDP detectado · continuando busca…");
+    });
+    document.getElementById("continueKeywords")?.addEventListener("click", () => {
+      document.getElementById("smallCompanyDialog").classList.remove("open");
+      toast("Continuando com keywords…");
+    });
+    document.getElementById("generalPeopleSearch")?.addEventListener("click", () => {
+      document.getElementById("smallCompanyDialog").classList.remove("open");
+      toast("Iniciando busca geral…");
+    });
+    document.getElementById("cookieDiagBtn")?.addEventListener("click", () => {
+      toast("CDP detectado · linkedin_state: logged_in ✓");
+    });
+
+    /* ── Escape key closes all modals ── */
+    document.addEventListener("keydown", e => {
+      if (e.key === "Escape") {
+        document.querySelectorAll(".sheet-overlay.open").forEach(o => o.classList.remove("open"));
+        document.getElementById("enrichModal").classList.remove("open");
+        clearInterval(enrichTimer);
+      }
+    });
+  </script>
+</body>
+</html>

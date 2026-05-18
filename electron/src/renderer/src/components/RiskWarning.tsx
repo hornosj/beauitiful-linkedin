@@ -1,12 +1,25 @@
+import { useEffect } from 'react'
+
 interface Props {
   onCancel(): void
   onConfirm(): void
 }
 
 export default function RiskWarning(props: Props) {
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') props.onCancel()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [props])
+
   return (
     <div
       className="sheet-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="risk-warning-title"
       onClick={(e) => {
         if (e.target === e.currentTarget) props.onCancel()
       }}
@@ -44,7 +57,7 @@ export default function RiskWarning(props: Props) {
               </svg>
             </span>
             <div>
-              <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600, color: 'var(--ink)' }}>
+              <h3 id="risk-warning-title" style={{ margin: 0, fontSize: 16, fontWeight: 600, color: 'var(--ink)' }}>
                 Modo arriscado
               </h3>
               <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>
@@ -74,7 +87,7 @@ export default function RiskWarning(props: Props) {
           </ul>
 
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-            <button type="button" className="pill-btn" onClick={props.onCancel}>
+            <button type="button" className="pill-btn" onClick={props.onCancel} autoFocus>
               Cancelar
             </button>
             <button

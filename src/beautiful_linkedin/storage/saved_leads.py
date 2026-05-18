@@ -285,11 +285,13 @@ class SavedLeadsStore:
         return inserted
 
     def list_leads(self, table_id: str) -> list[Lead]:
+        # SELECT * so the enrichment columns flow through to the Lead
+        # without each new field needing an extra rename.
         with self._lock, self._connect() as connection:
             self._assert_table_exists(connection, table_id)
             rows = connection.execute(
-                f"""
-                SELECT {", ".join(OUTPUT_COLUMNS)}
+                """
+                SELECT *
                 FROM saved_leads
                 WHERE table_id = ?
                 ORDER BY confidence_score DESC, id ASC
@@ -430,7 +432,8 @@ class SavedLeadsStore:
                 lead_key = _lead_key_for(lead, fallback_index=0)
                 existing = connection.execute(
                     """
-                    SELECT email, phone, consultation_note
+                    SELECT email, phone, consultation_note,
+                           email_verified_by_json, email_alternatives_json
                     FROM saved_leads
                     WHERE table_id = ? AND lead_key = ?
                     """,
@@ -440,6 +443,26 @@ class SavedLeadsStore:
                     continue
                 email = existing["email"] or update.email
                 phone = existing["phone"] or update.phone
+                # Cross-provider verification trail. Same email coming
+                # from a paid provider that internal already found turns
+                # into a badge; a different email goes to the alts list.
+                verified_by, alternatives = _merge_email_verification(
+                    existing_email=existing["email"],
+                    existing_verified_by=_json_list(
+                        existing["email_verified_by_json"]
+                        if "email_verified_by_json" in existing.keys()
+                        else None
+                    ),
+                    existing_alternatives=_json_dict_list(
+                        existing["email_alternatives_json"]
+                        if "email_alternatives_json" in existing.keys()
+                        else None
+                    ),
+                    incoming_email=update.email,
+                    incoming_source=update.provider,
+                    incoming_confidence=None,
+                    now=now,
+                )
                 note = _append_note(
                     existing["consultation_note"],
                     update.note or f"Enriquecido via {update.provider}.",
@@ -448,7 +471,11 @@ class SavedLeadsStore:
                     """
                     UPDATE saved_leads
                     SET email = ?, phone = ?, consultation_note = ?,
-                        enrichment_payload_json = ?, enriched_at = ?
+                        enrichment_payload_json = ?, enriched_at = ?,
+                        enrichment_source = ?,
+                        enrichment_status = ?,
+                        email_verified_by_json = ?,
+                        email_alternatives_json = ?
                     WHERE table_id = ? AND lead_key = ?
                     """,
                     (
@@ -464,6 +491,10 @@ class SavedLeadsStore:
                             sort_keys=True,
                         ),
                         now,
+                        update.provider,
+                        "api_consulted",
+                        json.dumps(verified_by, ensure_ascii=False),
+                        json.dumps(alternatives, ensure_ascii=False),
                         table_id,
                         lead_key,
                     ),
@@ -483,6 +514,186 @@ class SavedLeadsStore:
                     (ENRICHMENT_ENRICHED, now, table_id),
                 )
         return updated
+
+    def mark_api_enrichment_attempt(
+        self,
+        table_id: str,
+        leads: list[Lead],
+        *,
+        provider: str,
+        raw: dict[str, Any] | None = None,
+    ) -> int:
+        """Mark leads as consulted by a paid API even when no data changed."""
+        if not leads:
+            return 0
+        now = _now_iso()
+        updated = 0
+        note = f"Consultado via API {provider}; nenhum dado novo retornado."
+        payload = {
+            "provider": provider,
+            "status": "no_data",
+            "raw": raw or {},
+        }
+        with self._lock, self._connect() as connection:
+            self._assert_table_exists(connection, table_id)
+            for lead in leads:
+                lead_key = _lead_key_for(lead, fallback_index=0)
+                existing = connection.execute(
+                    """
+                    SELECT consultation_note
+                    FROM saved_leads
+                    WHERE table_id = ? AND lead_key = ?
+                    """,
+                    (table_id, lead_key),
+                ).fetchone()
+                if existing is None:
+                    continue
+                cursor = connection.execute(
+                    """
+                    UPDATE saved_leads
+                    SET consultation_note = ?,
+                        enrichment_payload_json = ?,
+                        enriched_at = ?,
+                        enrichment_source = ?,
+                        enrichment_status = ?
+                    WHERE table_id = ? AND lead_key = ?
+                    """,
+                    (
+                        _append_note(existing["consultation_note"], note),
+                        json.dumps(payload, ensure_ascii=False, sort_keys=True),
+                        now,
+                        provider,
+                        "api_consulted_no_data",
+                        table_id,
+                        lead_key,
+                    ),
+                )
+                if cursor.rowcount > 0:
+                    updated += 1
+            if updated:
+                connection.execute(
+                    """
+                    UPDATE saved_lead_tables
+                    SET updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (now, table_id),
+                )
+        return updated
+
+    def apply_internal_enrichment_updates(
+        self,
+        table_id: str,
+        updates: list[tuple[Lead, Any]],
+    ) -> dict[str, int]:
+        """Persist the outcome of :class:`InternalLeadEnrichmentService` runs.
+
+        Each tuple is ``(lead, EnrichmentUpdate)``. The lead is matched by
+        the same ``lead_key`` we already use for upserts. We never overwrite
+        an existing e-mail — that's the service's contract — and we always
+        persist the enrichment metadata, even on failures, so the UI can
+        show "tried, no domain" / "tried, mismatched pattern".
+
+        Returns counters: ``{"enriched": N, "skipped_existing_email": M,
+        "failed_missing_domain": K, "no_change": L}``.
+        """
+        counters = {
+            "enriched": 0,
+            "skipped_existing_email": 0,
+            "failed_missing_domain": 0,
+            "no_change": 0,
+        }
+        if not updates:
+            return counters
+        now = _now_iso()
+        with self._lock, self._connect() as connection:
+            self._assert_table_exists(connection, table_id)
+            for lead, update in updates:
+                lead_key = _lead_key_for(lead, fallback_index=0)
+                existing = connection.execute(
+                    """
+                    SELECT email, email_verified_by_json, email_alternatives_json
+                    FROM saved_leads
+                    WHERE table_id = ? AND lead_key = ?
+                    """,
+                    (table_id, lead_key),
+                ).fetchone()
+                if existing is None:
+                    counters["no_change"] += 1
+                    continue
+
+                # Bucket each outcome for the response summary.
+                status_value = getattr(update.enrichment_status, "value", str(update.enrichment_status))
+                if update.skipped_existing_email or existing["email"]:
+                    counters["skipped_existing_email"] += 1
+                elif update.failure_reason == "missing_domain":
+                    counters["failed_missing_domain"] += 1
+                elif update.email:
+                    counters["enriched"] += 1
+                else:
+                    counters["no_change"] += 1
+
+                # Same cross-provider trail logic as the paid path: if
+                # internal independently arrived at the same email a
+                # paid provider already stored, mark it verified; if
+                # internal proposes a different address, save it as an
+                # alternative the UI can surface but never overwrite.
+                verified_by, alternatives = _merge_email_verification(
+                    existing_email=existing["email"],
+                    existing_verified_by=_json_list(
+                        existing["email_verified_by_json"]
+                        if "email_verified_by_json" in existing.keys()
+                        else None
+                    ),
+                    existing_alternatives=_json_dict_list(
+                        existing["email_alternatives_json"]
+                        if "email_alternatives_json" in existing.keys()
+                        else None
+                    ),
+                    incoming_email=update.email,
+                    incoming_source=update.enrichment_source or "internal",
+                    incoming_confidence=update.enrichment_confidence,
+                    now=now,
+                )
+
+                connection.execute(
+                    """
+                    UPDATE saved_leads
+                    SET email = COALESCE(email, ?),
+                        enrichment_source = ?,
+                        enrichment_status = ?,
+                        enrichment_confidence = ?,
+                        email_type = ?,
+                        email_validation_status = ?,
+                        enriched_at = ?,
+                        email_verified_by_json = ?,
+                        email_alternatives_json = ?
+                    WHERE table_id = ? AND lead_key = ?
+                    """,
+                    (
+                        update.email,
+                        update.enrichment_source,
+                        status_value,
+                        update.enrichment_confidence,
+                        update.email_type,
+                        getattr(update.email_validation_status, "value", str(update.email_validation_status)) if update.email_validation_status else None,
+                        now,
+                        json.dumps(verified_by, ensure_ascii=False),
+                        json.dumps(alternatives, ensure_ascii=False),
+                        table_id,
+                        lead_key,
+                    ),
+                )
+            if counters["enriched"] > 0:
+                connection.execute(
+                    """
+                    UPDATE saved_lead_tables
+                    SET enrichment_status = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (ENRICHMENT_ENRICHED, now, table_id),
+                )
+        return counters
 
     # ---- internals ---------------------------------------------------------
 
@@ -536,6 +747,27 @@ class SavedLeadsStore:
                 "CREATE INDEX IF NOT EXISTS idx_saved_leads_table ON saved_leads(table_id)"
             )
             _ensure_column(connection, "saved_leads", "phone", "TEXT")
+            # Per-lead enrichment metadata — additive columns so existing
+            # databases keep working after the schema bump.
+            _ensure_column(connection, "saved_leads", "enrichment_source", "TEXT")
+            _ensure_column(connection, "saved_leads", "enrichment_status", "TEXT")
+            _ensure_column(
+                connection, "saved_leads", "enrichment_confidence", "INTEGER"
+            )
+            _ensure_column(connection, "saved_leads", "email_type", "TEXT")
+            _ensure_column(
+                connection, "saved_leads", "email_validation_status", "TEXT"
+            )
+            # Cross-provider verification trail. Stored as JSON because
+            # both fields are unbounded lists of small dicts — keeping
+            # them in a single column avoids a third table and keeps the
+            # serialization symmetric with the model.
+            _ensure_column(
+                connection, "saved_leads", "email_verified_by_json", "TEXT"
+            )
+            _ensure_column(
+                connection, "saved_leads", "email_alternatives_json", "TEXT"
+            )
 
     def _touch_table(self, table_id: str) -> None:
         with self._lock, self._connect() as connection:
@@ -736,7 +968,115 @@ def _row_to_lead(row: sqlite3.Row) -> Lead:
         confidence_score=int(row["confidence_score"]),
         previously_consulted_at=row["previously_consulted_at"],
         consultation_note=row["consultation_note"],
+        enrichment_source=_row_get(row, "enrichment_source"),
+        enrichment_status=_row_get(row, "enrichment_status"),
+        enrichment_confidence=_row_get_int(row, "enrichment_confidence"),
+        email_type=_row_get(row, "email_type"),
+        email_validation_status=_row_get(row, "email_validation_status"),
+        enriched_at=_row_get(row, "enriched_at"),
+        email_verified_by=_json_list(_row_get(row, "email_verified_by_json")),
+        email_alternatives=_json_dict_list(_row_get(row, "email_alternatives_json")),
     )
+
+
+def _merge_email_verification(
+    *,
+    existing_email: str | None,
+    existing_verified_by: list[str],
+    existing_alternatives: list[dict[str, Any]],
+    incoming_email: str | None,
+    incoming_source: str,
+    incoming_confidence: int | None,
+    now: str,
+) -> tuple[list[str], list[dict[str, Any]]]:
+    """Cross-provider merge for the primary email + its trail.
+
+    The contract the user described:
+    - Same incoming email as the one already saved → add the incoming
+      source to ``email_verified_by`` (drives the "Verificado" badge).
+    - Different incoming email → push it onto ``email_alternatives``
+      so the UI can show "Apollo sugeriu X" without losing the trail.
+    - The primary ``email`` is never overwritten here — caller keeps
+      doing ``COALESCE(email, incoming)``. This helper only manages
+      the verification trail.
+
+    Returns ``(new_verified_by, new_alternatives)``.
+    """
+    verified_by = list(existing_verified_by)
+    alternatives = list(existing_alternatives)
+
+    incoming_norm = (incoming_email or "").strip().lower()
+    existing_norm = (existing_email or "").strip().lower()
+    source = (incoming_source or "").strip().lower() or "unknown"
+
+    if not incoming_norm:
+        return verified_by, alternatives
+
+    if not existing_norm:
+        # First write: incoming becomes primary; seed the trail.
+        if source not in verified_by:
+            verified_by.append(source)
+        return verified_by, alternatives
+
+    if incoming_norm == existing_norm:
+        if source not in verified_by:
+            verified_by.append(source)
+        return verified_by, alternatives
+
+    # Diverges from primary — record as alternative, deduped by (email,
+    # source). Same source proposing the same alternative twice is a
+    # no-op; different sources land separately so the UI can show "two
+    # paid APIs disagree with the primary".
+    already_recorded = any(
+        (alt.get("email") or "").strip().lower() == incoming_norm
+        and (alt.get("source") or "").strip().lower() == source
+        for alt in alternatives
+    )
+    if not already_recorded:
+        alternatives.append(
+            {
+                "email": incoming_email.strip(),
+                "source": source,
+                "confidence": incoming_confidence,
+                "found_at": now,
+            }
+        )
+    return verified_by, alternatives
+
+
+def _json_dict_list(raw: str | None) -> list[dict[str, Any]]:
+    """Parse a JSON column expected to be a list of dicts. Defensive
+    against legacy ``null`` / malformed payloads so an old row never
+    explodes on read."""
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return []
+    if not isinstance(data, list):
+        return []
+    return [item for item in data if isinstance(item, dict)]
+
+
+def _row_get(row: sqlite3.Row, column: str) -> str | None:
+    if column not in row.keys():
+        return None
+    value = row[column]
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _row_get_int(row: sqlite3.Row, column: str) -> int | None:
+    value = _row_get(row, column)
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _json_list(raw: str | None) -> list[str]:

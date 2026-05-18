@@ -44,7 +44,7 @@ class Settings:
     linkedin_llm_extraction_timeout_seconds: float = 45.0
     linkedin_cdp_endpoint: str = "http://127.0.0.1:9222"
     linkedin_cdp_enabled: bool = True
-    linkedin_cards_per_cycle: int = 10
+    linkedin_cards_per_cycle: int = 8
 
 
 def load_settings() -> Settings:
@@ -109,7 +109,7 @@ def load_settings() -> Settings:
             os.getenv("LINKEDIN_CDP_ENABLED"), default=True
         ),
         linkedin_cards_per_cycle=int(
-            os.getenv("LINKEDIN_CARDS_PER_CYCLE", "10") or "10"
+            os.getenv("LINKEDIN_CARDS_PER_CYCLE", "8") or "8"
         ),
     )
 

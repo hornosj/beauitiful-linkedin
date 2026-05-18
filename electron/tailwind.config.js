@@ -46,8 +46,8 @@ export default {
       },
       fontFamily: {
         sans: [
-          'Geist',
           'Inter',
+          'Geist',
           '-apple-system',
           'BlinkMacSystemFont',
           'SF Pro Text',
@@ -55,7 +55,7 @@ export default {
           'system-ui',
           'sans-serif'
         ],
-        mono: ['Geist Mono', 'JetBrains Mono', 'ui-monospace', 'SF Mono', 'monospace']
+        mono: ['Roboto Mono', 'Geist Mono', 'ui-monospace', 'SF Mono', 'monospace']
       },
       boxShadow: {
         sm: '0 1px 2px rgba(0,0,0,0.04), 0 0 0 0.5px rgba(0,0,0,0.05)',
@@ -67,6 +67,20 @@ export default {
       borderRadius: {
         DEFAULT: '10px',
         lg: '14px'
+      },
+      keyframes: {
+        'fade-in-up': {
+          '0%': { opacity: '0', transform: 'translateY(4px)' },
+          '100%': { opacity: '1', transform: 'translateY(0)' },
+        },
+        'fade-in': {
+          '0%': { opacity: '0' },
+          '100%': { opacity: '1' },
+        }
+      },
+      animation: {
+        'fade-in-up': 'fade-in-up 250ms cubic-bezier(0.16, 1, 0.3, 1)',
+        'fade-in': 'fade-in 150ms ease-out',
       }
     }
   },

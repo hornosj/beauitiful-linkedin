@@ -12,6 +12,7 @@ export default function SmallCompanyDialog(props: Props) {
   return (
     <div
       role="dialog"
+      aria-modal="true"
       aria-label="Empresa pequena detectada"
       style={{
         position: 'fixed',

@@ -107,7 +107,7 @@ def test_provider_in_general_mode_fetches_url_without_keywords() -> None:
     assert persons == {"Ana Silva", "Bruno Costa"}
 
 
-def test_provider_with_keywords_still_filters_for_match() -> None:
+def test_provider_with_keywords_keeps_non_matching_cards_marked() -> None:
     fetcher = _RecordingFetcher(_people_card_html())
     provider = LinkedInPeopleSearchProvider(
         fetcher=fetcher,
@@ -122,9 +122,17 @@ def test_provider_with_keywords_still_filters_for_match() -> None:
         max_results=10,
         include_uncertain=False,
     )
-    persons = {lead.person_name for lead in leads}
-    # Only Bruno (Head of Marketing) survives the marketing filter.
-    assert persons == {"Bruno Costa"}
+    leads_by_person = {lead.person_name: lead for lead in leads}
+    assert set(leads_by_person) == {"Ana Silva", "Bruno Costa"}
+
+    ana = leads_by_person["Ana Silva"]
+    assert ana.matched_title is None
+    assert ana.validation_status == "maybe_incorrect"
+    assert ana.validation_note == "Encontrado porém sem keywords relacionadas."
+
+    bruno = leads_by_person["Bruno Costa"]
+    assert bruno.matched_title == "marketing"
+    assert bruno.validation_status == "valid"
 
 
 # ---------- server contract ---------------------------------------------

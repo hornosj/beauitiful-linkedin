@@ -195,8 +195,16 @@ export default function ChromeBootstrapModal(props: Props) {
     props.onCancel()
   }
 
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') handleCancel()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  })
+
   return (
-    <div className="sheet-overlay">
+    <div className="sheet-overlay" role="dialog" aria-modal="true" aria-labelledby="chrome-bootstrap-title">
       <div
         className="card"
         style={{ width: 'min(460px, 100%)', borderRadius: 14, overflow: 'hidden' }}
@@ -254,7 +262,7 @@ function renderHeader(phase: Phase, hint: 'loading' | 'login' | null) {
         {phase === 'failed' ? '!' : phase === 'ready' ? '✓' : '◐'}
       </span>
       <div>
-        <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600, color: 'var(--ink)' }}>
+        <h3 id="chrome-bootstrap-title" style={{ margin: 0, fontSize: 16, fontWeight: 600, color: 'var(--ink)' }}>
           {item.title}
         </h3>
         <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-3)' }}>{item.sub}</p>

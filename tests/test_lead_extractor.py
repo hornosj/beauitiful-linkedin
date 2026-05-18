@@ -173,6 +173,32 @@ def test_search_extractor_keeps_sales_when_it_is_in_the_title_context():
     assert leads[0].validation_note is None
 
 
+def test_search_extractor_keeps_unrelated_title_marked_without_keywords():
+    company = CompanyInput(
+        company_name="XP Inc",
+        company_domain="xpi.com.br",
+        linkedin_url=None,
+        titles=["marketing"],
+    )
+    results = [
+        SearchResult(
+            title="Alice Doe - Backend Engineer - XP Inc | LinkedIn",
+            url="https://br.linkedin.com/in/alice-doe",
+            snippet="Alice Doe - Backend Engineer - XP Inc",
+            source_type="search",
+        )
+    ]
+
+    leads = extract_leads_from_search_results(company, results, include_uncertain=False)
+
+    assert len(leads) == 1
+    assert leads[0].person_name == "Alice Doe"
+    assert leads[0].title == "Backend Engineer"
+    assert leads[0].matched_title is None
+    assert leads[0].validation_status == "maybe_incorrect"
+    assert leads[0].validation_note == "Encontrado porém sem keywords relacionadas."
+
+
 def test_search_extractor_marks_sales_name_with_unrelated_title_as_maybe_incorrect():
     company = CompanyInput(
         company_name="XP Inc",
