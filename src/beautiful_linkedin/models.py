@@ -92,6 +92,51 @@ class Lead(BaseModel):
     # ``confidence`` (0-100 or null), and ``found_at`` (ISO timestamp).
     email_verified_by: list[str] = Field(default_factory=list)
     email_alternatives: list[dict[str, Any]] = Field(default_factory=list)
+    # Phone enrichment metadata — same shape as the e-mail trail so the
+    # UI can mirror its "verified by 2 sources" badge and "alternatives"
+    # expander for phone numbers. ``phone`` itself stays as the primary
+    # E.164-ish value; these columns describe how confidently it was
+    # found and which sources agreed.
+    phone_type: Optional[str] = None  # mobile | fixed | voip | toll_free | ...
+    phone_country: Optional[str] = None  # ISO-3166 alpha-2
+    phone_carrier: Optional[str] = None
+    phone_region: Optional[str] = None
+    phone_validation_status: Optional[str] = None  # valid | probable | risky | invalid
+    phone_confidence: Optional[int] = Field(default=None, ge=0, le=100)
+    phone_source: Optional[str] = None  # harvester | apollo | lusha | usersbox | ...
+    phone_source_url: Optional[str] = None
+    phone_verified_by: list[str] = Field(default_factory=list)
+    phone_alternatives: list[dict[str, Any]] = Field(default_factory=list)
+    # LinkedIn profile validation metadata. These fields are populated by the
+    # opt-in profile validation flow that opens the lead's LinkedIn profile,
+    # reads the current Experience entry, and extracts self-published Contact
+    # Info. They intentionally do not overwrite ``title``, ``company_name``,
+    # ``email`` or ``phone`` so API/internal/searcher data stays auditable.
+    linkedin_profile_validation_status: Optional[str] = None
+    linkedin_experience_title: Optional[str] = None
+    linkedin_experience_company: Optional[str] = None
+    linkedin_experience_start_year: Optional[int] = None
+    linkedin_experience_end_year: Optional[int] = None
+    linkedin_experience_checked_at: Optional[str] = None
+    linkedin_contact_email: Optional[str] = None
+    linkedin_contact_website: Optional[str] = None
+    linkedin_contact_phone: Optional[str] = None
+    # LinkedIn profile signals used by the Telegram-consult matcher to
+    # rank CPF candidates against the actual person. Both default None
+    # — when missing the matcher falls back to whatever signals exist
+    # (e.g. ``snippet`` for a coarse location guess).
+    linkedin_location: Optional[str] = None
+    # ``linkedin_education`` is a list of {institution, degree, start_year,
+    # end_year, field} dicts. Year fields are integers when known.
+    linkedin_education: list[dict[str, Any]] = Field(default_factory=list)
+    # ``linkedin_birthday`` is the day/month string the LinkedIn profile
+    # exposes under "Dados pessoais" (visible only to first-degree
+    # connections). Format is ``DD/MM`` — year is intentionally absent
+    # because LinkedIn does not publish it. The Telegram-consult matcher
+    # uses this as a top-weight signal when present: an exact DD/MM match
+    # against a CPF candidate's ``data_nascimento`` is a near-decisive
+    # disambiguator between homonyms.
+    linkedin_birthday: Optional[str] = None
 
 
 class ProspectingSummary(BaseModel):

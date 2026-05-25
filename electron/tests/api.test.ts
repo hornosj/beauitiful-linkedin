@@ -192,6 +192,36 @@ describe('ApiClient', () => {
     })
   })
 
+  it('posts Telegram Telethon experimental consults to the dedicated route', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          status: 'completed',
+          summary: { requested_leads: 1, succeeded: 1, failed: 0 },
+          consults: []
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } }
+      )
+    )
+    globalThis.fetch = fetchMock as unknown as typeof fetch
+    const client = new ApiClient('http://127.0.0.1:39712')
+
+    await client.telegramConsultTelethonExperimental('t1', {
+      lead_refs: ['https://www.linkedin.com/in/ana/'],
+      max_leads: 10
+    })
+
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(String(url)).toBe(
+      'http://127.0.0.1:39712/lead-tables/t1/telegram-consult/telethon-experimental'
+    )
+    expect(init.method).toBe('POST')
+    expect(JSON.parse(init.body as string)).toEqual({
+      lead_refs: ['https://www.linkedin.com/in/ana/'],
+      max_leads: 10
+    })
+  })
+
   it('polls run state until terminal status', async () => {
     const responses = [
       new Response(JSON.stringify({ run_id: 'r1', status: 'running' }), {

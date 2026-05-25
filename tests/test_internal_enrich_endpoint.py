@@ -453,11 +453,13 @@ def test_internal_enrich_endpoint_validates_field(tmp_path: Path) -> None:
     client = TestClient(app)
     table_id = _create_table(client, [_lead(person="Ana")])
 
+    # Unknown field values are rejected. ``email``, ``phone`` and
+    # ``both`` are all valid now — the schema test covers acceptance;
+    # this one only checks that gibberish still 422s.
     response = client.post(
         f"/lead-tables/{table_id}/internal-enrich",
-        json={"fields": "phone", "confirmed": True},
+        json={"fields": "smoke-signal", "confirmed": True},
     )
-    # First version supports only email.
     assert response.status_code == 422
 
 

@@ -15,6 +15,8 @@ import type {
   InternalEnrichResponse,
   InternalEnrichStreamDoneEvent,
   InternalEnrichStreamEvent,
+  LinkedInProfileValidationRequest,
+  LinkedInProfileValidationResponse,
   MergeLeadTablesRequest,
   PeopleSearchProbeRequest,
   PeopleSearchProbeResponse,
@@ -28,7 +30,28 @@ import type {
   SearchRequest,
   SearchResponse,
   StartRunResponse,
-  TaxonomiesResponse
+  TaxonomiesResponse,
+  TelegramConsultListResponse,
+  TelegramConsultRequest,
+  TelegramConsultResponse,
+  TelegramFollowupPhoneRequest,
+  TelegramFollowupPhoneResponse,
+  TelegramPhoneRequest,
+  TelegramPhoneResponse,
+  TelegramPhoneStartRequest,
+  TelegramPhoneStartResponse,
+  TelegramPhoneNextResponse,
+  TelegramPhoneCancelResponse,
+  TelegramPhoneExtractCpfsResponse,
+  TelethonAuthStatusResponse,
+  TelethonAuthSendCodeRequest,
+  TelethonAuthSendCodeResponse,
+  TelethonAuthSignInRequest,
+  TelethonAuthSignInResponse,
+  TelethonAuthLogoutResponse,
+  TelethonCpfStageRequest,
+  TelethonPipelineRequest,
+  TelethonPipelineResponse
 } from './types'
 
 export class ApiError extends Error {
@@ -41,6 +64,9 @@ export class ApiError extends Error {
 interface PollOptions {
   intervalMs?: number
   timeoutMs?: number
+  /** Called on every poll with the latest state, so callers can render
+   *  leads discovered progressively while the run is still in progress. */
+  onState?: (state: RunStateResponse) => void
 }
 
 const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled'])
@@ -127,6 +153,225 @@ export class ApiClient {
     return this.post<InternalEnrichResponse>(
       `/lead-tables/${encodeURIComponent(tableId)}/internal-enrich`,
       payload
+    )
+  }
+
+  validateLinkedInProfiles(
+    tableId: string,
+    payload: LinkedInProfileValidationRequest
+  ): Promise<LinkedInProfileValidationResponse> {
+    return this.post<LinkedInProfileValidationResponse>(
+      `/lead-tables/${encodeURIComponent(tableId)}/linkedin-profile-validate`,
+      payload
+    )
+  }
+
+  telegramConsult(
+    tableId: string,
+    payload: TelegramConsultRequest
+  ): Promise<TelegramConsultResponse> {
+    return this.post<TelegramConsultResponse>(
+      `/lead-tables/${encodeURIComponent(tableId)}/telegram-consult`,
+      payload
+    )
+  }
+
+  telegramConsultMultipleExperimental(
+    tableId: string,
+    payload: TelegramConsultRequest
+  ): Promise<TelegramConsultResponse> {
+    return this.post<TelegramConsultResponse>(
+      `/lead-tables/${encodeURIComponent(tableId)}/telegram-consult/multiple-experimental`,
+      payload
+    )
+  }
+
+  telegramConsultTelethonExperimental(
+    tableId: string,
+    payload: TelegramConsultRequest
+  ): Promise<TelegramConsultResponse> {
+    return this.post<TelegramConsultResponse>(
+      `/lead-tables/${encodeURIComponent(tableId)}/telegram-consult/telethon-experimental`,
+      payload
+    )
+  }
+
+  telegramConsultTelethonPipeline(
+    tableId: string,
+    payload: TelethonPipelineRequest
+  ): Promise<TelethonPipelineResponse> {
+    return this.post<TelethonPipelineResponse>(
+      `/lead-tables/${encodeURIComponent(tableId)}/telegram-consult/telethon-pipeline`,
+      payload
+    )
+  }
+
+  telegramPhoneTelethonCpfStage(
+    tableId: string,
+    payload: TelethonCpfStageRequest
+  ): Promise<TelethonPipelineResponse> {
+    return this.post<TelethonPipelineResponse>(
+      `/lead-tables/${encodeURIComponent(tableId)}/telegram-phone/telethon-cpf-stage`,
+      payload
+    )
+  }
+
+  getTelethonAuthStatus(): Promise<TelethonAuthStatusResponse> {
+    return this.get<TelethonAuthStatusResponse>('/telegram/telethon/auth/status')
+  }
+
+  sendTelethonAuthCode(
+    payload: TelethonAuthSendCodeRequest
+  ): Promise<TelethonAuthSendCodeResponse> {
+    return this.post<TelethonAuthSendCodeResponse>(
+      '/telegram/telethon/auth/send-code',
+      payload
+    )
+  }
+
+  signInTelethonAuth(
+    payload: TelethonAuthSignInRequest
+  ): Promise<TelethonAuthSignInResponse> {
+    return this.post<TelethonAuthSignInResponse>(
+      '/telegram/telethon/auth/sign-in',
+      payload
+    )
+  }
+
+  logoutTelethonAuth(): Promise<TelethonAuthLogoutResponse> {
+    return this.post<TelethonAuthLogoutResponse>('/telegram/telethon/auth/logout', {})
+  }
+
+  listTelegramConsults(tableId: string): Promise<TelegramConsultListResponse> {
+    return this.get<TelegramConsultListResponse>(
+      `/lead-tables/${encodeURIComponent(tableId)}/telegram-consults`
+    )
+  }
+
+  /**
+   * Run the CPF-stage follow-up to harvest phones for the selected
+   * leads. Pre-condition: the name-stage Telegram consult must already
+   * have been persisted for each lead — the server reads its ranked
+   * CPF candidates from ``tabela_telegram`` and only dispatches /cpf
+   * queries for the survivors of the matcher's threshold (default 65).
+   *
+   * Phone candidates returned by the server carry their originating
+   * CPF's match_score 1:1 in ``confidence``. The UI should surface
+   * that number unchanged.
+   */
+  telegramFollowupPhone(
+    tableId: string,
+    payload: TelegramFollowupPhoneRequest
+  ): Promise<TelegramFollowupPhoneResponse> {
+    return this.post<TelegramFollowupPhoneResponse>(
+      `/lead-tables/${encodeURIComponent(tableId)}/telegram-followup-phone`,
+      payload
+    )
+  }
+
+  /**
+   * Run the unified Telegram phone flow for the selected leads. The
+   * backend reuses verified persisted CPFs, falls back to Gonzales
+   * /nome → /cpf when needed, then to Findex /email <email> when no CPF
+   * is found and the lead has a Mail Finder e-mail.
+   */
+  telegramPhone(
+    tableId: string,
+    payload: TelegramPhoneRequest
+  ): Promise<TelegramPhoneResponse> {
+    return this.post<TelegramPhoneResponse>(
+      `/lead-tables/${encodeURIComponent(tableId)}/telegram-phone`,
+      payload
+    )
+  }
+
+  /**
+   * Create a resumable Telegram phone run. The server prepares the
+   * ordered queue but runs no Telegram consults until the client calls
+   * ``nextTelegramPhone``. Use this when the operator wants to pause
+   * between leads to avoid burning the Telegram bots' rate limit.
+   */
+  startTelegramPhone(
+    tableId: string,
+    payload: TelegramPhoneStartRequest
+  ): Promise<TelegramPhoneStartResponse> {
+    return this.post<TelegramPhoneStartResponse>(
+      `/lead-tables/${encodeURIComponent(tableId)}/telegram-phone/start`,
+      payload
+    )
+  }
+
+  /**
+   * Process exactly one lead from a resumable run and advance the
+   * cursor. Returns ``status="completed"`` once the queue is exhausted.
+   */
+  nextTelegramPhone(
+    tableId: string,
+    runId: string
+  ): Promise<TelegramPhoneNextResponse> {
+    return this.post<TelegramPhoneNextResponse>(
+      `/lead-tables/${encodeURIComponent(tableId)}/telegram-phone/next`,
+      { run_id: runId }
+    )
+  }
+
+  /**
+   * Cancel a resumable run. Further ``nextTelegramPhone`` calls return
+   * 409 — the operator must start a new run to continue.
+   */
+  cancelTelegramPhone(
+    tableId: string,
+    runId: string
+  ): Promise<TelegramPhoneCancelResponse> {
+    return this.post<TelegramPhoneCancelResponse>(
+      `/lead-tables/${encodeURIComponent(tableId)}/telegram-phone/cancel`,
+      { run_id: runId }
+    )
+  }
+
+  /**
+   * Stage 1 of the two-step flow: run gates + /nome + matcher for the
+   * current lead, return ranked CPF candidates. NO /cpf is fired here
+   * — the UI must call ``runCpfStage`` (with selected CPFs) or
+   * ``skipCurrentLead`` afterwards.
+   */
+  extractCpfsForCurrentLead(
+    tableId: string,
+    runId: string
+  ): Promise<TelegramPhoneExtractCpfsResponse> {
+    return this.post<TelegramPhoneExtractCpfsResponse>(
+      `/lead-tables/${encodeURIComponent(tableId)}/telegram-phone/extract-cpfs`,
+      { run_id: runId }
+    )
+  }
+
+  /**
+   * Stage 2: dispatches /cpf only for the CPFs the operator confirmed
+   * in the UI. Advances the cursor to the next lead.
+   */
+  runCpfStage(
+    tableId: string,
+    runId: string,
+    cpfs: string[]
+  ): Promise<TelegramPhoneNextResponse> {
+    return this.post<TelegramPhoneNextResponse>(
+      `/lead-tables/${encodeURIComponent(tableId)}/telegram-phone/run-cpf-stage`,
+      { run_id: runId, cpfs }
+    )
+  }
+
+  /**
+   * Skip the current lead's CPF stage without firing /cpf — used when
+   * the operator looks at the candidates and decides none are worth
+   * the bot quota.
+   */
+  skipCurrentLead(
+    tableId: string,
+    runId: string
+  ): Promise<TelegramPhoneNextResponse> {
+    return this.post<TelegramPhoneNextResponse>(
+      `/lead-tables/${encodeURIComponent(tableId)}/telegram-phone/skip-current-lead`,
+      { run_id: runId }
     )
   }
 
@@ -267,6 +512,7 @@ export class ApiClient {
     const deadline = Date.now() + timeout
     while (true) {
       const state = await this.runState(runId)
+      options.onState?.(state)
       if (TERMINAL_STATUSES.has(state.status)) {
         return state
       }

@@ -45,6 +45,30 @@ class Settings:
     linkedin_cdp_endpoint: str = "http://127.0.0.1:9222"
     linkedin_cdp_enabled: bool = True
     linkedin_cards_per_cycle: int = 8
+    telegram_api_id: str | None = None
+    telegram_api_hash: str | None = None
+    telegram_session_name: str = "data/telegram_phone_lookup"
+    telegram_phone_bot_username: str = "@ConsultoriaGonzalesbot"
+    telegram_group_username: str | None = None
+    telegram_group_session_name: str = "data/telegram_group_phone_lookup"
+    telegram_group_capture_seconds: float = 30.0
+    telegram_group_throttle_seconds: float = 5.0
+    # Pausa fixa após pressionar Enter no composer. Em vez de um valor único
+    # determinístico (que vira fingerprint), usamos jitter uniforme entre min
+    # e max — defaults conservadores baseados no que os bots Gonzales/Findex
+    # levam para emitir o primeiro botão "Resultado".
+    telegram_post_send_min_seconds: float = 4.5
+    telegram_post_send_max_seconds: float = 6.5
+    # Pausa humana entre processar dois leads consecutivos no loop do
+    # endpoint /telegram-phone. Sem isso o operador disparava 10 consultas em
+    # ~60s e os bots começavam a rate-limitar. Default pequeno mas presente.
+    telegram_inter_lead_min_seconds: float = 3.0
+    telegram_inter_lead_max_seconds: float = 6.0
+    # Quanto tempo a automação espera o Gonzales responder antes de
+    # desistir (em segundos, contado APÓS o post_send_wait). 45s é folgado
+    # o suficiente para casos lentos sem travar a UI indefinidamente
+    # quando o bot realmente não responde.
+    telegram_gon_abort_timeout_seconds: float = 45.0
 
 
 def load_settings() -> Settings:
@@ -110,6 +134,50 @@ def load_settings() -> Settings:
         ),
         linkedin_cards_per_cycle=int(
             os.getenv("LINKEDIN_CARDS_PER_CYCLE", "8") or "8"
+        ),
+        telegram_api_id=_empty_to_none(
+            os.getenv("BEAUTIFUL_LINKEDIN_TELEGRAM_API_ID")
+            or os.getenv("TELEGRAM_API_ID")
+        ),
+        telegram_api_hash=_empty_to_none(
+            os.getenv("BEAUTIFUL_LINKEDIN_TELEGRAM_API_HASH")
+            or os.getenv("TELEGRAM_API_HASH")
+        ),
+        telegram_session_name=os.getenv(
+            "BEAUTIFUL_LINKEDIN_TELEGRAM_SESSION_NAME",
+            "data/telegram_phone_lookup",
+        ),
+        telegram_phone_bot_username=os.getenv(
+            "BEAUTIFUL_LINKEDIN_TELEGRAM_PHONE_BOT",
+            "@ConsultoriaGonzalesbot",
+        ),
+        telegram_group_username=_empty_to_none(
+            os.getenv("BEAUTIFUL_LINKEDIN_TELEGRAM_GROUP_USERNAME")
+        ),
+        telegram_group_session_name=os.getenv(
+            "BEAUTIFUL_LINKEDIN_TELEGRAM_GROUP_SESSION_NAME",
+            "data/telegram_group_phone_lookup",
+        ),
+        telegram_group_capture_seconds=float(
+            os.getenv("BEAUTIFUL_LINKEDIN_TELEGRAM_GROUP_CAPTURE_SECONDS", "30") or "30"
+        ),
+        telegram_group_throttle_seconds=float(
+            os.getenv("BEAUTIFUL_LINKEDIN_TELEGRAM_GROUP_THROTTLE_SECONDS", "5") or "5"
+        ),
+        telegram_post_send_min_seconds=float(
+            os.getenv("BEAUTIFUL_LINKEDIN_TELEGRAM_POST_SEND_MIN", "4.5") or "4.5"
+        ),
+        telegram_post_send_max_seconds=float(
+            os.getenv("BEAUTIFUL_LINKEDIN_TELEGRAM_POST_SEND_MAX", "6.5") or "6.5"
+        ),
+        telegram_inter_lead_min_seconds=float(
+            os.getenv("BEAUTIFUL_LINKEDIN_TELEGRAM_INTER_LEAD_MIN", "3.0") or "3.0"
+        ),
+        telegram_inter_lead_max_seconds=float(
+            os.getenv("BEAUTIFUL_LINKEDIN_TELEGRAM_INTER_LEAD_MAX", "6.0") or "6.0"
+        ),
+        telegram_gon_abort_timeout_seconds=float(
+            os.getenv("BEAUTIFUL_LINKEDIN_TELEGRAM_GON_ABORT_TIMEOUT", "45.0") or "45.0"
         ),
     )
 

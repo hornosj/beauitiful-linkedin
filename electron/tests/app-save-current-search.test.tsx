@@ -85,8 +85,19 @@ describe('App save current search flow', () => {
       if (path.endsWith('/taxonomies')) {
         return Promise.resolve(jsonResponse({ seniority: [], functions: [], role_presets: [], scrape_modes: [] }))
       }
-      if (path.endsWith('/search')) {
-        return Promise.resolve(jsonResponse(searchResponse))
+      if (path.endsWith('/search/start')) {
+        return Promise.resolve(jsonResponse({ run_id: 'run-1', status: 'pending' }))
+      }
+      if (path.includes('/runs/')) {
+        return Promise.resolve(
+          jsonResponse({
+            run_id: 'run-1',
+            status: 'completed',
+            result: searchResponse,
+            found_leads: [],
+            found_count: 0
+          })
+        )
       }
       if (path.endsWith('/lead-tables')) {
         return Promise.resolve(jsonResponse(savedTableResponse, 201))

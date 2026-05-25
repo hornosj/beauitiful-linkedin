@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import { delimiter, join } from 'node:path'
-import { buildPythonCommands, buildSidecarEnv, DEFAULT_LOCAL_SEARXNG_URL } from '../src/main/sidecar'
+import {
+  buildPythonCommands,
+  buildSidecarCommands,
+  buildSidecarEnv,
+  DEFAULT_LOCAL_SEARXNG_URL,
+  resolvePackagedSidecarExecutable
+} from '../src/main/sidecar'
 
 describe('buildSidecarEnv', () => {
   it('adds project src to PYTHONPATH so the sidecar can run without editable install', () => {
@@ -46,5 +52,57 @@ describe('buildPythonCommands', () => {
       { executable: 'python', args: [] },
       { executable: 'py', args: ['-3'] }
     ])
+  })
+})
+
+describe('buildSidecarCommands', () => {
+  it('runs the packaged sidecar executable when provided', () => {
+    expect(buildSidecarCommands({
+      packagedSidecarExecutable: 'C:\\app\\resources\\sidecar\\beautiful-linkedin-sidecar.exe'
+    })).toEqual([
+      {
+        executable: 'C:\\app\\resources\\sidecar\\beautiful-linkedin-sidecar.exe',
+        args: []
+      }
+    ])
+  })
+
+  it('runs the Python module in development', () => {
+    expect(buildSidecarCommands({ platform: 'linux' })).toEqual([
+      {
+        executable: 'python',
+        args: ['-m', 'beautiful_linkedin.server']
+      }
+    ])
+  })
+
+  it('uses an explicit Python executable for development commands', () => {
+    expect(buildSidecarCommands({
+      explicitPythonExecutable: 'C:\\Python314\\python.exe',
+      platform: 'win32'
+    })).toEqual([
+      {
+        executable: 'C:\\Python314\\python.exe',
+        args: ['-m', 'beautiful_linkedin.server']
+      }
+    ])
+  })
+})
+
+describe('resolvePackagedSidecarExecutable', () => {
+  it('returns undefined outside packaged builds', () => {
+    expect(resolvePackagedSidecarExecutable(false, '/Applications/App.app/Contents/Resources', 'darwin')).toBeUndefined()
+  })
+
+  it('resolves the Windows sidecar executable inside resources', () => {
+    expect(resolvePackagedSidecarExecutable(true, 'C:\\app\\resources', 'win32')).toBe(
+      'C:\\app\\resources\\sidecar\\beautiful-linkedin-sidecar.exe'
+    )
+  })
+
+  it('resolves the macOS sidecar executable inside resources', () => {
+    expect(resolvePackagedSidecarExecutable(true, '/Applications/Beautiful LinkedIn.app/Contents/Resources', 'darwin')).toBe(
+      '/Applications/Beautiful LinkedIn.app/Contents/Resources/sidecar/beautiful-linkedin-sidecar'
+    )
   })
 })

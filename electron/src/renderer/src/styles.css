@@ -133,7 +133,43 @@
     background: var(--surface-3);
     color: var(--ink);
   }
+  .linkedin-session-btn {
+    height: 28px;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 0 10px;
+    border: 0.5px solid var(--line);
+    border-radius: 7px;
+    background: var(--surface);
+    color: var(--ink-2);
+    font: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .linkedin-session-btn:hover {
+    border-color: var(--accent);
+    color: var(--ink);
+    background: var(--accent-tint);
+  }
+  .linkedin-session-btn.ready {
+    border-color: color-mix(in srgb, var(--success) 42%, var(--line));
+  }
+  .linkedin-session-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 99px;
+    background: var(--warn);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 18%, transparent);
+  }
+  .linkedin-session-btn.ready .linkedin-session-dot {
+    background: var(--success);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 18%, transparent);
+  }
   .tb-btn:focus-visible,
+  .linkedin-session-btn:focus-visible,
   .pill-btn:focus-visible,
   .btn-primary:focus-visible,
   .btn-ghost:focus-visible,
@@ -709,7 +745,9 @@
   }
   .api-consult-btn {
     min-height: 24px;
-    max-width: 190px;
+    max-width: 100%;
+    width: auto;
+    box-sizing: border-box;
     padding: 3px 8px;
     border-radius: 6px;
     border: 0.5px solid rgba(0, 122, 255, 0.22);
@@ -719,8 +757,13 @@
     font-size: 10.5px;
     font-weight: 600;
     cursor: pointer;
-    white-space: normal;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
     line-height: 1.25;
+    text-align: left;
+    display: inline-block;
+    vertical-align: middle;
   }
   .api-consult-btn.empty {
     border-color: rgba(255, 149, 0, 0.28);
@@ -746,6 +789,94 @@
     align-items: center;
     max-width: 100%;
   }
+  /* Empty state principal (área da direita quando nenhuma tabela está
+     selecionada). Substitui a frase puxada centralizada que parecia bug. */
+  .library-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    gap: 10px;
+    padding: 56px 24px;
+    margin-top: 24px;
+    color: var(--ink-3);
+    animation: enrich-fade 280ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .library-empty-art {
+    color: var(--ink-4);
+    margin-bottom: 4px;
+    display: grid;
+    place-items: center;
+  }
+  .library-empty-title {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--ink);
+    letter-spacing: -0.01em;
+  }
+  .library-empty-sub {
+    margin: 0;
+    max-width: 360px;
+    font-size: 12.5px;
+    color: var(--ink-3);
+    line-height: 1.5;
+  }
+  /* Empty state inline (sidebar de tabelas salvas, quando vazio). */
+  .library-empty-mini {
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 10px;
+    border: 0.5px dashed var(--line-2);
+    border-radius: 9px;
+    color: var(--ink-3);
+    background: var(--surface-2);
+  }
+  .library-empty-mini-icon {
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    background: var(--surface-3);
+    display: grid;
+    place-items: center;
+    font-size: 14px;
+    color: var(--ink-4);
+    flex-shrink: 0;
+  }
+  .library-empty-mini-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-size: 12px;
+    color: var(--ink-2);
+    font-weight: 500;
+    min-width: 0;
+  }
+  .library-empty-mini-text span {
+    font-weight: 400;
+    color: var(--ink-3);
+    font-size: 11px;
+    line-height: 1.4;
+  }
+  /* Separador vertical sutil entre grupos de ações na library bar.
+     Hick's Law: 9 pílulas seguidas viram parede; com 2 separadores
+     o olho enxerga 3 grupos (enriquecer, validar, tabela). */
+  .action-group-divider {
+    width: 1px;
+    align-self: stretch;
+    background: var(--line);
+    margin: 2px 4px;
+    flex: 0 0 auto;
+  }
+  /* Empurra o último grupo (ações destrutivas / utilitárias) pra direita
+     em telas largas, sem quebrar wrap em telas pequenas. */
+  .action-group-spacer {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
   .saved-table-check {
     width: 18px;
     height: 18px;
@@ -770,9 +901,67 @@
     border-bottom: 2px solid white;
     transform: rotate(-45deg) translate(1px, -1px);
   }
+  /* Predefinições de tabela ("Tabela completa / RH / People / Tech...")
+     são filtros, não CTAs — não deveriam usar `pill-btn primary`. Aqui
+     ficam como abas sutis com indicador embaixo (estilo Linear/Notion). */
+  .preset-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px;
+    margin-bottom: 10px;
+    padding: 0 0 8px;
+    border-bottom: 0.5px solid var(--line);
+  }
+  .preset-tab {
+    appearance: none;
+    border: 0;
+    background: transparent;
+    color: var(--ink-3);
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    padding: 6px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    position: relative;
+    transition: color 140ms ease, background-color 140ms ease;
+  }
+  .preset-tab:hover {
+    color: var(--ink);
+    background: var(--surface-3);
+  }
+  .preset-tab.on {
+    color: var(--ink);
+    font-weight: 600;
+  }
+  .preset-tab.on::after {
+    content: '';
+    position: absolute;
+    left: 10px;
+    right: 10px;
+    bottom: -9px;
+    height: 2px;
+    border-radius: 2px;
+    background: var(--accent);
+  }
+  .preset-tab:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  /* Filter input no topo da tabela de leads salvos. Reusa `.search-input`
+     (ícone de busca + visual consistente) mas ocupa a largura toda. */
+  .library-filter-input {
+    flex: 0 0 auto;
+    width: 100%;
+    max-width: 100%;
+    height: 34px;
+    box-sizing: border-box;
+    font-size: 13px;
+    margin-bottom: 12px;
+  }
   .saved-leads-table {
     width: 100%;
-    min-width: 920px;
+    min-width: 1080px;
     border-collapse: collapse;
     font-size: 12px;
     table-layout: fixed;
@@ -792,23 +981,23 @@
     width: 16%;
   }
   .saved-leads-table th:nth-child(3) {
-    width: 24%;
+    width: 22%;
   }
   .saved-leads-table th:nth-child(4) {
-    width: 23%;
+    width: 18%;
   }
   .saved-leads-table th:nth-child(5) {
-    width: 12%;
+    width: 16%;
   }
   .saved-leads-table th:nth-child(6) {
-    width: 10%;
+    width: 12%;
   }
   .saved-leads-table th:nth-child(7) {
     width: 7%;
     text-align: right;
   }
   .saved-leads-table th:nth-child(8) {
-    width: 8%;
+    width: 9%;
   }
   .saved-leads-table td {
     vertical-align: top;
@@ -893,8 +1082,20 @@
   .table-bottom-scroll {
     overflow: auto;
     min-width: 0;
+    /* Bound the table to the viewport so a long list scrolls *inside* the
+       container instead of stretching the whole page ("tabela gigante").
+       Horizontal scroll is handled by the synced top scrollbar. */
+    max-height: min(68vh, 760px);
+    overscroll-behavior: contain;
     scrollbar-width: thin;
     scrollbar-color: var(--line-2) transparent;
+  }
+  /* Keep column headers visible while the rows scroll vertically. */
+  .table-bottom-scroll .saved-leads-table thead th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--surface);
   }
   .table-bottom-scroll::-webkit-scrollbar {
     height: 8px;
@@ -1211,23 +1412,30 @@
     color: white;
   }
 
-  /* ---------- toast ---------- */
+  /* ---------- toast ----------
+     Toast flutuante de feedback. Vive no topo (não bottom) pra não
+     colidir com `LiveActivityBubbles`. Tem botão ✕ embutido — erros
+     ficam 6.5s na tela; sucessos, 3.5s. */
   .toast {
     position: fixed;
-    bottom: 26px;
+    top: 64px;
     left: 50%;
     transform: translateX(-50%);
     background: var(--ink);
     color: var(--bg);
-    padding: 9px 16px;
+    padding: 10px 12px 10px 16px;
     border-radius: 999px;
-    font-size: 12px;
+    font-size: 12.5px;
     font-weight: 500;
-    box-shadow: theme('boxShadow.lg');
-    z-index: 200;
-    display: flex;
+    box-shadow: 0 18px 42px -18px rgba(15, 15, 17, 0.55),
+      0 6px 18px -10px rgba(15, 15, 17, 0.35);
+    z-index: 220;
+    display: inline-flex;
     align-items: center;
-    gap: 8px;
+    gap: 10px;
+    max-width: min(640px, calc(100vw - 32px));
+    animation: toast-in 280ms cubic-bezier(0.16, 1, 0.3, 1);
+    will-change: transform, opacity;
   }
   .toast.error {
     background: var(--risky);
@@ -1242,6 +1450,51 @@
     place-items: center;
     color: white;
     font-size: 10px;
+    flex-shrink: 0;
+  }
+  .toast-msg {
+    min-width: 0;
+    line-height: 1.35;
+    /* não trunca: deixa quebrar em até 3 linhas para mensagens longas
+       (ex. erros de API com URL inteira). Acima disso fica feio. */
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    word-break: break-word;
+  }
+  .toast-close {
+    appearance: none;
+    border: 0;
+    background: rgba(255, 255, 255, 0.16);
+    color: inherit;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    font-size: 11px;
+    cursor: pointer;
+    transition: background-color 140ms ease;
+    flex-shrink: 0;
+  }
+  .toast-close:hover {
+    background: rgba(255, 255, 255, 0.28);
+  }
+  .toast-close:focus-visible {
+    outline: 2px solid rgba(255, 255, 255, 0.7);
+    outline-offset: 2px;
+  }
+
+  @keyframes toast-in {
+    from {
+      opacity: 0;
+      transform: translateX(-50%) translateY(-12px) scale(0.96);
+    }
+    to {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0) scale(1);
+    }
   }
 
   /* ---------- live activity bubbles ---------- */
@@ -1496,6 +1749,7 @@
   list-style: none;
   margin: 2px 0 0;
   padding: 6px 8px;
+  max-width: 100%;
   border-radius: 6px;
   background: var(--surface-2);
   border: 0.5px solid var(--line);
@@ -1506,10 +1760,11 @@
 }
 .email-alt-row {
   display: grid;
-  grid-template-columns: 70px 1fr;
+  grid-template-columns: minmax(0, 78px) minmax(0, 1fr);
   align-items: baseline;
   gap: 8px;
   font-size: 11px;
+  min-width: 0;
 }
 .email-alt-source {
   text-transform: uppercase;
@@ -1517,6 +1772,9 @@
   font-size: 9.5px;
   font-weight: 600;
   color: var(--ink-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .email-alt-email {
   font-variant-numeric: tabular-nums;
@@ -1524,6 +1782,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
 }
 
 @keyframes email-alt-in {
@@ -1711,6 +1970,13 @@
   overflow: hidden;
   transform-origin: center;
   animation: enrich-pop 240ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+/* Variante wide: CPF Picker (revisão de CPFs via Telethon) tem 3 colunas
+   por linha (checkbox + nome/sinais + idade/score). 520px corta nomes
+   longos como "Gustavo Acacio Barbosa Oliveira" e o badge de score
+   colide com o número da idade. */
+.enrich-modal.wide {
+  width: min(660px, 100%);
 }
 .enrich-modal-header {
   padding: 18px 20px 12px;
@@ -2145,4 +2411,171 @@
     max-width: none;
     width: 100%;
   }
+}
+
+.search-workspace-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 18px;
+  align-items: start;
+}
+
+@media (min-width: 1280px) {
+  .search-workspace-grid {
+    grid-template-columns: 360px minmax(0, 1fr);
+  }
+}
+
+.search-results-stack {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* ---- Live found leads (progressive search feedback) ------------------- */
+.live-found {
+  border: 0.5px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  padding: 10px 12px;
+  max-height: clamp(170px, 24vh, 230px);
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.live-found__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+
+.live-found__pulse {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-tint);
+  animation: live-found-pulse 1.2s ease-in-out infinite;
+}
+
+.live-found__pulse[aria-hidden='true'] {
+  animation: none;
+  background: var(--success);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 18%, transparent);
+}
+
+@keyframes live-found-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+.live-found__hint,
+.live-found__empty {
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+.live-found__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-2) transparent;
+}
+
+.live-found__list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.live-found__list::-webkit-scrollbar-thumb {
+  background: var(--line-2);
+  border-radius: 99px;
+}
+
+.live-found__item {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  padding: 5px 8px;
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+
+.live-found__main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.live-found__name {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.live-found__title {
+  font-size: 12px;
+  color: var(--ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 360px;
+}
+
+.live-found__meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+
+.live-found__tag {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 0.5px solid var(--line);
+}
+
+.live-found__tag--warn {
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 42%, var(--line));
+}
+
+/* ---- Virtual number recommendation (Telegram login) ------------------ */
+.virtual-number-tip {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--accent-tint);
+  border: 0.5px solid color-mix(in srgb, var(--accent) 32%, var(--line));
+  color: var(--ink-2);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.virtual-number-tip__icon {
+  font-size: 15px;
+  line-height: 1.3;
+}
+
+.virtual-number-tip strong {
+  color: var(--ink);
 }
