@@ -2,6 +2,8 @@
   "name": "beautiful-linkedin-desktop",
   "version": "0.1.0",
   "description": "Desktop UI (Electron + React) for Beautiful LinkedIn.",
+  "author": "jpAoH Software Solutions",
+  "copyright": "Copyright © 2026 jpAoH Software Solutions",
   "private": true,
   "type": "module",
   "main": "out/main/index.js",

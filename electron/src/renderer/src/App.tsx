@@ -606,7 +606,7 @@ export default function App() {
       onError={(message) => setFeedback({ kind: 'error', message })}
       onSuccess={(message) => setFeedback({ kind: 'success', message })}
     >
-    <div className="flex flex-col h-screen w-screen overflow-hidden bg-bg text-ink font-sans">
+    <div className="app-shell flex flex-col h-screen w-screen overflow-hidden bg-bg text-ink font-sans">
       {/* Title bar */}
       <div className="h-11 bg-surface/60 backdrop-blur-xl border-b border-line flex items-center px-4 gap-3 relative z-50 shrink-0">
         <div className="flex items-center gap-2.5 text-[13px] font-semibold text-ink tracking-tight select-none">
@@ -653,6 +653,10 @@ export default function App() {
           </div>
         )}
         <div className="flex items-center gap-1 ml-auto select-none">
+          <div className="jpaoh-credit jpaoh-credit-top" title="Developed by jpAoH Software Solutions">
+            <img src="./jpaoh-logo.svg" alt="jpAoH logo" />
+            <span>made by jpAoH</span>
+          </div>
           <button
             type="button"
             className="tb-btn"
@@ -742,14 +746,23 @@ export default function App() {
             ))}
           </nav>
 
-          <div className="mt-auto px-2 pt-2.5 border-t border-line flex items-center gap-2 text-[11px] text-ink-3">
-            <span className={`w-1.5 h-1.5 rounded-full ${sidecarOk ? 'bg-success shadow-[0_0_0_rgba(52,199,89,0.5)] animate-[pulse_2s_infinite]' : 'bg-ink-4'}`} />
-            <div>
-              <div className="font-medium text-ink-2">
-                {sidecarOk ? 'Sidecar conectado' : 'Sidecar offline'}
+          <div className="sidebar-bottom">
+            <div className="jpaoh-credit jpaoh-credit-bottom" title="© 2026 jpAoH Software Solutions">
+              <img src="./jpaoh-logo.svg" alt="jpAoH logo" />
+              <div>
+                <strong>© 2026 jpAoH</strong>
+                <span>Software Solutions · todos os direitos reservados</span>
               </div>
-              <div className="font-mono text-[10px] leading-tight mt-0.5 max-w-[170px] truncate">
-                {sidecarOk ? baseUrl : sidecarError ?? 'inicie o app pelo Electron'}
+            </div>
+            <div className="px-2 pt-2.5 border-t border-line flex items-center gap-2 text-[11px] text-ink-3">
+              <span className={`w-1.5 h-1.5 rounded-full ${sidecarOk ? 'bg-success shadow-[0_0_0_rgba(52,199,89,0.5)] animate-[pulse_2s_infinite]' : 'bg-ink-4'}`} />
+              <div>
+                <div className="font-medium text-ink-2">
+                  {sidecarOk ? 'Sidecar conectado' : 'Sidecar offline'}
+                </div>
+                <div className="font-mono text-[10px] leading-tight mt-0.5 max-w-[170px] truncate">
+                  {sidecarOk ? baseUrl : sidecarError ?? 'inicie o app pelo Electron'}
+                </div>
               </div>
             </div>
           </div>

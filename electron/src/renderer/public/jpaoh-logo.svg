@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 420" role="img" aria-label="jpAoH logo">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="45%" r="65%">
+      <stop offset="0%" stop-color="#101a24"/>
+      <stop offset="62%" stop-color="#07111a"/>
+      <stop offset="100%" stop-color="#030912"/>
+    </radialGradient>
+    <linearGradient id="blue" x1="85" y1="90" x2="340" y2="315" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#2de2ff"/>
+      <stop offset="48%" stop-color="#049cff"/>
+      <stop offset="100%" stop-color="#005adf"/>
+    </linearGradient>
+    <linearGradient id="blueDeep" x1="130" y1="270" x2="330" y2="160" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0068e8"/>
+      <stop offset="55%" stop-color="#0ca8ff"/>
+      <stop offset="100%" stop-color="#0060d8"/>
+    </linearGradient>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <rect width="420" height="420" rx="36" fill="url(#bg)"/>
+  <path d="M47 244c33-75 126-120 233-117 62 2 102 24 115 60-19-24-57-38-111-38-103 0-199 40-237 95Z" fill="url(#blue)" opacity=".95" filter="url(#glow)" transform="rotate(-16 210 210)"/>
+  <path d="M54 239c18 80 109 109 214 83 48-12 88-32 116-58-27 39-73 68-132 82-103 25-187-13-198-107Z" fill="url(#blueDeep)" opacity=".92" filter="url(#glow)" transform="rotate(-10 210 210)"/>
+  <path d="M119 131l9 32 32 9-32 9-9 32-9-32-32-9 32-9 9-32Z" fill="#21d7ff" filter="url(#glow)"/>
+  <text x="92" y="255" font-family="Arial Black, Arial, sans-serif" font-style="italic" font-size="82" font-weight="900" fill="url(#blueDeep)" filter="url(#glow)">jpAoH</text>
+</svg>
