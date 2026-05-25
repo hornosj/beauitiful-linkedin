@@ -267,6 +267,71 @@
     user-select: none;
     transition: background-color 120ms, color 120ms, border-color 120ms, box-shadow 120ms;
   }
+  .sidebar-bottom {
+    margin-top: auto;
+    display: grid;
+    gap: 10px;
+  }
+  .jpaoh-credit {
+    display: inline-flex;
+    align-items: center;
+    min-width: 0;
+    color: var(--ink-2);
+    user-select: none;
+  }
+  .jpaoh-credit img {
+    display: block;
+    object-fit: cover;
+    border: 0.5px solid color-mix(in srgb, var(--accent) 38%, var(--line));
+    background: #07111a;
+    box-shadow: 0 6px 18px rgba(0, 122, 255, 0.16);
+    flex-shrink: 0;
+  }
+  .jpaoh-credit-top {
+    height: 30px;
+    gap: 8px;
+    padding: 3px 9px 3px 4px;
+    border-radius: 999px;
+    border: 0.5px solid color-mix(in srgb, var(--accent) 22%, var(--line));
+    background:
+      linear-gradient(135deg, color-mix(in srgb, var(--accent) 10%, transparent), transparent 62%),
+      var(--surface);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0;
+    white-space: nowrap;
+  }
+  .jpaoh-credit-top img {
+    width: 24px;
+    height: 24px;
+    border-radius: 8px;
+  }
+  .jpaoh-credit-bottom {
+    align-items: flex-start;
+    gap: 8px;
+    padding: 9px 8px 8px;
+    border-top: 0.5px solid var(--line);
+  }
+  .jpaoh-credit-bottom img {
+    width: 34px;
+    height: 34px;
+    border-radius: 10px;
+  }
+  .jpaoh-credit-bottom div {
+    min-width: 0;
+    display: grid;
+    gap: 2px;
+    line-height: 1.2;
+  }
+  .jpaoh-credit-bottom strong {
+    color: var(--ink);
+    font-size: 11px;
+    font-weight: 700;
+  }
+  .jpaoh-credit-bottom span {
+    color: var(--ink-3);
+    font-size: 10px;
+  }
   .sidebar-foot {
     margin-top: auto;
     padding: 10px 8px;

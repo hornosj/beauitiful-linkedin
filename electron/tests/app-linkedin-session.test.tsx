@@ -80,6 +80,16 @@ describe('App LinkedIn embedded session flow', () => {
     await waitFor(() => expect(openLogin).toHaveBeenCalledOnce())
   })
 
+  it('shows jpAoH branding and author credits in the app chrome', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({ seniority: [], functions: [], role_presets: [], scrape_modes: [] })) as unknown as typeof fetch
+
+    render(<App />)
+
+    expect(await screen.findByText(/made by jpAoH/i)).toBeTruthy()
+    expect(screen.getByText(/© 2026 jpAoH/i)).toBeTruthy()
+    expect(screen.getAllByAltText('jpAoH logo').length).toBeGreaterThanOrEqual(1)
+  })
+
   it('shows a close action after the embedded LinkedIn session is logged in', async () => {
     globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({ seniority: [], functions: [], role_presets: [], scrape_modes: [] })) as unknown as typeof fetch
 
