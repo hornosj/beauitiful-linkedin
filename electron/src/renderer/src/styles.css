@@ -115,7 +115,7 @@
     border-radius: 8px;
     display: block;
     flex-shrink: 0;
-    box-shadow: 0 5px 14px rgba(0, 103, 216, 0.18);
+    box-shadow: 0 5px 14px rgba(15, 15, 17, 0.18);
   }
   .app-brand-wordmark {
     display: inline-flex;
