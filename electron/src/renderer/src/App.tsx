@@ -610,7 +610,7 @@ export default function App() {
       {/* Title bar */}
       <div className="h-11 bg-surface/60 backdrop-blur-xl border-b border-line flex items-center px-4 gap-3 relative z-50 shrink-0">
         <div className="app-brand-lockup" aria-label="Beautiful LinkedIn">
-          <img src="./beautiful-linkedin-icon.svg" alt="Beautiful LinkedIn logo" />
+          <img src="./beautiful-linkedin-icon.png" alt="Beautiful LinkedIn logo" />
           <span className="app-brand-wordmark" aria-hidden="true">
             <span className="app-brand-beautiful">Beautiful</span>
             <span className="app-brand-linked">Linked</span>
