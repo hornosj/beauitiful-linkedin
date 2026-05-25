@@ -23,11 +23,18 @@ from beautiful_linkedin.models import (
     ProspectingSummary,
     ProviderDiagnostic,
 )
-from beautiful_linkedin.processing.deduplicator import deduplicate_leads, lead_dedupe_key
+from beautiful_linkedin.processing.deduplicator import (
+    deduplicate_leads,
+    global_dedupe_key,
+    lead_dedupe_key,
+)
 from beautiful_linkedin.processing.lead_filter import LeadFilter, apply_lead_filter
 from beautiful_linkedin.scraping.company_site_scraper import CompanySiteScraper
 from beautiful_linkedin.providers.factory import build_lead_providers
 from beautiful_linkedin.providers.lead_provider import LeadProvider
+from beautiful_linkedin.providers.linkedin_people_search import (
+    LinkedInPeopleSearchProvider,
+)
 from beautiful_linkedin.providers.linkedin_playwright import (
     LinkedInPlaywrightProvider,
     PlaywrightCollectorOptions,
@@ -63,6 +70,8 @@ def run_prospecting(
     playwright_headless: bool | None = None,
     settings: Settings | None = None,
     track_lead_history: bool = True,
+    exclude_lead_keys: set[str] | None = None,
+    on_lead_found: Callable[[Lead], None] | None = None,
 ) -> ProspectingResult:
     console = console or Console()
     settings = settings or load_settings()
@@ -107,6 +116,16 @@ def run_prospecting(
                     user_data_dir=current.user_data_dir,
                     extra_browser_args=list(current.extra_browser_args),
                 )
+
+    # Global dedup + live feedback are pushed into the listing provider so the
+    # iterative click→extract loop can (a) skip leads already saved in any
+    # table and keep clicking to fill ``max_results`` with fresh leads, and
+    # (b) emit each accepted lead the moment it surfaces during scrolling.
+    exclude_keys = set(exclude_lead_keys or set())
+    for provider in providers:
+        if isinstance(provider, LinkedInPeopleSearchProvider):
+            provider.exclude_lead_keys = exclude_keys
+            provider.on_lead_found = on_lead_found
     scraper = CompanySiteScraper(
         timeout_seconds=settings.company_site_timeout_seconds,
         max_pages=settings.company_site_max_pages,
@@ -140,6 +159,17 @@ def run_prospecting(
                         dedupe_task,
                         description=f"leads deduplicados: {len(deduplicate_leads(raw_leads))}",
                     )
+                    # Progressive feedback for callers (e.g. the sidecar run
+                    # registry). Providers that emit a single batch at the end
+                    # still surface here; the people_search provider also emits
+                    # per-lead in real time during scrolling. The callback's
+                    # sink is responsible for deduping the overlap.
+                    if on_lead_found is not None:
+                        for lead in leads:
+                            try:
+                                on_lead_found(lead)
+                            except Exception as exc:  # pragma: no cover - sink best-effort
+                                logger.debug("on_lead_found falhou: %s", exc)
 
                 _run_company_providers(
                     company=company,
@@ -154,6 +184,7 @@ def run_prospecting(
                     or settings.provider_timeout_seconds,
                     on_batch=on_provider_batch,
                     diagnostics_sink=diagnostics,
+                    exclude_lead_keys=exclude_keys,
                 )
 
             except Exception as exc:
@@ -217,7 +248,9 @@ def _run_company_providers(
     provider_timeout_seconds: float = 35.0,
     on_batch: Callable[[list[Lead]], None] | None = None,
     diagnostics_sink: list[ProviderDiagnostic] | None = None,
+    exclude_lead_keys: set[str] | None = None,
 ) -> list[list[Lead]]:
+    exclude_lead_keys = exclude_lead_keys or set()
     results: list[list[Lead]] = []
     accepted_leads: list[Lead] = []
     api_providers = [provider for provider in providers if _is_structured_api_provider(provider)]
@@ -249,6 +282,7 @@ def _run_company_providers(
                 accepted_leads,
                 round_batches,
                 limit=remaining,
+                exclude_keys=exclude_lead_keys,
             )
             round_new_count = sum(len(batch.leads) for batch in new_batches)
             for batch in new_batches:
@@ -280,6 +314,7 @@ def _run_company_providers(
             accepted_leads,
             fallback_batches,
             limit=max_results - len(accepted_leads),
+            exclude_keys=exclude_lead_keys,
         )
         for batch in new_batches:
             accepted_leads.extend(batch.leads)
@@ -298,6 +333,7 @@ def _run_company_providers(
                 accepted_leads,
                 batch,
                 limit=max_results - len(accepted_leads),
+                exclude_keys=exclude_lead_keys,
             )
             accepted_leads.extend(new_batch)
             results.append(new_batch)
@@ -458,7 +494,9 @@ def _extract_new_unique(
     accepted_leads: list[Lead],
     candidate_leads: list[Lead],
     limit: int | None = None,
+    exclude_keys: set[str] | None = None,
 ) -> tuple[list[Lead], int]:
+    exclude_keys = exclude_keys or set()
     seen_keys = {
         key
         for key in (lead_dedupe_key(lead) for lead in accepted_leads)
@@ -469,6 +507,13 @@ def _extract_new_unique(
     for lead in candidate_leads:
         if limit is not None and len(new_leads) >= limit:
             break
+        # Global cross-table dedup: a lead saved in any previous table is
+        # treated as a duplicate and skipped, so the round/offset loop keeps
+        # pulling fresh candidates until ``limit`` unique leads are gathered.
+        global_key = global_dedupe_key(lead)
+        if global_key is not None and global_key in exclude_keys:
+            duplicates += 1
+            continue
         key = lead_dedupe_key(lead)
         if key is not None and key in seen_keys:
             duplicates += 1
@@ -483,10 +528,12 @@ def _extract_balanced_new_unique_batches(
     accepted_leads: list[Lead],
     provider_batches: list[_ProviderBatch],
     limit: int,
+    exclude_keys: set[str] | None = None,
 ) -> list[_ProviderBatch]:
     if limit <= 0:
         return []
 
+    exclude_keys = exclude_keys or set()
     seen_keys = {
         key
         for key in (lead_dedupe_key(lead) for lead in accepted_leads)
@@ -496,6 +543,9 @@ def _extract_balanced_new_unique_batches(
     for provider_batch in provider_batches:
         queue: list[Lead] = []
         for lead in provider_batch.leads:
+            global_key = global_dedupe_key(lead)
+            if global_key is not None and global_key in exclude_keys:
+                continue
             key = lead_dedupe_key(lead)
             if key is not None and key in seen_keys:
                 continue

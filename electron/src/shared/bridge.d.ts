@@ -21,6 +21,23 @@ declare global {
     listTabs(): Promise<{ url: string; title?: string }[]>
   }
 
+  interface EmbeddedBrowserBridge {
+    prepare(liAt: string, url: string): Promise<{
+      ready: boolean
+      url: string | null
+      onAuthwall: boolean
+      needsLogin?: boolean
+      error: string | null
+    }>
+    openLogin(): Promise<{ ready: boolean; url: string | null; error: string | null }>
+    show(bounds?: { x: number; y: number; width: number; height: number }): Promise<void>
+    hide(): Promise<void>
+    status(): Promise<{ url: string | null; onAuthwall: boolean; visible: boolean }>
+    getCdpEndpoint(): Promise<{ endpoint: string; port: number }>
+    checkSession(): Promise<{ hasLiAt: boolean; hasJsessionid: boolean }>
+    awaitLogin(timeoutMs?: number): Promise<boolean>
+  }
+
   interface BeautifulLinkedInBridge {
     getBaseUrl(): Promise<string | null>
     getStatus(): Promise<{
@@ -30,6 +47,7 @@ declare global {
       error: string | null
     }>
     chrome: ChromeBridge
+    embeddedBrowser?: EmbeddedBrowserBridge
   }
 
   interface Window {

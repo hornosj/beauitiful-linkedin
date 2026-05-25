@@ -26,8 +26,13 @@ from pydantic import BaseModel, Field, model_validator
 
 from beautiful_linkedin.cli import build_lead_filter
 from beautiful_linkedin.config import Settings, load_settings
-from beautiful_linkedin.cookie_resolver import diagnose_li_at_cookie
+from beautiful_linkedin.cookie_resolver import (
+    diagnose_li_at_cookie,
+    resolve_linkedin_li_at_cookie,
+)
 from beautiful_linkedin.providers.linkedin_people_search import (
+    PeopleSearchOptions,
+    looks_like_valid_li_at,
     probe_cdp_endpoint,
     resolve_company_size_via_page,
 )
@@ -81,6 +86,77 @@ from beautiful_linkedin.storage.enrichment import (
 from beautiful_linkedin.storage.company_email_harvester import (
     CompanyEmailHarvester,
 )
+from beautiful_linkedin.storage.internal_phone_enrichment import (
+    InternalPhoneEnrichmentOrchestrator,
+    InternalPhoneEnrichmentService,
+    PhoneEnrichmentUpdate,
+    collect_company_domains_from_leads,
+    default_harvest_fn as default_phone_harvest_fn,
+)
+from beautiful_linkedin.storage.phone_hlr import (
+    HlrProbeProvider,
+    NoopHlrProbe,
+    default_hlr_probe,
+)
+from beautiful_linkedin.storage.phone_linkedin_contact import (
+    LinkedInContactInfoLookupProvider,
+)
+from beautiful_linkedin.storage.phone_lookup import PhoneLookupProvider
+from beautiful_linkedin.storage.phone_pdf_extractor import PdfPhoneExtractor
+from beautiful_linkedin.storage.phone_receita_cnpj import ReceitaCnpjLookupProvider
+from beautiful_linkedin.storage.phone_serp_search import SerpPhoneSearchProvider
+from beautiful_linkedin.storage.telegram_group_phone_lookup import (
+    TelegramGroupPhoneLookupProvider,
+)
+from beautiful_linkedin.storage.telegram_consult_matcher import (
+    MatchScore,
+    score_candidate,
+)
+from beautiful_linkedin.storage.telegram_consult_parser import (
+    TelegramCandidate,
+    TelegramExtraction,
+    parse_telegram_text,
+)
+from beautiful_linkedin.storage.telegram_group_playwright_lookup import (
+    FindexCpfConsult,
+    FindexEmailConsult,
+    FindexNameConsult,
+    GonzalesBotConsult,
+    GonzalesCpfConsult,
+    TelegramConsultOrchestrator,
+    TelegramConsultResult,
+    TelegramGroupPlaywrightLookup,
+    UnixBotConsult,
+)
+from beautiful_linkedin.storage.telegram_pipeline import (
+    TelegramCpfStageResult,
+    TelegramNameStageResult,
+    TelegramParsedCandidate,
+    TelegramPhoneCandidate,
+    TelegramPhoneFlowResult,
+    cpf_candidate_allowed_for_review as _pipeline_cpf_candidate_allowed_for_review,
+    collect_name_stage_candidates as _pipeline_collect_name_stage_candidates,
+    latest_name_stage_consult,
+    lead_ref_for as _pipeline_lead_ref_for,
+    parse_and_rank as _pipeline_parse_and_rank,
+    refresh_linkedin_signals_for_telegram as _pipeline_refresh_linkedin_signals,
+    run_cpf_stage_only as _pipeline_run_cpf_stage_only,
+    run_extract_phone_via_cpf as _pipeline_run_extract_phone_via_cpf,
+    run_name_stage_only as _pipeline_run_name_stage_only,
+    run_phone_followup as _pipeline_run_phone_followup,
+    run_telegram_consult as _pipeline_run_telegram_consult,
+    select_followup_candidates as _pipeline_select_followup_candidates,
+)
+from beautiful_linkedin.storage.telegram_phone_lookup import (
+    TelegramBotPhoneLookupProvider,
+)
+from beautiful_linkedin.storage.telegram_telethon_lookup import (
+    TelethonGonzalesCpfConsult,
+    TelethonTelegramConsultOrchestrator,
+)
+from beautiful_linkedin.storage import telegram_telethon_auth
+from beautiful_linkedin.storage.phone_validation import PhoneValidator
+from beautiful_linkedin.storage.whatsapp_checker import WhatsAppNumberChecker
 from beautiful_linkedin.storage.internal_enrichment import (
     CompanyDomainResolver,
     EmailValidator,
@@ -88,6 +164,11 @@ from beautiful_linkedin.storage.internal_enrichment import (
     InternalLeadEnrichmentService,
     SmtpMailboxVerifier,
     collect_company_domains,
+)
+from beautiful_linkedin.storage.linkedin_profile_validation import (
+    CdpLinkedInProfilePageFetcher,
+    PlaywrightLinkedInProfilePageFetcher,
+    run_linkedin_profile_validation as run_profile_validation_with_fetcher,
 )
 from beautiful_linkedin.storage.saved_leads import (
     ImportColumnError,
@@ -98,6 +179,17 @@ from beautiful_linkedin.storage.saved_leads import (
 VERSION = "0.1.0"
 
 logger = logging.getLogger(__name__)
+
+
+def _log_telegram_phone_endpoint(event: str, **detail: Any) -> None:
+    """Sidecar-visible logs for the Telegram phone API surface.
+
+    Values are deliberately operational: run/table/cursor/counts. Raw
+    CPF, e-mail, and phone values stay out of logs.
+    """
+    clean = {key: value for key, value in detail.items() if value is not None}
+    detail_text = " ".join(f"{key}={value}" for key, value in sorted(clean.items()))
+    logger.info("telegram_phone_endpoint event=%s%s%s", event, " " if detail_text else "", detail_text)
 
 
 class RunStatus(str, Enum):
@@ -167,6 +259,11 @@ class SearchRequest(BaseModel):
     # LinkedIn People page. Used to derive how many clicks the load-more loop
     # needs to satisfy ``max_results``. None means "keep server-side default".
     cards_per_cycle: int | None = Field(default=None, ge=1, le=200)
+    # Override the CDP endpoint used by the people_search provider.
+    # When set (e.g. "http://127.0.0.1:9223"), the server will use this
+    # endpoint instead of the global linkedin_cdp_endpoint setting.
+    # Intended for the in-app embedded browser mode.
+    cdp_endpoint: str | None = None
 
     @model_validator(mode="after")
     def _titles_required_unless_general(self) -> "SearchRequest":
@@ -235,11 +332,33 @@ class StartRunResponse(BaseModel):
     status: RunStatus = RunStatus.PENDING
 
 
+class FoundLeadPayload(BaseModel):
+    """Compact, user-facing snapshot of a lead found mid-run.
+
+    Deliberately omits internal provenance (provider names, fetch backend):
+    the UI shows only what helps the operator recognise the person.
+    """
+
+    person_name: str | None = None
+    title: str | None = None
+    company_name: str | None = None
+    location: str | None = None
+    linkedin_url: str | None = None
+    confidence_score: int = 0
+    matched_title: str | None = None
+    validation_status: str | None = None
+    note: str | None = None
+
+
 class RunStateResponse(BaseModel):
     run_id: str
     status: RunStatus
     error: str | None = None
     result: SearchResponse | None = None
+    # Progressive feedback: accumulates as leads are discovered so the UI can
+    # render them live while ``status`` is still RUNNING.
+    found_leads: list[FoundLeadPayload] = Field(default_factory=list)
+    found_count: int = 0
 
 
 class TaxonomyItem(BaseModel):
@@ -371,12 +490,17 @@ class InternalEnrichRequest(BaseModel):
     fields: str = "email"
     confirmed: bool = True
     company_domain: str | None = None
+    # When set, restricts the phone pipeline to the named source providers
+    # (by ``provider.name``) and disables the company-site harvester.
+    # ``["telegram_group"]`` is the canonical alias for
+    # ``telegram_group_consultasgratis``. ``None`` keeps the full pipeline.
+    phone_sources: list[str] | None = None
 
     @model_validator(mode="after")
     def _validate(self) -> "InternalEnrichRequest":
-        if self.fields != "email":
+        if self.fields not in {"email", "phone", "both"}:
             raise ValueError(
-                "Versão atual do enriquecimento interno só suporta fields='email'."
+                "fields deve ser 'email', 'phone' ou 'both'."
             )
         if self.company_domain is not None:
             cleaned = _clean_internal_company_domain(self.company_domain)
@@ -385,6 +509,9 @@ class InternalEnrichRequest(BaseModel):
                     "company_domain deve ser um domínio corporativo válido (ex.: empresa.com.br)."
                 )
             self.company_domain = cleaned
+        if self.phone_sources is not None:
+            cleaned_sources = [s.strip() for s in self.phone_sources if s and s.strip()]
+            self.phone_sources = cleaned_sources or None
         return self
 
 
@@ -394,11 +521,398 @@ class InternalEnrichSummary(BaseModel):
     skipped_existing_email: int = 0
     failed_missing_domain: int = 0
     no_change: int = 0
+    # Phone-side counters live alongside the e-mail ones so the UI can
+    # render both with a single response shape. They stay at zero when
+    # ``fields="email"``.
+    enriched_phone_leads: int = 0
+    skipped_existing_phone: int = 0
+    failed_no_phone_candidate: int = 0
 
 
 class InternalEnrichResponse(BaseModel):
     status: str
     summary: InternalEnrichSummary
+    table: SavedLeadTablePayload | None = None
+    leads: list[Lead] = Field(default_factory=list)
+
+
+class LinkedInProfileValidationRequest(BaseModel):
+    lead_refs: list[str] = Field(min_length=1)
+    max_leads: int = Field(default=40, ge=1, le=40)
+    cdp_endpoint: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_limit(self) -> "LinkedInProfileValidationRequest":
+        if len(self.lead_refs) > self.max_leads:
+            raise ValueError(
+                f"Selecione no máximo {self.max_leads} leads por validação de cargo."
+            )
+        return self
+
+
+class TelegramConsultRequest(BaseModel):
+    """Body for ``POST /lead-tables/{id}/telegram-consult``.
+
+    The flow runs sequentially over ``lead_refs`` — each one drives the
+    Chrome-CDP / Telegram-Web automation through the bot. A small cap
+    keeps the operator from accidentally booking the browser for hours
+    and signals to the UI that this is not a bulk pipeline.
+    """
+
+    lead_refs: list[str] = Field(min_length=1)
+    max_leads: int = Field(default=10, ge=1, le=10)
+
+
+class TelegramConsultPayload(BaseModel):
+    id: int
+    table_id: str
+    lead_ref: str
+    provider: str = "unix"
+    lead_name: str
+    query: str
+    raw_text: str | None = None
+    source_url: str | None = None
+    downloaded_at: str | None = None
+    error: str | None = None
+    extracted_nome: str | None = None
+    extracted_cpf: str | None = None
+    extracted_birth_date: str | None = None
+    extracted_address: str | None = None
+    extracted_candidates: list[dict[str, Any]] = Field(default_factory=list)
+    match_score: int | None = None
+    match_details: dict[str, Any] = Field(default_factory=dict)
+    created_at: str
+    # Pipeline columns (Phase 3). Default to legacy values so previously
+    # persisted rows render unchanged in the UI.
+    run_id: str | None = None
+    query_type: str = "name"
+    query_value: str | None = None
+    blocked_reason: str | None = None
+
+
+class TelegramConsultSummary(BaseModel):
+    requested_leads: int = 0
+    succeeded: int = 0
+    failed: int = 0
+
+
+class TelegramConsultResponse(BaseModel):
+    status: str
+    summary: TelegramConsultSummary
+    consults: list[TelegramConsultPayload] = Field(default_factory=list)
+
+
+class TelegramConsultListResponse(BaseModel):
+    consults: list[TelegramConsultPayload] = Field(default_factory=list)
+
+
+class TelethonAuthStatusResponse(BaseModel):
+    authorized: bool
+    configured: bool
+    session_name: str | None = None
+
+
+class TelethonAuthSendCodeRequest(BaseModel):
+    phone: str = Field(..., min_length=4)
+
+
+class TelethonAuthSendCodeResponse(BaseModel):
+    phone_code_hash: str
+    next_type: str | None = None
+    timeout: int | None = None
+
+
+class TelethonAuthSignInRequest(BaseModel):
+    phone: str = Field(..., min_length=4)
+    phone_code_hash: str = Field(..., min_length=1)
+    code: str = Field(..., min_length=1)
+    password: str | None = None
+
+
+class TelethonAuthSignInResponse(BaseModel):
+    authorized: bool
+    requires_password: bool = False
+    user_id: int | None = None
+    username: str | None = None
+    first_name: str | None = None
+
+
+class TelethonAuthLogoutResponse(BaseModel):
+    authorized: bool = False
+    logged_out: bool = False
+
+
+class TelegramFollowupPhoneRequest(BaseModel):
+    """Body for ``POST /lead-tables/{id}/telegram-followup-phone``.
+
+    Pre-condition: each lead in ``lead_refs`` must already have a
+    name-stage Telegram consult row in ``tabela_telegram``. The
+    follow-up reads those rows' ranked CPF candidates to decide which
+    ``/cpf`` queries to dispatch — it does not consult for an arbitrary
+    name.
+
+    ``target_titles`` enables the LinkedIn cargo gate when provided.
+    Empty list / ``None`` disables it (mirrors the people-search loop's
+    behavior on "busca geral").
+    """
+
+    lead_refs: list[str] = Field(min_length=1)
+    target_titles: list[str] | None = None
+    max_leads: int = Field(default=10, ge=1, le=10)
+
+
+class TelegramFollowupPhoneCandidate(BaseModel):
+    """One harvested phone with its CPF provenance.
+
+    ``confidence`` mirrors the originating CPF's matcher score 1:1.
+    Reshaping or capping this number would defeat the audit trail
+    encoded in ``provenance``.
+    """
+
+    phone_raw: str
+    phone_digits: str
+    cpf: str
+    confidence: int
+    source_provider: str
+    nome: str | None = None
+    provenance: dict[str, Any] = Field(default_factory=dict)
+
+
+class TelegramFollowupLeadResult(BaseModel):
+    """Per-lead summary of one follow-up run."""
+
+    lead_ref: str
+    lead_name: str | None = None
+    blocked_reason: str | None = None
+    candidates: list[TelegramFollowupPhoneCandidate] = Field(default_factory=list)
+    consults: list[TelegramConsultPayload] = Field(default_factory=list)
+
+
+class TelegramFollowupPhoneSummary(BaseModel):
+    requested_leads: int = 0
+    leads_with_phone: int = 0
+    leads_blocked: int = 0
+    phones_persisted: int = 0
+    skipped_existing_phone: int = 0
+
+
+class TelegramFollowupPhoneResponse(BaseModel):
+    status: str
+    summary: TelegramFollowupPhoneSummary
+    leads: list[TelegramFollowupLeadResult] = Field(default_factory=list)
+
+
+class TelethonPipelineRequest(BaseModel):
+    """Body for ``POST /lead-tables/{id}/telegram-consult/telethon-pipeline``.
+
+    ``lead_refs`` are the leads the operator selected in the UI. The
+    flow runs ``/nome`` on Findex+Gon+Unix (Telethon), parses CPF
+    candidates, scores them against the lead's LinkedIn signals (with
+    the new ``linkedin_birthday`` carrying the top weight), then runs
+    Gonzales ``/cpf`` + SISREG for the top candidates to harvest phones.
+    """
+
+    lead_refs: list[str] = Field(default_factory=list)
+    max_leads: int = Field(default=10, ge=1, le=20)
+    min_score: int = Field(default=65, ge=0, le=100)
+    max_cpf_candidates: int = Field(default=1, ge=1, le=10)
+    target_titles: list[str] | None = None
+
+
+class TelethonCpfStageRequest(BaseModel):
+    """Body for a single-CPF Telethon phone lookup from a saved consult."""
+
+    lead_ref: str = Field(min_length=1)
+    cpf: str = Field(min_length=1)
+
+
+class TelethonPipelineLeadResult(BaseModel):
+    lead_ref: str
+    lead_name: str | None = None
+    name_consults: list[TelegramConsultPayload] = Field(default_factory=list)
+    cpf_consults: list[TelegramConsultPayload] = Field(default_factory=list)
+    blocked_reason: str | None = None
+    candidates: list[TelegramFollowupPhoneCandidate] = Field(default_factory=list)
+
+
+class TelethonPipelineSummary(BaseModel):
+    requested_leads: int = 0
+    name_consults: int = 0
+    cpf_consults: int = 0
+    leads_with_phone: int = 0
+    phones_persisted: int = 0
+
+
+class TelethonPipelineResponse(BaseModel):
+    status: str
+    summary: TelethonPipelineSummary
+    leads: list[TelethonPipelineLeadResult] = Field(default_factory=list)
+
+
+# ---- Unified phone flow ---------------------------------------------------
+#
+# One endpoint that runs ``/nome`` then ``/cpf`` atomically per lead.
+# The UI exposes a single button so the operator does not need to track
+# the two-stage shape of the underlying pipeline.
+
+
+class TelegramPhoneRequest(BaseModel):
+    """Body for ``POST /lead-tables/{id}/telegram-phone``.
+
+    Atomic per lead: the server dispatches ``/nome`` then, for each CPF
+    above the matcher threshold, ``/cpf`` — no pre-condition on already
+    having a name-stage row persisted. ``target_titles`` enables the
+    LinkedIn cargo gate; when ``None`` or empty, the gate is disabled
+    and every lead proceeds (matches the "busca geral" semantics from
+    the people-search loop).
+    """
+
+    lead_refs: list[str] = Field(min_length=1)
+    target_titles: list[str] | None = None
+    max_leads: int = Field(default=10, ge=1, le=10)
+
+
+class TelegramPhoneStageEvent(BaseModel):
+    """One observable transition for a single lead's Telegram run.
+
+    The UI keys against ``stage`` to render a timeline, and ``last_stage``
+    on the response tells the operator at a glance where each lead stopped.
+    """
+
+    stage: str
+    timestamp: str
+    detail: dict[str, Any] = Field(default_factory=dict)
+
+
+class TelegramPhoneLeadResult(BaseModel):
+    """Per-lead outcome of the unified name → cpf → phone flow."""
+
+    lead_ref: str
+    lead_name: str | None = None
+    blocked_reason: str | None = None
+    candidates: list[TelegramFollowupPhoneCandidate] = Field(default_factory=list)
+    name_consult: TelegramConsultPayload | None = None
+    cpf_consult: TelegramConsultPayload | None = None
+    stages: list[TelegramPhoneStageEvent] = Field(default_factory=list)
+    last_stage: str | None = None
+
+
+class TelegramPhoneSummary(BaseModel):
+    requested_leads: int = 0
+    leads_with_phone: int = 0
+    leads_blocked: int = 0
+    phones_persisted: int = 0
+    skipped_existing_phone: int = 0
+
+
+class TelegramPhoneResponse(BaseModel):
+    status: str
+    summary: TelegramPhoneSummary
+    leads: list[TelegramPhoneLeadResult] = Field(default_factory=list)
+
+
+class TelegramPhoneStartRequest(BaseModel):
+    """Body for ``POST /lead-tables/{id}/telegram-phone/start``.
+
+    Cria um run resumível. Nenhuma consulta Telegram acontece aqui —
+    o servidor só prepara a sequência ordenada de leads. O cliente
+    Electron chama ``/next`` lead-a-lead, confirmando manualmente entre
+    cada um (anti-ban dos bots Telegram).
+    """
+
+    lead_refs: list[str] = Field(min_length=1)
+    target_titles: list[str] | None = None
+    max_leads: int = Field(default=10, ge=1, le=10)
+
+
+class TelegramPhoneStartResponse(BaseModel):
+    run_id: str
+    table_id: str
+    total_leads: int
+    next_index: int
+    lead_refs: list[str]
+    status: str
+
+
+class TelegramPhoneNextRequest(BaseModel):
+    run_id: str
+
+
+class TelegramPhoneNextResponse(BaseModel):
+    run_id: str
+    status: str  # in_progress | completed | cancelled
+    next_index: int
+    total_leads: int
+    summary: TelegramPhoneSummary
+    last_lead: TelegramPhoneLeadResult | None = None
+
+
+class TelegramPhoneCancelRequest(BaseModel):
+    run_id: str
+
+
+class TelegramPhoneCancelResponse(BaseModel):
+    run_id: str
+    status: str
+    next_index: int
+    total_leads: int
+
+
+class TelegramPhoneRankedCandidatePayload(BaseModel):
+    """Um CPF candidato pra ser exibido pra confirmação humana antes do
+    /cpf rodar. Carrega o score do matcher + sinais usados pra UI poder
+    mostrar 'porque a gente acha que é essa pessoa'."""
+
+    cpf: str
+    nome: str | None = None
+    data_nascimento: str | None = None
+    endereco: str | None = None
+    match_score: int = 0
+    signals_used: list[str] = Field(default_factory=list)
+    breakdown: dict[str, Any] = Field(default_factory=dict)
+    eligible: bool = False  # True se passou min_score E gate de nome
+
+
+class TelegramPhoneExtractCpfsRequest(BaseModel):
+    run_id: str
+
+
+class TelegramPhoneExtractCpfsResponse(BaseModel):
+    """Resposta da etapa 1 (/extract-cpfs). Devolve os CPFs que o /nome
+    encontrou + os filtrados pelo matcher pra UI exibir checkboxes."""
+
+    run_id: str
+    status: str  # awaiting_cpf_confirmation | in_progress | completed | cancelled
+    next_index: int
+    total_leads: int
+    lead_ref: str
+    lead_name: str | None = None
+    blocked_reason: str | None = None
+    eligible_cpfs: list[str] = Field(default_factory=list)
+    candidates: list[TelegramPhoneRankedCandidatePayload] = Field(default_factory=list)
+    name_consult: TelegramConsultPayload | None = None
+
+
+class TelegramPhoneRunCpfStageRequest(BaseModel):
+    run_id: str
+    cpfs: list[str] = Field(min_length=1)
+
+
+class TelegramPhoneSkipLeadRequest(BaseModel):
+    run_id: str
+
+
+class LinkedInProfileValidationSummary(BaseModel):
+    requested_leads: int = 0
+    validated_leads: int = 0
+    failed_leads: int = 0
+    no_linkedin_url: int = 0
+    no_change: int = 0
+
+
+class LinkedInProfileValidationResponse(BaseModel):
+    status: str
+    summary: LinkedInProfileValidationSummary
     table: SavedLeadTablePayload | None = None
     leads: list[Lead] = Field(default_factory=list)
 
@@ -481,6 +995,41 @@ class RunRecord:
     error: str | None = None
     result: SearchResponse | None = None
     cancel_event: threading.Event = field(default_factory=threading.Event)
+    # Live-feedback sink. ``found_leads`` accumulates as the search discovers
+    # people; ``_found_keys`` dedupes the overlap between the per-lead emission
+    # (people_search, real time) and the per-batch emission (other providers).
+    found_leads: list[FoundLeadPayload] = field(default_factory=list)
+    _found_keys: set[str] = field(default_factory=set)
+    _found_lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def record_found_lead(self, lead: Lead) -> None:
+        key = (
+            (lead.linkedin_url or "").strip().lower()
+            or f"{(lead.person_name or '').strip().lower()}|"
+            f"{(lead.company_name or '').strip().lower()}|"
+            f"{(lead.title or '').strip().lower()}"
+        )
+        with self._found_lock:
+            if key in self._found_keys:
+                return
+            self._found_keys.add(key)
+            self.found_leads.append(
+                FoundLeadPayload(
+                    person_name=lead.person_name,
+                    title=lead.title,
+                    company_name=lead.company_name,
+                    location=lead.linkedin_location,
+                    linkedin_url=lead.linkedin_url,
+                    confidence_score=int(lead.confidence_score),
+                    matched_title=lead.matched_title,
+                    validation_status=lead.validation_status,
+                    note=lead.consultation_note,
+                )
+            )
+
+    def found_leads_snapshot(self) -> list[FoundLeadPayload]:
+        with self._found_lock:
+            return list(self.found_leads)
 
 
 class RunRegistry:
@@ -543,6 +1092,86 @@ def get_probe_registry(app: FastAPI) -> ProbeRegistry:
     return app.state.probe_registry  # type: ignore[no-any-return]
 
 
+@dataclass
+class TelegramPhoneRunRecord:
+    """Estado em memória de um run resumível de extração de telefone via
+    Telegram. Cada ``/next`` processa exatamente um lead e avança o cursor;
+    o cliente decide quando chamar o próximo `/next` (pausa anti-ban).
+
+    Não é persistido em SQLite de propósito: o run depende do
+    Chrome+Playwright vivo do processo atual. Se o sidecar reinicia, a
+    sessão está morta de qualquer jeito — o cliente deve criar um run novo.
+    """
+
+    run_id: str
+    table_id: str
+    lead_refs: list[str] = field(default_factory=list)
+    next_index: int = 0
+    # status global do run
+    # pending: criado mas /next ainda não chamado
+    # in_progress: processou pelo menos 1 lead, ainda há mais
+    # awaiting_cpf_confirmation: etapa 1 (name) rodou pro lead atual,
+    #     servidor está esperando a UI confirmar quais CPFs vão pra /cpf
+    # completed: cursor passou de todos os leads
+    # cancelled: operador encerrou
+    status: str = "pending"
+    target_titles: list[str] | None = None
+    results: list[dict[str, Any]] = field(default_factory=list)
+    # Quando o status é awaiting_cpf_confirmation, este campo guarda os
+    # CPFs do lead atual que o matcher pré-selecionou (a UI mostra esses
+    # marcados por default). Se o usuário desmarcar todos e clicar
+    # "Pular este lead", o cursor avança sem rodar /cpf.
+    pending_eligible_cpfs: list[str] = field(default_factory=list)
+    pending_lead_ref: str | None = None
+    summary: dict[str, int] = field(
+        default_factory=lambda: {
+            "requested_leads": 0,
+            "leads_with_phone": 0,
+            "leads_blocked": 0,
+            "phones_persisted": 0,
+            "skipped_existing_phone": 0,
+        }
+    )
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+
+class TelegramPhoneRunRegistry:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._runs: dict[str, TelegramPhoneRunRecord] = {}
+
+    def create(
+        self,
+        *,
+        table_id: str,
+        lead_refs: list[str],
+        target_titles: list[str] | None,
+    ) -> TelegramPhoneRunRecord:
+        run_id = uuid.uuid4().hex
+        record = TelegramPhoneRunRecord(
+            run_id=run_id,
+            table_id=table_id,
+            lead_refs=list(lead_refs),
+            target_titles=list(target_titles) if target_titles else None,
+        )
+        record.summary["requested_leads"] = len(lead_refs)
+        with self._lock:
+            self._runs[run_id] = record
+        return record
+
+    def get(self, run_id: str) -> TelegramPhoneRunRecord | None:
+        with self._lock:
+            return self._runs.get(run_id)
+
+    def list_for_table(self, table_id: str) -> list[TelegramPhoneRunRecord]:
+        with self._lock:
+            return [r for r in self._runs.values() if r.table_id == table_id]
+
+
+def get_telegram_phone_run_registry(app: FastAPI) -> TelegramPhoneRunRegistry:
+    return app.state.telegram_phone_run_registry  # type: ignore[no-any-return]
+
+
 def get_saved_leads_store(app: FastAPI) -> SavedLeadsStore:
     return app.state.saved_leads_store  # type: ignore[no-any-return]
 
@@ -602,6 +1231,7 @@ def build_app(*, saved_leads_path: str | None = None) -> FastAPI:
     app = FastAPI(title="Beautiful LinkedIn Sidecar", version=VERSION)
     app.state.run_registry = RunRegistry()
     app.state.probe_registry = ProbeRegistry()
+    app.state.telegram_phone_run_registry = TelegramPhoneRunRegistry()
     resolved_path = saved_leads_path or load_settings().saved_leads_path
     app.state.saved_leads_store = SavedLeadsStore(resolved_path)
 
@@ -652,7 +1282,10 @@ def build_app(*, saved_leads_path: str | None = None) -> FastAPI:
     @app.post("/search", response_model=SearchResponse)
     def search(request: SearchRequest) -> SearchResponse:
         _ensure_risky_mode_consent(request)
-        result = _execute(request)
+        result = _execute(
+            request,
+            exclude_lead_keys=_global_dedupe_keys_for_search(app),
+        )
         return SearchResponse(
             leads=result.leads,
             summary=result.summary,
@@ -725,11 +1358,14 @@ def build_app(*, saved_leads_path: str | None = None) -> FastAPI:
         record = get_run_registry(app).get(run_id)
         if record is None:
             raise HTTPException(status_code=404, detail="run não encontrado")
+        found = record.found_leads_snapshot()
         return RunStateResponse(
             run_id=record.run_id,
             status=record.status,
             error=record.error,
             result=record.result,
+            found_leads=found,
+            found_count=len(found),
         )
 
     @app.post(
@@ -982,19 +1618,54 @@ def build_app(*, saved_leads_path: str | None = None) -> FastAPI:
         # company_domain is missing or fails to validate.
         company_domains = collect_company_domains(saved_leads)
 
-        updates = _run_internal_enrichment(
-            leads=selected,
-            existing_company_emails=existing_company_emails,
-            company_domains=company_domains,
-        )
-
-        counters = store.apply_internal_enrichment_updates(table_id, updates)
+        email_counters = {
+            "enriched": 0,
+            "skipped_existing_email": 0,
+            "failed_missing_domain": 0,
+            "no_change": 0,
+        }
+        phone_counters = {
+            "enriched": 0,
+            "skipped_existing_phone": 0,
+            "failed_no_candidate": 0,
+            "no_change": 0,
+        }
+        if payload.fields in {"email", "both"}:
+            updates = _run_internal_enrichment(
+                leads=selected,
+                existing_company_emails=existing_company_emails,
+                company_domains=company_domains,
+            )
+            email_counters = store.apply_internal_enrichment_updates(
+                table_id, updates
+            )
+        if payload.fields in {"phone", "both"}:
+            phone_domains = collect_company_domains_from_leads(saved_leads)
+            # Merge any e-mail-derived domains into the phone domain
+            # ranking — they're still the company's website, just
+            # discovered from a different signal.
+            for key, domains in company_domains.items():
+                bucket = phone_domains.setdefault(key, [])
+                for domain in domains:
+                    if domain and domain not in bucket:
+                        bucket.append(domain)
+            phone_updates = _run_internal_phone_enrichment(
+                leads=selected,
+                company_domains=phone_domains,
+                phone_sources=payload.phone_sources,
+            )
+            phone_counters = store.apply_internal_phone_enrichment_updates(
+                table_id, phone_updates
+            )
         summary = InternalEnrichSummary(
             requested_leads=len(selected),
-            enriched_leads=counters["enriched"],
-            skipped_existing_email=counters["skipped_existing_email"],
-            failed_missing_domain=counters["failed_missing_domain"],
-            no_change=counters["no_change"],
+            enriched_leads=email_counters["enriched"],
+            skipped_existing_email=email_counters["skipped_existing_email"],
+            failed_missing_domain=email_counters["failed_missing_domain"],
+            no_change=email_counters["no_change"],
+            enriched_phone_leads=phone_counters["enriched"],
+            skipped_existing_phone=phone_counters["skipped_existing_phone"],
+            failed_no_phone_candidate=phone_counters["failed_no_candidate"],
         )
         refreshed = store.get_table(table_id)
         leads = store.list_leads(table_id)
@@ -1003,6 +1674,1801 @@ def build_app(*, saved_leads_path: str | None = None) -> FastAPI:
             summary=summary,
             table=_table_to_payload(refreshed),
             leads=leads,
+        )
+
+    @app.post(
+        "/lead-tables/{table_id}/linkedin-profile-validate",
+        response_model=LinkedInProfileValidationResponse,
+    )
+    def linkedin_profile_validate(
+        table_id: str, payload: LinkedInProfileValidationRequest
+    ) -> LinkedInProfileValidationResponse:
+        store = get_saved_leads_store(app)
+        try:
+            table = store.get_table(table_id)
+            saved_leads = store.list_leads(table_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        selected = _select_leads(saved_leads, payload.lead_refs)
+        if not selected:
+            raise HTTPException(
+                status_code=422,
+                detail="Nenhum lead selecionado foi encontrado na tabela.",
+            )
+        if len(selected) > payload.max_leads:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Selecione no máximo {payload.max_leads} leads por validação de cargo.",
+            )
+
+        try:
+            validation_settings = load_settings()
+            if payload.cdp_endpoint is not None:
+                from dataclasses import replace as _dc_replace
+                validation_settings = _dc_replace(
+                    validation_settings,
+                    linkedin_cdp_endpoint=payload.cdp_endpoint,
+                    linkedin_cdp_enabled=True,
+                )
+            updates = _run_linkedin_profile_validation(
+                leads=selected,
+                settings=validation_settings,
+                max_leads=payload.max_leads,
+            )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+        counters = store.apply_linkedin_profile_validation_updates(
+            table_id, updates
+        )
+        refreshed = store.get_table(table_id)
+        leads = store.list_leads(table_id)
+        return LinkedInProfileValidationResponse(
+            status="completed",
+            summary=LinkedInProfileValidationSummary(
+                requested_leads=len(selected),
+                validated_leads=counters["validated"],
+                failed_leads=counters["failed"],
+                no_linkedin_url=counters["no_linkedin_url"],
+                no_change=counters["no_change"],
+            ),
+            table=_table_to_payload(refreshed),
+            leads=leads,
+        )
+
+    @app.post(
+        "/lead-tables/{table_id}/telegram-consult",
+        response_model=TelegramConsultResponse,
+    )
+    def telegram_consult(
+        table_id: str, payload: TelegramConsultRequest
+    ) -> TelegramConsultResponse:
+        """Drive Chrome (CDP) through Telegram Web to query each lead in
+        the configured name-consult providers. Gonzales now runs in the
+        private @ConsultoriaGonzalesbot chat; Unix remains a fallback
+        provider. Sequential by design — a single Chrome session can
+        only handle one Telegram-Web tab at a time."""
+        store = get_saved_leads_store(app)
+        try:
+            store.get_table(table_id)
+            saved_leads = store.list_leads(table_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        selected = _select_leads(saved_leads, payload.lead_refs)
+        if not selected:
+            raise HTTPException(
+                status_code=422,
+                detail="Nenhum lead selecionado foi encontrado na tabela.",
+            )
+        if len(selected) > payload.max_leads:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Selecione no máximo {payload.max_leads} leads por consulta Telegram."
+                ),
+            )
+
+        settings = load_settings()
+        selected = _refresh_linkedin_signals_for_telegram(
+            selected=selected,
+            selected_refs=payload.lead_refs,
+            table_id=table_id,
+            store=store,
+            settings=settings,
+        )
+
+        try:
+            lookup = _default_telegram_consult_lookup(settings)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+        consults = _run_telegram_consult(
+            selected=selected,
+            table_id=table_id,
+            store=store,
+            lookup=lookup,
+        )
+        succeeded = sum(1 for c in consults if c.error is None and c.raw_text)
+        failed = len(consults) - succeeded
+        return TelegramConsultResponse(
+            status="completed",
+            summary=TelegramConsultSummary(
+                requested_leads=len(selected),
+                succeeded=succeeded,
+                failed=failed,
+            ),
+            consults=consults,
+        )
+
+    @app.post(
+        "/lead-tables/{table_id}/telegram-consult/multiple-experimental",
+        response_model=TelegramConsultResponse,
+    )
+    def telegram_consult_multiple_experimental(
+        table_id: str, payload: TelegramConsultRequest
+    ) -> TelegramConsultResponse:
+        """Experimental multi-provider evidence flow.
+
+        This intentionally does not replace ``/telegram-consult`` nor
+        the production resumable phone flow. It runs Finder, Gon and Unix
+        as separate evidence sources, persists one consult row per
+        provider, and lets the existing parser/ranker compare the
+        extracted candidates.
+        """
+        store = get_saved_leads_store(app)
+        try:
+            store.get_table(table_id)
+            saved_leads = store.list_leads(table_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        selected = _select_leads(saved_leads, payload.lead_refs)
+        if not selected:
+            raise HTTPException(
+                status_code=422,
+                detail="Nenhum lead selecionado foi encontrado na tabela.",
+            )
+        if len(selected) > payload.max_leads:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Selecione no máximo {payload.max_leads} leads por consulta Telegram."
+                ),
+            )
+
+        settings = load_settings()
+        selected = _refresh_linkedin_signals_for_telegram(
+            selected=selected,
+            selected_refs=payload.lead_refs,
+            table_id=table_id,
+            store=store,
+            settings=settings,
+        )
+
+        try:
+            lookup = _default_telegram_multi_experimental_lookup(settings)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+        consults = _run_telegram_consult(
+            selected=selected,
+            table_id=table_id,
+            store=store,
+            lookup=lookup,
+        )
+        finder_cpf = _default_findex_cpf_consult(settings)
+        consults.extend(
+            _run_experimental_finder_cpf_followup(
+                selected=selected,
+                table_id=table_id,
+                store=store,
+                finder_cpf=finder_cpf,
+            )
+        )
+        succeeded = sum(1 for c in consults if c.error is None and c.raw_text)
+        failed = len(consults) - succeeded
+        return TelegramConsultResponse(
+            status="completed",
+            summary=TelegramConsultSummary(
+                requested_leads=len(selected),
+                succeeded=succeeded,
+                failed=failed,
+            ),
+            consults=consults,
+        )
+
+    @app.post(
+        "/lead-tables/{table_id}/telegram-consult/telethon-experimental",
+        response_model=TelegramConsultResponse,
+    )
+    def telegram_consult_telethon_experimental(
+        table_id: str, payload: TelegramConsultRequest
+    ) -> TelegramConsultResponse:
+        """Experimental multi-provider evidence flow via Telethon.
+
+        This route is deliberately separate from both Telegram-Web/CDP
+        consult routes. It uses a native Telegram session and persists
+        rows in the same evidence table so the parser, matcher, and UI
+        can compare results without changing the existing flows.
+        """
+        store = get_saved_leads_store(app)
+        try:
+            store.get_table(table_id)
+            saved_leads = store.list_leads(table_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        selected = _select_leads(saved_leads, payload.lead_refs)
+        if not selected:
+            raise HTTPException(
+                status_code=422,
+                detail="Nenhum lead selecionado foi encontrado na tabela.",
+            )
+        if len(selected) > payload.max_leads:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Selecione no máximo {payload.max_leads} leads por consulta Telegram."
+                ),
+            )
+
+        settings = load_settings()
+        selected = _refresh_linkedin_signals_for_telegram(
+            selected=selected,
+            selected_refs=payload.lead_refs,
+            table_id=table_id,
+            store=store,
+            settings=settings,
+        )
+
+        try:
+            lookup = _default_telegram_telethon_multi_experimental_lookup(settings)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+        consults = _run_telegram_consult(
+            selected=selected,
+            table_id=table_id,
+            store=store,
+            lookup=lookup,
+        )
+        succeeded = sum(1 for c in consults if c.error is None and c.raw_text)
+        failed = len(consults) - succeeded
+        return TelegramConsultResponse(
+            status="completed",
+            summary=TelegramConsultSummary(
+                requested_leads=len(selected),
+                succeeded=succeeded,
+                failed=failed,
+            ),
+            consults=consults,
+        )
+
+    @app.post(
+        "/lead-tables/{table_id}/telegram-consult/telethon-pipeline",
+        response_model=TelethonPipelineResponse,
+    )
+    def telegram_consult_telethon_pipeline(
+        table_id: str, payload: TelethonPipelineRequest
+    ) -> TelethonPipelineResponse:
+        """End-to-end Telethon pipeline: name → CPF → phone, per lead.
+
+        Stages, executed sequentially per lead so the conservative
+        Telegram action throttle paces the whole flow (not just within
+        one stage):
+
+        1. ``/nome`` on Findex + Gonzales + Unix (Telethon). Persists
+           three ``query_type='name'`` rows and parses ranked CPF
+           candidates against the lead's LinkedIn signals — including
+           the new ``linkedin_birthday`` high-weight DD/MM check.
+        2. ``/cpf`` + SISREG-III on Gonzales (Telethon) for the top
+           one CPF candidate whose score clears ``min_score``. If the
+           client sends a higher ``max_cpf_candidates``, the endpoint
+           still clamps the phone stage to one CPF: the highest-scoring
+           candidate only.
+           Each CPF row is persisted with ``query_type='cpf'``.
+        3. Phone harvest from the /cpf raw text. Phones merge into the
+           lead's ``phone`` / ``phone_alternatives`` via the existing
+           internal-phone enrichment helper — never overwriting an
+           existing primary.
+
+        Blocking endpoint by design. Wall-clock cost is dominated by
+        the conservative Telegram spacing and the bots' own latency;
+        expect about a minute or more per complete phone extraction.
+        """
+        store = get_saved_leads_store(app)
+        try:
+            store.get_table(table_id)
+            saved_leads = store.list_leads(table_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        selected = _select_leads(saved_leads, payload.lead_refs)
+        if not selected:
+            raise HTTPException(
+                status_code=422,
+                detail="Nenhum lead selecionado foi encontrado na tabela.",
+            )
+        if len(selected) > payload.max_leads:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Selecione no máximo {payload.max_leads} leads por consulta Telegram."
+                ),
+            )
+
+        settings = load_settings()
+        selected = _refresh_linkedin_signals_for_telegram(
+            selected=selected,
+            selected_refs=payload.lead_refs,
+            table_id=table_id,
+            store=store,
+            settings=settings,
+        )
+
+        try:
+            name_lookup = _default_telegram_telethon_multi_experimental_lookup(settings)
+            cpf_driver = _default_telethon_gonzales_cpf_consult(settings)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+        leads_out: list[TelethonPipelineLeadResult] = []
+        total_phones_persisted = 0
+        leads_with_phone = 0
+        total_name_consults = 0
+        total_cpf_consults = 0
+
+        logger.info(
+            "[telethon-pipeline] iniciando — table=%s leads=%d",
+            table_id,
+            len(selected),
+        )
+
+        for idx, lead in enumerate(selected, start=1):
+            lead_ref = _lead_ref(lead) or (lead.person_name or "")
+            logger.info(
+                "[telethon-pipeline] lead %d/%d — %r (%s)",
+                idx,
+                len(selected),
+                lead.person_name or "(sem nome)",
+                lead_ref,
+            )
+
+            name_consults = _run_telegram_consult(
+                selected=[lead],
+                table_id=table_id,
+                store=store,
+                lookup=name_lookup,
+            )
+            total_name_consults += len(name_consults)
+
+            candidates = _pipeline_run_phone_followup(
+                lead=lead,
+                table_id=table_id,
+                store=store,
+                consult_fn=cpf_driver.consult,
+                target_titles=payload.target_titles,
+                run_id=None,
+                provider_name="gon_cpf",
+                min_score=payload.min_score,
+                max_candidates=1,
+            )
+
+            persisted_cpf = store.list_telegram_consults_for_lead(
+                table_id, lead_ref, query_type="cpf"
+            )
+            total_cpf_consults += len(persisted_cpf)
+            blocked_reason: str | None = None
+            for row in persisted_cpf:
+                if row.blocked_reason:
+                    blocked_reason = row.blocked_reason
+                    break
+
+            lead_persisted = 0
+            if candidates:
+                primary = max(candidates, key=lambda c: c.confidence)
+                update = _telegram_phone_candidate_to_update(primary)
+                counters = store.apply_internal_phone_enrichment_updates(
+                    table_id, [(lead, update)]
+                )
+                lead_persisted = counters.get("enriched", 0)
+                total_phones_persisted += lead_persisted
+                for extra in (c for c in candidates if c is not primary):
+                    store.apply_internal_phone_enrichment_updates(
+                        table_id,
+                        [(lead, _telegram_phone_candidate_to_update(extra))],
+                    )
+                _apply_telegram_contact_email_candidates(
+                    store=store,
+                    table_id=table_id,
+                    lead=lead,
+                    candidates=candidates,
+                )
+                if lead_persisted > 0 and update.phone:
+                    leads_with_phone += 1
+
+            if candidates:
+                logger.info(
+                    "[telethon-pipeline] lead=%r → %d telefone(s) colhido(s)",
+                    lead.person_name or lead_ref,
+                    len(candidates),
+                )
+            else:
+                logger.info(
+                    "[telethon-pipeline] lead=%r → nenhum telefone encontrado (blocked=%s)",
+                    lead.person_name or lead_ref,
+                    blocked_reason or "–",
+                )
+
+            leads_out.append(
+                TelethonPipelineLeadResult(
+                    lead_ref=lead_ref,
+                    lead_name=lead.person_name,
+                    name_consults=name_consults,
+                    cpf_consults=[_consult_to_payload(row) for row in persisted_cpf],
+                    blocked_reason=blocked_reason,
+                    candidates=[
+                        _telegram_phone_candidate_to_payload(c) for c in candidates
+                    ],
+                )
+            )
+
+        logger.info(
+            "[telethon-pipeline] concluído — leads=%d nome_consults=%d cpf_consults=%d "
+            "leads_com_telefone=%d telefones_persistidos=%d",
+            len(selected),
+            total_name_consults,
+            total_cpf_consults,
+            leads_with_phone,
+            total_phones_persisted,
+        )
+
+        return TelethonPipelineResponse(
+            status="completed",
+            summary=TelethonPipelineSummary(
+                requested_leads=len(selected),
+                name_consults=total_name_consults,
+                cpf_consults=total_cpf_consults,
+                leads_with_phone=leads_with_phone,
+                phones_persisted=total_phones_persisted,
+            ),
+            leads=leads_out,
+        )
+
+    @app.post(
+        "/lead-tables/{table_id}/telegram-phone/telethon-cpf-stage",
+        response_model=TelethonPipelineResponse,
+    )
+    def telegram_phone_telethon_cpf_stage(
+        table_id: str, payload: TelethonCpfStageRequest
+    ) -> TelethonPipelineResponse:
+        """Run one already-extracted CPF through Gonzales /cpf via Telethon.
+
+        This backs the per-consult "Achar telefone" button. It does not
+        create a resumable Playwright run and never touches the CDP CPF
+        driver; it only uses the native Telegram session configured for
+        Telethon.
+        """
+        store = get_saved_leads_store(app)
+        try:
+            store.get_table(table_id)
+            saved_leads = store.list_leads(table_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        selected = _select_leads(saved_leads, [payload.lead_ref])
+        if not selected:
+            raise HTTPException(
+                status_code=422,
+                detail="Lead selecionado não foi encontrado na tabela.",
+            )
+        lead = selected[0]
+        lead_ref = _lead_ref(lead) or payload.lead_ref
+
+        settings = load_settings()
+        try:
+            cpf_driver = _default_telethon_gonzales_cpf_consult(settings)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+        stage = _pipeline_run_cpf_stage_only(
+            lead=lead,
+            table_id=table_id,
+            store=store,
+            cpf_consult_fn=cpf_driver.consult,
+            selected_cpfs=[payload.cpf],
+            run_id=f"telethon-cpf-{uuid.uuid4().hex}",
+        )
+
+        phones_persisted = 0
+        leads_with_phone = 0
+        if stage.phone_candidates:
+            ordered = sorted(
+                stage.phone_candidates,
+                key=lambda c: c.confidence,
+                reverse=True,
+            )
+            primary = ordered[0]
+            update = _telegram_phone_candidate_to_update(primary)
+            counters = store.apply_internal_phone_enrichment_updates(
+                table_id, [(lead, update)]
+            )
+            phones_persisted += counters.get("enriched", 0)
+            if phones_persisted > 0 and update.phone:
+                leads_with_phone = 1
+            for extra in ordered[1:]:
+                extra_counters = store.apply_internal_phone_enrichment_updates(
+                    table_id,
+                    [(lead, _telegram_phone_candidate_to_update(extra))],
+                )
+                phones_persisted += extra_counters.get("enriched", 0)
+            _apply_telegram_contact_email_candidates(
+                store=store,
+                table_id=table_id,
+                lead=lead,
+                candidates=ordered,
+            )
+
+        cpf_rows = store.list_telegram_consults_for_lead(
+            table_id, lead_ref, query_type="cpf"
+        )
+        return TelethonPipelineResponse(
+            status="completed",
+            summary=TelethonPipelineSummary(
+                requested_leads=1,
+                name_consults=0,
+                cpf_consults=len(cpf_rows),
+                leads_with_phone=leads_with_phone,
+                phones_persisted=phones_persisted,
+            ),
+            leads=[
+                TelethonPipelineLeadResult(
+                    lead_ref=lead_ref,
+                    lead_name=lead.person_name,
+                    name_consults=[],
+                    cpf_consults=[_consult_to_payload(row) for row in cpf_rows],
+                    blocked_reason=stage.blocked_reason,
+                    candidates=[
+                        _telegram_phone_candidate_to_payload(c)
+                        for c in stage.phone_candidates
+                    ],
+                )
+            ],
+        )
+
+    @app.get(
+        "/telegram/telethon/auth/status",
+        response_model=TelethonAuthStatusResponse,
+    )
+    def telegram_telethon_auth_status() -> TelethonAuthStatusResponse:
+        settings = load_settings()
+        configured = bool(settings.telegram_api_id and settings.telegram_api_hash)
+        if not configured:
+            return TelethonAuthStatusResponse(
+                authorized=False,
+                configured=False,
+                session_name=settings.telegram_session_name,
+            )
+        try:
+            authorized = telegram_telethon_auth.is_authorized(
+                session_name=settings.telegram_session_name,
+                api_id=settings.telegram_api_id,
+                api_hash=settings.telegram_api_hash,
+            )
+        except telegram_telethon_auth.TelethonAuthError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return TelethonAuthStatusResponse(
+            authorized=authorized,
+            configured=True,
+            session_name=settings.telegram_session_name,
+        )
+
+    @app.post(
+        "/telegram/telethon/auth/send-code",
+        response_model=TelethonAuthSendCodeResponse,
+    )
+    def telegram_telethon_auth_send_code(
+        payload: TelethonAuthSendCodeRequest,
+    ) -> TelethonAuthSendCodeResponse:
+        settings = load_settings()
+        if not settings.telegram_api_id or not settings.telegram_api_hash:
+            raise HTTPException(status_code=503, detail="telegram_not_configured")
+        try:
+            result = telegram_telethon_auth.send_code(
+                phone=payload.phone,
+                session_name=settings.telegram_session_name,
+                api_id=settings.telegram_api_id,
+                api_hash=settings.telegram_api_hash,
+            )
+        except telegram_telethon_auth.TelethonAuthError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return TelethonAuthSendCodeResponse(
+            phone_code_hash=result.phone_code_hash,
+            next_type=result.next_type,
+            timeout=result.timeout,
+        )
+
+    @app.post(
+        "/telegram/telethon/auth/sign-in",
+        response_model=TelethonAuthSignInResponse,
+    )
+    def telegram_telethon_auth_sign_in(
+        payload: TelethonAuthSignInRequest,
+    ) -> TelethonAuthSignInResponse:
+        settings = load_settings()
+        if not settings.telegram_api_id or not settings.telegram_api_hash:
+            raise HTTPException(status_code=503, detail="telegram_not_configured")
+        try:
+            result = telegram_telethon_auth.sign_in(
+                phone=payload.phone,
+                code=payload.code,
+                phone_code_hash=payload.phone_code_hash,
+                password=payload.password,
+                session_name=settings.telegram_session_name,
+                api_id=settings.telegram_api_id,
+                api_hash=settings.telegram_api_hash,
+            )
+        except telegram_telethon_auth.TelethonAuthError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return TelethonAuthSignInResponse(
+            authorized=not result.requires_password and result.user_id is not None,
+            requires_password=result.requires_password,
+            user_id=result.user_id,
+            username=result.username,
+            first_name=result.first_name,
+        )
+
+    @app.post(
+        "/telegram/telethon/auth/logout",
+        response_model=TelethonAuthLogoutResponse,
+    )
+    def telegram_telethon_auth_logout() -> TelethonAuthLogoutResponse:
+        settings = load_settings()
+        if not settings.telegram_api_id or not settings.telegram_api_hash:
+            raise HTTPException(status_code=503, detail="telegram_not_configured")
+        try:
+            logged_out = telegram_telethon_auth.log_out(
+                session_name=settings.telegram_session_name,
+                api_id=settings.telegram_api_id,
+                api_hash=settings.telegram_api_hash,
+            )
+        except telegram_telethon_auth.TelethonAuthError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return TelethonAuthLogoutResponse(authorized=False, logged_out=logged_out)
+
+    @app.post(
+        "/lead-tables/{table_id}/telegram-followup-phone",
+        response_model=TelegramFollowupPhoneResponse,
+    )
+    def telegram_followup_phone(
+        table_id: str, payload: TelegramFollowupPhoneRequest
+    ) -> TelegramFollowupPhoneResponse:
+        """Run the CPF-stage Telegram follow-up to harvest phones.
+
+        Pre-condition: the name-stage consult must already have run for
+        the selected leads — this endpoint reads the persisted CPF
+        candidates from ``tabela_telegram`` (rows with
+        ``query_type='name'``), filters them by the matcher score
+        threshold, and drives ``/cpf <cpf>`` queries via Gonzales for
+        the survivors. Phones harvested from the raw response are
+        persisted into the lead's verification trail, never overwriting
+        an existing ``phone``.
+
+        Confidence policy: each returned phone carries the originating
+        CPF's match_score 1:1; ``provenance.score_source`` exposes the
+        audit chain so the UI can show "85 (via CPF 111.222.333-44,
+        verified by location + education_age)".
+        """
+        store = get_saved_leads_store(app)
+        try:
+            store.get_table(table_id)
+            saved_leads = store.list_leads(table_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        selected = _select_leads(saved_leads, payload.lead_refs)
+        if not selected:
+            raise HTTPException(
+                status_code=422,
+                detail="Nenhum lead selecionado foi encontrado na tabela.",
+            )
+        if len(selected) > payload.max_leads:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Selecione no máximo {payload.max_leads} leads por follow-up."
+                ),
+            )
+
+        settings = load_settings()
+        # Refresh LinkedIn signals so the title gate sees the freshest
+        # cargo. Same best-effort behavior as the /telegram-consult
+        # route — a failure here only loses signals, never blocks.
+        selected = _refresh_linkedin_signals_for_telegram(
+            selected=selected,
+            selected_refs=payload.lead_refs,
+            table_id=table_id,
+            store=store,
+            settings=settings,
+        )
+
+        try:
+            driver = _default_gonzales_cpf_consult(settings)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+        lead_results: list[TelegramFollowupLeadResult] = []
+        leads_with_phone = 0
+        leads_blocked = 0
+        phones_persisted = 0
+        skipped_existing = 0
+
+        for lead in selected:
+            lead_ref = _lead_ref(lead) or (lead.person_name or "")
+            candidates = _pipeline_run_phone_followup(
+                lead=lead,
+                table_id=table_id,
+                store=store,
+                consult_fn=driver.consult,
+                target_titles=payload.target_titles,
+                run_id=None,
+                provider_name="gon_cpf",
+            )
+
+            blocked_reason: str | None = None
+            persisted_consults = store.list_telegram_consults_for_lead(
+                table_id, lead_ref, query_type="cpf"
+            )
+            # The first row produced by the workflow carries the block
+            # reason when the gate rejected the lead; surface it.
+            for row in persisted_consults:
+                if row.blocked_reason:
+                    blocked_reason = row.blocked_reason
+                    break
+            if blocked_reason:
+                leads_blocked += 1
+
+            if candidates:
+                # Pick the strongest candidate as the primary update — the
+                # rest still get persisted as alternatives via the merge
+                # helper inside the store, so nothing gets lost.
+                primary = max(candidates, key=lambda c: c.confidence)
+                update = _telegram_phone_candidate_to_update(primary)
+                counters = store.apply_internal_phone_enrichment_updates(
+                    table_id, [(lead, update)]
+                )
+                phones_persisted += counters.get("enriched", 0)
+                skipped_existing += counters.get("skipped_existing_phone", 0)
+                # Apply every other candidate so divergent values join
+                # the alternatives trail with their own source label.
+                if len(candidates) > 1:
+                    extras = [c for c in candidates if c is not primary]
+                    for extra in extras:
+                        store.apply_internal_phone_enrichment_updates(
+                            table_id,
+                            [(lead, _telegram_phone_candidate_to_update(extra))],
+                        )
+                _apply_telegram_contact_email_candidates(
+                    store=store,
+                    table_id=table_id,
+                    lead=lead,
+                    candidates=candidates,
+                )
+                if phones_persisted > 0 and update.phone:
+                    leads_with_phone += 1
+
+            lead_results.append(
+                TelegramFollowupLeadResult(
+                    lead_ref=lead_ref,
+                    lead_name=lead.person_name,
+                    blocked_reason=blocked_reason,
+                    candidates=[
+                        _telegram_phone_candidate_to_payload(c) for c in candidates
+                    ],
+                    consults=[_consult_to_payload(row) for row in persisted_consults],
+                )
+            )
+
+        return TelegramFollowupPhoneResponse(
+            status="completed",
+            summary=TelegramFollowupPhoneSummary(
+                requested_leads=len(selected),
+                leads_with_phone=leads_with_phone,
+                leads_blocked=leads_blocked,
+                phones_persisted=phones_persisted,
+                skipped_existing_phone=skipped_existing,
+            ),
+            leads=lead_results,
+        )
+
+    @app.post(
+        "/lead-tables/{table_id}/telegram-phone",
+        response_model=TelegramPhoneResponse,
+    )
+    def telegram_phone(
+        table_id: str, payload: TelegramPhoneRequest
+    ) -> TelegramPhoneResponse:
+        """Unified ``/nome`` → ``/cpf`` → phone flow for the selected
+        leads.
+
+        Replaces the two earlier endpoints (``/telegram-consult`` and
+        ``/telegram-followup-phone``) from the operator's perspective.
+        Per lead, the server:
+
+        1. Refreshes LinkedIn signals best-effort so the cargo gate
+           sees the freshest title.
+        2. Runs the LinkedIn cargo gate if ``target_titles`` is set.
+        3. Dispatches ``/nome <lead>`` via Gonzales, parses + ranks
+           CPFs against LinkedIn signals.
+        4. Dispatches ``/cpf <cpf>`` for the top-K survivors of the
+           matcher threshold, harvests phones from each raw response.
+        5. Persists the strongest phone via the internal phone
+           enrichment update path (existing phones win, divergent
+           values join the alternatives trail).
+
+        Unix is intentionally not used — Gonzales is the cheap+fast
+        path and adding Unix here would double the Playwright time per
+        lead. The Unix-bearing ``/telegram-consult`` endpoint stays
+        available for callers that want both providers' raw outputs.
+
+        Confidence policy: each phone inherits its CPF's matcher score
+        1:1, with ``provenance.score_source = "telegram_match_score"``
+        so the UI can audit it without recomputing anything.
+        """
+        store = get_saved_leads_store(app)
+        try:
+            store.get_table(table_id)
+            saved_leads = store.list_leads(table_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        selected = _select_leads(saved_leads, payload.lead_refs)
+        if not selected:
+            raise HTTPException(
+                status_code=422,
+                detail="Nenhum lead selecionado foi encontrado na tabela.",
+            )
+        if len(selected) > payload.max_leads:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Selecione no máximo {payload.max_leads} leads por execução."
+                ),
+            )
+        _log_telegram_phone_endpoint(
+            "batch_started",
+            table_id=table_id,
+            selected_leads=len(selected),
+            target_titles=len(payload.target_titles or []),
+        )
+
+        settings = load_settings()
+        selected = _refresh_linkedin_signals_for_telegram(
+            selected=selected,
+            selected_refs=payload.lead_refs,
+            table_id=table_id,
+            store=store,
+            settings=settings,
+        )
+
+        try:
+            name_driver = _default_gonzales_consult(settings)
+            cpf_driver = _default_gonzales_cpf_consult(settings)
+            email_driver = _default_findex_email_consult(settings)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+        lead_payloads: list[TelegramPhoneLeadResult] = []
+        totals = {
+            "leads_with_phone": 0,
+            "leads_blocked": 0,
+            "phones_persisted": 0,
+            "skipped_existing_phone": 0,
+        }
+
+        for idx, lead in enumerate(selected):
+            _log_telegram_phone_endpoint(
+                "batch_lead_started",
+                table_id=table_id,
+                lead_index=idx,
+                total_leads=len(selected),
+                lead_ref=_lead_ref(lead),
+            )
+            if idx > 0:
+                # Pausa humana entre dois leads consecutivos. Sem isso o
+                # endpoint dispara 10 consultas em ~60s e o Gonzales/Findex
+                # rate-limita o operador. Configurável via
+                # ``BEAUTIFUL_LINKEDIN_TELEGRAM_INTER_LEAD_MIN/MAX``.
+                _telegram_inter_lead_pause(settings)
+            lead_payload, counters = _process_one_telegram_phone_lead(
+                lead=lead,
+                table_id=table_id,
+                store=store,
+                name_consult_fn=name_driver.consult,
+                cpf_consult_fn=cpf_driver.consult,
+                email_consult_fn=email_driver.consult,
+                target_titles=payload.target_titles,
+            )
+            for key, value in counters.items():
+                totals[key] += value
+            lead_payloads.append(lead_payload)
+            _log_telegram_phone_endpoint(
+                "batch_lead_completed",
+                table_id=table_id,
+                lead_index=idx,
+                lead_ref=lead_payload.lead_ref,
+                blocked_reason=lead_payload.blocked_reason,
+                phone_candidates=len(lead_payload.candidates),
+                last_stage=lead_payload.last_stage,
+            )
+
+        _log_telegram_phone_endpoint(
+            "batch_completed",
+            table_id=table_id,
+            selected_leads=len(selected),
+            leads_with_phone=totals["leads_with_phone"],
+            phones_persisted=totals["phones_persisted"],
+            leads_blocked=totals["leads_blocked"],
+        )
+        return TelegramPhoneResponse(
+            status="completed",
+            summary=TelegramPhoneSummary(
+                requested_leads=len(selected),
+                **totals,
+            ),
+            leads=lead_payloads,
+        )
+
+    @app.post(
+        "/lead-tables/{table_id}/telegram-phone/start",
+        response_model=TelegramPhoneStartResponse,
+    )
+    def telegram_phone_start(
+        table_id: str, payload: TelegramPhoneStartRequest
+    ) -> TelegramPhoneStartResponse:
+        """Cria um run resumível para extração de telefone via Telegram.
+
+        Não dispara nenhuma consulta — apenas prepara a sequência. O
+        cliente chama ``/next`` por lead, intercalando confirmação
+        humana para proteger os bots Telegram contra banimento.
+        """
+        store = get_saved_leads_store(app)
+        try:
+            store.get_table(table_id)
+            saved_leads = store.list_leads(table_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        selected = _select_leads(saved_leads, payload.lead_refs)
+        if not selected:
+            raise HTTPException(
+                status_code=422,
+                detail="Nenhum lead selecionado foi encontrado na tabela.",
+            )
+        if len(selected) > payload.max_leads:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Selecione no máximo {payload.max_leads} leads por execução."
+                ),
+            )
+
+        registry = get_telegram_phone_run_registry(app)
+        # Reordena lead_refs do payload para corresponder à ordem em que
+        # ``_select_leads`` devolveu os leads — isso garante que `/next`
+        # processe na mesma ordem que o batch endpoint processa.
+        ordered_refs = [_lead_ref(lead) for lead in selected]
+        record = registry.create(
+            table_id=table_id,
+            lead_refs=ordered_refs,
+            target_titles=payload.target_titles,
+        )
+        _log_telegram_phone_endpoint(
+            "start_created",
+            table_id=table_id,
+            run_id=record.run_id,
+            total_leads=len(record.lead_refs),
+            target_titles=len(payload.target_titles or []),
+        )
+        return TelegramPhoneStartResponse(
+            run_id=record.run_id,
+            table_id=table_id,
+            total_leads=len(record.lead_refs),
+            next_index=record.next_index,
+            lead_refs=list(record.lead_refs),
+            status=record.status,
+        )
+
+    @app.post(
+        "/lead-tables/{table_id}/telegram-phone/next",
+        response_model=TelegramPhoneNextResponse,
+    )
+    def telegram_phone_next(
+        table_id: str, payload: TelegramPhoneNextRequest
+    ) -> TelegramPhoneNextResponse:
+        """Processa o próximo lead do run. Após responder, o cliente
+        decide quando chamar de novo (pausa anti-ban).
+
+        Quando o cursor já passou do fim, devolve ``status=completed``
+        sem disparar nada. Quando o run está cancelado, devolve 409 para
+        o cliente saber que precisa criar um run novo.
+        """
+        registry = get_telegram_phone_run_registry(app)
+        record = registry.get(payload.run_id)
+        if record is None or record.table_id != table_id:
+            raise HTTPException(
+                status_code=404, detail="Run de telefone Telegram não encontrado."
+            )
+
+        with record.lock:
+            _log_telegram_phone_endpoint(
+                "next_requested",
+                table_id=table_id,
+                run_id=record.run_id,
+                status=record.status,
+                next_index=record.next_index,
+                total_leads=len(record.lead_refs),
+            )
+            if record.status == "cancelled":
+                _log_telegram_phone_endpoint(
+                    "next_rejected_cancelled",
+                    table_id=table_id,
+                    run_id=record.run_id,
+                    next_index=record.next_index,
+                )
+                raise HTTPException(
+                    status_code=409,
+                    detail="Run cancelado — crie um run novo para continuar.",
+                )
+            if record.status == "completed" or record.next_index >= len(record.lead_refs):
+                record.status = "completed"
+                _log_telegram_phone_endpoint(
+                    "next_already_completed",
+                    table_id=table_id,
+                    run_id=record.run_id,
+                    next_index=record.next_index,
+                )
+                return TelegramPhoneNextResponse(
+                    run_id=record.run_id,
+                    status="completed",
+                    next_index=record.next_index,
+                    total_leads=len(record.lead_refs),
+                    summary=TelegramPhoneSummary(**record.summary),
+                    last_lead=None,
+                )
+
+            store = get_saved_leads_store(app)
+            try:
+                store.get_table(table_id)
+                saved_leads = store.list_leads(table_id)
+            except KeyError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+            target_ref = record.lead_refs[record.next_index]
+            _log_telegram_phone_endpoint(
+                "next_lead_started",
+                table_id=table_id,
+                run_id=record.run_id,
+                next_index=record.next_index,
+                lead_ref=target_ref,
+            )
+            selected = _select_leads(saved_leads, [target_ref])
+            if not selected:
+                # Lead foi removido da tabela entre /start e /next.
+                # Pulamos com um marker, mantendo o cursor avançando.
+                record.next_index += 1
+                if record.next_index >= len(record.lead_refs):
+                    record.status = "completed"
+                else:
+                    record.status = "in_progress"
+                missing = TelegramPhoneLeadResult(
+                    lead_ref=target_ref,
+                    lead_name=None,
+                    blocked_reason="lead_not_found_in_table",
+                )
+                record.results.append(missing.model_dump())
+                record.summary["leads_blocked"] += 1
+                _log_telegram_phone_endpoint(
+                    "next_lead_missing",
+                    table_id=table_id,
+                    run_id=record.run_id,
+                    lead_ref=target_ref,
+                    next_index=record.next_index,
+                    status=record.status,
+                )
+                return TelegramPhoneNextResponse(
+                    run_id=record.run_id,
+                    status=record.status,
+                    next_index=record.next_index,
+                    total_leads=len(record.lead_refs),
+                    summary=TelegramPhoneSummary(**record.summary),
+                    last_lead=missing,
+                )
+
+            settings = load_settings()
+            refreshed = _refresh_linkedin_signals_for_telegram(
+                selected=selected,
+                selected_refs=[target_ref],
+                table_id=table_id,
+                store=store,
+                settings=settings,
+            )
+
+            try:
+                name_driver = _default_gonzales_consult(settings)
+                cpf_driver = _default_gonzales_cpf_consult(settings)
+                email_driver = _default_findex_email_consult(settings)
+            except RuntimeError as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+            lead = refreshed[0]
+            lead_payload, counters = _process_one_telegram_phone_lead(
+                lead=lead,
+                table_id=table_id,
+                store=store,
+                name_consult_fn=name_driver.consult,
+                cpf_consult_fn=cpf_driver.consult,
+                email_consult_fn=email_driver.consult,
+                target_titles=record.target_titles,
+                run_id=record.run_id,
+            )
+            _log_telegram_phone_endpoint(
+                "next_lead_pipeline_completed",
+                table_id=table_id,
+                run_id=record.run_id,
+                lead_ref=lead_payload.lead_ref,
+                blocked_reason=lead_payload.blocked_reason,
+                phone_candidates=len(lead_payload.candidates),
+                last_stage=lead_payload.last_stage,
+            )
+
+            record.next_index += 1
+            for key, value in counters.items():
+                record.summary[key] += value
+            record.results.append(lead_payload.model_dump())
+            if record.next_index >= len(record.lead_refs):
+                record.status = "completed"
+            else:
+                record.status = "in_progress"
+
+            _log_telegram_phone_endpoint(
+                "next_completed",
+                table_id=table_id,
+                run_id=record.run_id,
+                next_index=record.next_index,
+                status=record.status,
+                leads_with_phone=record.summary["leads_with_phone"],
+                phones_persisted=record.summary["phones_persisted"],
+                leads_blocked=record.summary["leads_blocked"],
+            )
+            return TelegramPhoneNextResponse(
+                run_id=record.run_id,
+                status=record.status,
+                next_index=record.next_index,
+                total_leads=len(record.lead_refs),
+                summary=TelegramPhoneSummary(**record.summary),
+                last_lead=lead_payload,
+            )
+
+    @app.post(
+        "/lead-tables/{table_id}/telegram-phone/cancel",
+        response_model=TelegramPhoneCancelResponse,
+    )
+    def telegram_phone_cancel(
+        table_id: str, payload: TelegramPhoneCancelRequest
+    ) -> TelegramPhoneCancelResponse:
+        registry = get_telegram_phone_run_registry(app)
+        record = registry.get(payload.run_id)
+        if record is None or record.table_id != table_id:
+            raise HTTPException(
+                status_code=404, detail="Run de telefone Telegram não encontrado."
+            )
+        with record.lock:
+            _log_telegram_phone_endpoint(
+                "cancel_requested",
+                table_id=table_id,
+                run_id=record.run_id,
+                status=record.status,
+                next_index=record.next_index,
+            )
+            if record.status not in {"completed"}:
+                record.status = "cancelled"
+            _log_telegram_phone_endpoint(
+                "cancel_completed",
+                table_id=table_id,
+                run_id=record.run_id,
+                status=record.status,
+                next_index=record.next_index,
+            )
+        return TelegramPhoneCancelResponse(
+            run_id=record.run_id,
+            status=record.status,
+            next_index=record.next_index,
+            total_leads=len(record.lead_refs),
+        )
+
+    @app.post(
+        "/lead-tables/{table_id}/telegram-phone/extract-cpfs",
+        response_model=TelegramPhoneExtractCpfsResponse,
+    )
+    def telegram_phone_extract_cpfs(
+        table_id: str, payload: TelegramPhoneExtractCpfsRequest
+    ) -> TelegramPhoneExtractCpfsResponse:
+        """Etapa 1 do fluxo interativo de telefone.
+
+        Roda gates + ``/nome`` + matcher para o lead atual do run e
+        devolve os CPFs candidatos para a UI revisar. O servidor PARA
+        antes de qualquer ``/cpf`` — quem decide é o operador clicando
+        ``Buscar telefones`` (que chama ``/run-cpf-stage``) ou
+        ``Pular este lead`` (que chama ``/skip-current-lead``).
+        """
+        registry = get_telegram_phone_run_registry(app)
+        record = registry.get(payload.run_id)
+        if record is None or record.table_id != table_id:
+            raise HTTPException(
+                status_code=404, detail="Run de telefone Telegram não encontrado."
+            )
+
+        with record.lock:
+            _log_telegram_phone_endpoint(
+                "extract_cpfs_started",
+                table_id=table_id,
+                run_id=record.run_id,
+                status=record.status,
+                next_index=record.next_index,
+                total_leads=len(record.lead_refs),
+            )
+            if record.status == "cancelled":
+                _log_telegram_phone_endpoint(
+                    "extract_cpfs_rejected_cancelled",
+                    table_id=table_id,
+                    run_id=record.run_id,
+                    next_index=record.next_index,
+                )
+                raise HTTPException(
+                    status_code=409,
+                    detail="Run cancelado — crie um run novo para continuar.",
+                )
+            if record.status == "completed" or record.next_index >= len(record.lead_refs):
+                record.status = "completed"
+                _log_telegram_phone_endpoint(
+                    "extract_cpfs_already_completed",
+                    table_id=table_id,
+                    run_id=record.run_id,
+                    next_index=record.next_index,
+                )
+                return TelegramPhoneExtractCpfsResponse(
+                    run_id=record.run_id,
+                    status="completed",
+                    next_index=record.next_index,
+                    total_leads=len(record.lead_refs),
+                    lead_ref="",
+                    lead_name=None,
+                    blocked_reason=None,
+                    eligible_cpfs=[],
+                    candidates=[],
+                    name_consult=None,
+                )
+
+            # Se já estamos awaiting_cpf_confirmation pro mesmo lead,
+            # devolve o estado em cache sem rerodar /nome.
+            target_ref = record.lead_refs[record.next_index]
+            if (
+                record.status == "awaiting_cpf_confirmation"
+                and record.pending_lead_ref == target_ref
+            ):
+                _log_telegram_phone_endpoint(
+                    "extract_cpfs_cache_hit",
+                    table_id=table_id,
+                    run_id=record.run_id,
+                    next_index=record.next_index,
+                    lead_ref=target_ref,
+                )
+                return _build_extract_cpfs_response_from_persisted(
+                    app, record, table_id, target_ref
+                )
+
+            store = get_saved_leads_store(app)
+            try:
+                store.get_table(table_id)
+                saved_leads = store.list_leads(table_id)
+            except KeyError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+            selected = _select_leads(saved_leads, [target_ref])
+            if not selected:
+                # Lead sumiu da tabela — avança o cursor.
+                record.next_index += 1
+                record.pending_lead_ref = None
+                record.pending_eligible_cpfs = []
+                missing = TelegramPhoneLeadResult(
+                    lead_ref=target_ref,
+                    lead_name=None,
+                    blocked_reason="lead_not_found_in_table",
+                )
+                record.results.append(missing.model_dump())
+                record.summary["leads_blocked"] += 1
+                if record.next_index >= len(record.lead_refs):
+                    record.status = "completed"
+                else:
+                    record.status = "in_progress"
+                _log_telegram_phone_endpoint(
+                    "extract_cpfs_lead_missing",
+                    table_id=table_id,
+                    run_id=record.run_id,
+                    lead_ref=target_ref,
+                    next_index=record.next_index,
+                    status=record.status,
+                )
+                return TelegramPhoneExtractCpfsResponse(
+                    run_id=record.run_id,
+                    status=record.status,
+                    next_index=record.next_index,
+                    total_leads=len(record.lead_refs),
+                    lead_ref=target_ref,
+                    lead_name=None,
+                    blocked_reason="lead_not_found_in_table",
+                    eligible_cpfs=[],
+                    candidates=[],
+                    name_consult=None,
+                )
+
+            settings = load_settings()
+            refreshed = _refresh_linkedin_signals_for_telegram(
+                selected=selected,
+                selected_refs=[target_ref],
+                table_id=table_id,
+                store=store,
+                settings=settings,
+            )
+
+            try:
+                name_driver = _default_gonzales_consult(settings)
+            except RuntimeError as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+            lead = refreshed[0]
+            stage1: TelegramNameStageResult = _pipeline_run_name_stage_only(
+                lead=lead,
+                table_id=table_id,
+                store=store,
+                name_consult_fn=name_driver.consult,
+                target_titles=record.target_titles,
+                run_id=record.run_id,
+            )
+
+            eligible_cpfs = [c.cpf for c in stage1.eligible_candidates]
+            candidates_payload = _ranked_candidates_payload(stage1)
+            _log_telegram_phone_endpoint(
+                "extract_cpfs_name_stage_completed",
+                table_id=table_id,
+                run_id=record.run_id,
+                lead_ref=stage1.lead_ref,
+                blocked_reason=stage1.blocked_reason,
+                candidates=len(stage1.all_candidates),
+                eligible_cpfs=len(eligible_cpfs),
+            )
+
+            if stage1.blocked_reason or not eligible_cpfs:
+                # Nada pra revisar — registra e avança o cursor sem
+                # chamar /cpf nem aguardar confirmação humana.
+                lead_payload = TelegramPhoneLeadResult(
+                    lead_ref=stage1.lead_ref,
+                    lead_name=stage1.lead_name,
+                    blocked_reason=stage1.blocked_reason,
+                    candidates=[],
+                    name_consult=(
+                        _consult_to_payload(stage1.name_consult)
+                        if stage1.name_consult is not None
+                        else None
+                    ),
+                    cpf_consult=None,
+                )
+                record.results.append(lead_payload.model_dump())
+                if stage1.blocked_reason:
+                    record.summary["leads_blocked"] += 1
+                record.next_index += 1
+                record.pending_lead_ref = None
+                record.pending_eligible_cpfs = []
+                if record.next_index >= len(record.lead_refs):
+                    record.status = "completed"
+                else:
+                    record.status = "in_progress"
+                _log_telegram_phone_endpoint(
+                    "extract_cpfs_blocked_or_empty",
+                    table_id=table_id,
+                    run_id=record.run_id,
+                    lead_ref=stage1.lead_ref,
+                    blocked_reason=stage1.blocked_reason or "no_eligible_cpf",
+                    next_index=record.next_index,
+                    status=record.status,
+                )
+                return TelegramPhoneExtractCpfsResponse(
+                    run_id=record.run_id,
+                    status=record.status,
+                    next_index=record.next_index,
+                    total_leads=len(record.lead_refs),
+                    lead_ref=stage1.lead_ref,
+                    lead_name=stage1.lead_name,
+                    blocked_reason=stage1.blocked_reason,
+                    eligible_cpfs=[],
+                    candidates=candidates_payload,
+                    name_consult=(
+                        _consult_to_payload(stage1.name_consult)
+                        if stage1.name_consult is not None
+                        else None
+                    ),
+                )
+
+            # Estado pendente — aguardando confirmação humana.
+            record.pending_lead_ref = stage1.lead_ref
+            record.pending_eligible_cpfs = eligible_cpfs
+            record.status = "awaiting_cpf_confirmation"
+            _log_telegram_phone_endpoint(
+                "extract_cpfs_awaiting_confirmation",
+                table_id=table_id,
+                run_id=record.run_id,
+                lead_ref=stage1.lead_ref,
+                eligible_cpfs=len(eligible_cpfs),
+                candidates=len(candidates_payload),
+            )
+            return TelegramPhoneExtractCpfsResponse(
+                run_id=record.run_id,
+                status="awaiting_cpf_confirmation",
+                next_index=record.next_index,
+                total_leads=len(record.lead_refs),
+                lead_ref=stage1.lead_ref,
+                lead_name=stage1.lead_name,
+                blocked_reason=None,
+                eligible_cpfs=eligible_cpfs,
+                candidates=candidates_payload,
+                name_consult=(
+                    _consult_to_payload(stage1.name_consult)
+                    if stage1.name_consult is not None
+                    else None
+                ),
+            )
+
+    @app.post(
+        "/lead-tables/{table_id}/telegram-phone/run-cpf-stage",
+        response_model=TelegramPhoneNextResponse,
+    )
+    def telegram_phone_run_cpf_stage(
+        table_id: str, payload: TelegramPhoneRunCpfStageRequest
+    ) -> TelegramPhoneNextResponse:
+        """Etapa 2 do fluxo interativo: roda ``/cpf`` SÓ nos CPFs que o
+        operador confirmou na UI. O cursor avança e o estado volta para
+        ``in_progress`` (ou ``completed`` se era o último lead)."""
+        registry = get_telegram_phone_run_registry(app)
+        record = registry.get(payload.run_id)
+        if record is None or record.table_id != table_id:
+            raise HTTPException(
+                status_code=404, detail="Run de telefone Telegram não encontrado."
+            )
+
+        with record.lock:
+            _log_telegram_phone_endpoint(
+                "run_cpf_stage_started",
+                table_id=table_id,
+                run_id=record.run_id,
+                status=record.status,
+                next_index=record.next_index,
+                requested_cpfs=len(payload.cpfs),
+            )
+            if record.status == "cancelled":
+                _log_telegram_phone_endpoint(
+                    "run_cpf_stage_rejected_cancelled",
+                    table_id=table_id,
+                    run_id=record.run_id,
+                    next_index=record.next_index,
+                )
+                raise HTTPException(
+                    status_code=409,
+                    detail="Run cancelado — crie um run novo para continuar.",
+                )
+            if record.status != "awaiting_cpf_confirmation":
+                _log_telegram_phone_endpoint(
+                    "run_cpf_stage_rejected_wrong_status",
+                    table_id=table_id,
+                    run_id=record.run_id,
+                    status=record.status,
+                    next_index=record.next_index,
+                )
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Etapa /cpf só pode ser disparada depois de"
+                        " /extract-cpfs ter retornado candidatos."
+                    ),
+                )
+
+            target_ref = record.pending_lead_ref or ""
+            if (
+                not target_ref
+                or record.next_index >= len(record.lead_refs)
+                or record.lead_refs[record.next_index] != target_ref
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Estado inconsistente do run — o lead pendente não"
+                        " bate com o cursor atual."
+                    ),
+                )
+
+            # Validar que cada CPF está na lista pré-aprovada pelo
+            # matcher (defesa contra payload alterado pelo cliente).
+            allowed = set(record.pending_eligible_cpfs)
+            chosen = [cpf for cpf in payload.cpfs if cpf in allowed]
+            if not chosen:
+                _log_telegram_phone_endpoint(
+                    "run_cpf_stage_rejected_unknown_cpfs",
+                    table_id=table_id,
+                    run_id=record.run_id,
+                    requested_cpfs=len(payload.cpfs),
+                    allowed_cpfs=len(allowed),
+                )
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "Nenhum CPF da lista informada bate com os"
+                        " candidatos persistidos pelo /nome desse lead."
+                    ),
+                )
+
+            store = get_saved_leads_store(app)
+            try:
+                store.get_table(table_id)
+                saved_leads = store.list_leads(table_id)
+            except KeyError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+            selected = _select_leads(saved_leads, [target_ref])
+            if not selected:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Lead atual não encontrado mais na tabela.",
+                )
+            lead = selected[0]
+
+            settings = load_settings()
+            try:
+                cpf_driver = _default_gonzales_cpf_consult(settings)
+            except RuntimeError as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+            stage2: TelegramCpfStageResult = _pipeline_run_cpf_stage_only(
+                lead=lead,
+                table_id=table_id,
+                store=store,
+                cpf_consult_fn=cpf_driver.consult,
+                selected_cpfs=chosen,
+                run_id=record.run_id,
+            )
+            _log_telegram_phone_endpoint(
+                "run_cpf_stage_pipeline_completed",
+                table_id=table_id,
+                run_id=record.run_id,
+                lead_ref=stage2.lead_ref,
+                selected_cpfs=len(chosen),
+                phone_candidates=len(stage2.phone_candidates),
+                blocked_reason=stage2.blocked_reason,
+            )
+
+            # Aplica os updates de telefone (mesma lógica do batch).
+            counters = {
+                "leads_with_phone": 0,
+                "leads_blocked": 0,
+                "phones_persisted": 0,
+                "skipped_existing_phone": 0,
+            }
+            if stage2.blocked_reason:
+                counters["leads_blocked"] += 1
+            had_new_phone = False
+            if stage2.phone_candidates:
+                ordered = sorted(
+                    stage2.phone_candidates,
+                    key=lambda c: c.confidence,
+                    reverse=True,
+                )
+                primary_update = _telegram_phone_candidate_to_update(ordered[0])
+                primary_counters = store.apply_internal_phone_enrichment_updates(
+                    table_id, [(lead, primary_update)]
+                )
+                if primary_counters.get("enriched", 0) > 0:
+                    counters["phones_persisted"] += primary_counters["enriched"]
+                    had_new_phone = True
+                counters["skipped_existing_phone"] += primary_counters.get(
+                    "skipped_existing_phone", 0
+                )
+                for extra in ordered[1:]:
+                    extras_counter = store.apply_internal_phone_enrichment_updates(
+                        table_id,
+                        [(lead, _telegram_phone_candidate_to_update(extra))],
+                    )
+                    counters["phones_persisted"] += extras_counter.get("enriched", 0)
+                    counters["skipped_existing_phone"] += extras_counter.get(
+                        "skipped_existing_phone", 0
+                    )
+                _apply_telegram_contact_email_candidates(
+                    store=store,
+                    table_id=table_id,
+                    lead=lead,
+                    candidates=ordered,
+                )
+            if had_new_phone:
+                counters["leads_with_phone"] += 1
+
+            # Recuperar o name_consult persistido pra payload completo.
+            name_consult = latest_name_stage_consult(
+                store=store, table_id=table_id, lead_ref=target_ref
+            )
+            lead_payload = TelegramPhoneLeadResult(
+                lead_ref=stage2.lead_ref,
+                lead_name=stage2.lead_name,
+                blocked_reason=stage2.blocked_reason,
+                candidates=[
+                    _telegram_phone_candidate_to_payload(c)
+                    for c in stage2.phone_candidates
+                ],
+                name_consult=(
+                    _consult_to_payload(name_consult)
+                    if name_consult is not None
+                    else None
+                ),
+                cpf_consult=(
+                    _consult_to_payload(stage2.cpf_consult)
+                    if stage2.cpf_consult is not None
+                    else None
+                ),
+            )
+
+            record.next_index += 1
+            for key, value in counters.items():
+                record.summary[key] += value
+            record.results.append(lead_payload.model_dump())
+            record.pending_lead_ref = None
+            record.pending_eligible_cpfs = []
+            if record.next_index >= len(record.lead_refs):
+                record.status = "completed"
+            else:
+                record.status = "in_progress"
+
+            _log_telegram_phone_endpoint(
+                "run_cpf_stage_completed",
+                table_id=table_id,
+                run_id=record.run_id,
+                lead_ref=lead_payload.lead_ref,
+                next_index=record.next_index,
+                status=record.status,
+                phone_candidates=len(lead_payload.candidates),
+                phones_persisted=counters["phones_persisted"],
+                skipped_existing_phone=counters["skipped_existing_phone"],
+                leads_with_phone=counters["leads_with_phone"],
+                leads_blocked=counters["leads_blocked"],
+            )
+            return TelegramPhoneNextResponse(
+                run_id=record.run_id,
+                status=record.status,
+                next_index=record.next_index,
+                total_leads=len(record.lead_refs),
+                summary=TelegramPhoneSummary(**record.summary),
+                last_lead=lead_payload,
+            )
+
+    @app.post(
+        "/lead-tables/{table_id}/telegram-phone/skip-current-lead",
+        response_model=TelegramPhoneNextResponse,
+    )
+    def telegram_phone_skip_current_lead(
+        table_id: str, payload: TelegramPhoneSkipLeadRequest
+    ) -> TelegramPhoneNextResponse:
+        """Pula o lead atual sem rodar /cpf — usado quando o operador
+        olha a lista de CPFs candidatos e decide que nenhum vale a
+        consulta."""
+        registry = get_telegram_phone_run_registry(app)
+        record = registry.get(payload.run_id)
+        if record is None or record.table_id != table_id:
+            raise HTTPException(
+                status_code=404, detail="Run de telefone Telegram não encontrado."
+            )
+
+        with record.lock:
+            _log_telegram_phone_endpoint(
+                "skip_current_started",
+                table_id=table_id,
+                run_id=record.run_id,
+                status=record.status,
+                next_index=record.next_index,
+            )
+            if record.status == "cancelled":
+                _log_telegram_phone_endpoint(
+                    "skip_current_rejected_cancelled",
+                    table_id=table_id,
+                    run_id=record.run_id,
+                    next_index=record.next_index,
+                )
+                raise HTTPException(
+                    status_code=409,
+                    detail="Run cancelado — crie um run novo para continuar.",
+                )
+            if record.status == "completed":
+                _log_telegram_phone_endpoint(
+                    "skip_current_already_completed",
+                    table_id=table_id,
+                    run_id=record.run_id,
+                    next_index=record.next_index,
+                )
+                return TelegramPhoneNextResponse(
+                    run_id=record.run_id,
+                    status="completed",
+                    next_index=record.next_index,
+                    total_leads=len(record.lead_refs),
+                    summary=TelegramPhoneSummary(**record.summary),
+                    last_lead=None,
+                )
+
+            target_ref = (
+                record.pending_lead_ref
+                if record.pending_lead_ref
+                else (
+                    record.lead_refs[record.next_index]
+                    if record.next_index < len(record.lead_refs)
+                    else ""
+                )
+            )
+            skipped = TelegramPhoneLeadResult(
+                lead_ref=target_ref,
+                lead_name=None,
+                blocked_reason="skipped_by_operator",
+            )
+            record.results.append(skipped.model_dump())
+            record.next_index += 1
+            record.summary["leads_blocked"] += 1
+            record.pending_lead_ref = None
+            record.pending_eligible_cpfs = []
+            if record.next_index >= len(record.lead_refs):
+                record.status = "completed"
+            else:
+                record.status = "in_progress"
+
+            _log_telegram_phone_endpoint(
+                "skip_current_completed",
+                table_id=table_id,
+                run_id=record.run_id,
+                lead_ref=target_ref,
+                next_index=record.next_index,
+                status=record.status,
+            )
+            return TelegramPhoneNextResponse(
+                run_id=record.run_id,
+                status=record.status,
+                next_index=record.next_index,
+                total_leads=len(record.lead_refs),
+                summary=TelegramPhoneSummary(**record.summary),
+                last_lead=skipped,
+            )
+
+    @app.get(
+        "/lead-tables/{table_id}/telegram-consults",
+        response_model=TelegramConsultListResponse,
+    )
+    def list_telegram_consults(table_id: str) -> TelegramConsultListResponse:
+        store = get_saved_leads_store(app)
+        try:
+            store.get_table(table_id)
+            saved_leads = store.list_leads(table_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        consults = store.list_telegram_consults(table_id)
+        lead_by_ref = {_lead_ref(lead): lead for lead in saved_leads if _lead_ref(lead)}
+        return TelegramConsultListResponse(
+            consults=[
+                _consult_to_payload(c, lead=lead_by_ref.get(c.lead_ref))
+                for c in consults
+            ]
         )
 
     @app.post("/lead-tables/{table_id}/internal-enrich/stream")
@@ -1072,18 +3538,56 @@ def build_app(*, saved_leads_path: str | None = None) -> FastAPI:
                         "type": "start",
                         "total": len(selected),
                         "unique_domains": unique_domain_total,
+                        "fields": payload.fields,
                     }
                 )
-                updates = _run_internal_enrichment(
-                    leads=selected,
-                    existing_company_emails=existing_company_emails,
-                    company_domains=company_domains,
-                    on_event=push,
-                    cancel_check=cancel_event.is_set,
-                )
-                counters = store.apply_internal_enrichment_updates(
-                    table_id, updates
-                )
+                email_counters = {
+                    "enriched": 0,
+                    "skipped_existing_email": 0,
+                    "failed_missing_domain": 0,
+                    "no_change": 0,
+                }
+                phone_counters = {
+                    "enriched": 0,
+                    "skipped_existing_phone": 0,
+                    "failed_no_candidate": 0,
+                    "no_change": 0,
+                }
+                if payload.fields in {"email", "both"}:
+                    updates = _run_internal_enrichment(
+                        leads=selected,
+                        existing_company_emails=existing_company_emails,
+                        company_domains=company_domains,
+                        on_event=push,
+                        cancel_check=cancel_event.is_set,
+                    )
+                    email_counters = store.apply_internal_enrichment_updates(
+                        table_id, updates
+                    )
+                if payload.fields in {"phone", "both"} and not cancel_event.is_set():
+                    phone_domains = collect_company_domains_from_leads(saved_leads)
+                    for key, domains in company_domains.items():
+                        bucket = phone_domains.setdefault(key, [])
+                        for domain in domains:
+                            if domain and domain not in bucket:
+                                bucket.append(domain)
+                    # Wrap phone events so the UI can demultiplex when
+                    # ``fields="both"``: the e-mail and phone runs would
+                    # otherwise both emit ``{"type": "phase"}`` and the
+                    # consumer can't tell which one is reporting.
+                    def push_phone(event: dict[str, Any]) -> None:
+                        push({**event, "channel": "phone"})
+
+                    phone_updates = _run_internal_phone_enrichment(
+                        leads=selected,
+                        company_domains=phone_domains,
+                        on_event=push_phone,
+                        cancel_check=cancel_event.is_set,
+                        phone_sources=payload.phone_sources,
+                    )
+                    phone_counters = store.apply_internal_phone_enrichment_updates(
+                        table_id, phone_updates
+                    )
                 refreshed = store.get_table(table_id)
                 fresh_leads = store.list_leads(table_id)
                 push(
@@ -1091,14 +3595,21 @@ def build_app(*, saved_leads_path: str | None = None) -> FastAPI:
                         "type": "done",
                         "summary": {
                             "requested_leads": len(selected),
-                            "enriched_leads": counters["enriched"],
-                            "skipped_existing_email": counters[
+                            "enriched_leads": email_counters["enriched"],
+                            "skipped_existing_email": email_counters[
                                 "skipped_existing_email"
                             ],
-                            "failed_missing_domain": counters[
+                            "failed_missing_domain": email_counters[
                                 "failed_missing_domain"
                             ],
-                            "no_change": counters["no_change"],
+                            "no_change": email_counters["no_change"],
+                            "enriched_phone_leads": phone_counters["enriched"],
+                            "skipped_existing_phone": phone_counters[
+                                "skipped_existing_phone"
+                            ],
+                            "failed_no_phone_candidate": phone_counters[
+                                "failed_no_candidate"
+                            ],
                         },
                         "table": _table_to_payload(refreshed).model_dump(),
                         "leads": [lead.model_dump(mode="json") for lead in fresh_leads],
@@ -1223,7 +3734,25 @@ def build_app(*, saved_leads_path: str | None = None) -> FastAPI:
     return app
 
 
-def _execute(request: SearchRequest) -> ProspectingResult:
+def _global_dedupe_keys_for_search(app: FastAPI) -> set[str]:
+    """Identity keys of every already-saved lead, for cross-table dedup.
+
+    Best-effort: a store hiccup must not block a search, so failures degrade
+    to "no exclusion" instead of raising.
+    """
+    try:
+        return get_saved_leads_store(app).global_dedupe_keys()
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("Falha ao carregar histórico para dedup global: %s", exc)
+        return set()
+
+
+def _execute(
+    request: SearchRequest,
+    *,
+    exclude_lead_keys: set[str] | None = None,
+    on_lead_found: Callable[[Lead], None] | None = None,
+) -> ProspectingResult:
     company = CompanyInput(
         company_name=request.company_name,
         company_domain=request.company_domain,
@@ -1243,6 +3772,14 @@ def _execute(request: SearchRequest) -> ProspectingResult:
         from dataclasses import replace as _dc_replace
 
         settings = _dc_replace(settings, linkedin_cards_per_cycle=request.cards_per_cycle)
+    if request.cdp_endpoint is not None:
+        from dataclasses import replace as _dc_replace  # noqa: F811 — same symbol, re-import guard
+
+        settings = _dc_replace(
+            settings,
+            linkedin_cdp_endpoint=request.cdp_endpoint,
+            linkedin_cdp_enabled=True,
+        )
 
     # The provider timeout has to scale with how much work the people_search
     # provider is going to do — each "Exibir mais resultados" click takes a
@@ -1279,6 +3816,8 @@ def _execute(request: SearchRequest) -> ProspectingResult:
         lead_filter=lead_filter,
         playwright_headless=request.playwright_headless,
         settings=settings,
+        exclude_lead_keys=exclude_lead_keys,
+        on_lead_found=on_lead_found,
     )
 
 
@@ -1286,7 +3825,12 @@ def _execute_in_background(app: FastAPI, record: RunRecord, request: SearchReque
     record.status = RunStatus.RUNNING
     get_run_registry(app).update(record)
     try:
-        result = _execute(request)
+        exclude_keys = _global_dedupe_keys_for_search(app)
+        result = _execute(
+            request,
+            exclude_lead_keys=exclude_keys,
+            on_lead_found=record.record_found_lead,
+        )
         if record.cancel_event.is_set():
             record.status = RunStatus.CANCELLED
         else:
@@ -1491,6 +4035,915 @@ def _build_internal_orchestrator(
         on_event=on_event,
         cancel_check=cancel_check,
     )
+
+
+def _run_linkedin_profile_validation(
+    *,
+    leads: list[Lead],
+    settings: Settings,
+    max_leads: int,
+    on_event: Callable[[dict[str, Any]], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+) -> list[Any]:
+    """Run profile validation with the same browser order as people_search.
+
+    Preferred path is CDP-connected Chrome (same logged-in browser, no cookie
+    injection). If CDP is offline, fall back to a dedicated Playwright session
+    with ``li_at`` just like ``linkedin_people_search`` does.
+    """
+    options = PeopleSearchOptions(
+        min_delay_seconds=2.0,
+        max_delay_seconds=4.5,
+        headless=True,
+        cdp_endpoint=settings.linkedin_cdp_endpoint,
+        cdp_enabled=settings.linkedin_cdp_enabled,
+    )
+    endpoint = settings.linkedin_cdp_endpoint
+    fetcher_cm: Any | None = None
+    if settings.linkedin_cdp_enabled and endpoint and probe_cdp_endpoint(endpoint):
+        fetcher_cm = CdpLinkedInProfilePageFetcher(
+            endpoint=endpoint,
+            min_delay_seconds=options.min_delay_seconds,
+            max_delay_seconds=options.max_delay_seconds,
+        )
+    else:
+        fetcher_cm = _build_profile_validation_cookie_fetcher(settings)
+    if fetcher_cm is None:
+        raise RuntimeError(
+            "Chrome CDP offline e nenhum li_at válido disponível para fallback. "
+            "Abra o Chrome com --remote-debugging-port=9222 ou configure um li_at fresco."
+        )
+
+    with fetcher_cm as fetcher:
+        return run_profile_validation_with_fetcher(
+            leads=leads,
+            page_fetcher=fetcher,
+            max_leads=max_leads,
+            on_event=on_event,
+            cancel_check=cancel_check,
+        )
+
+
+def _build_profile_validation_cookie_fetcher(
+    settings: Settings,
+) -> PlaywrightLinkedInProfilePageFetcher | None:
+    li_at = resolve_linkedin_li_at_cookie(
+        settings.linkedin_li_at_cookie,
+        browser=settings.linkedin_cookie_browser,
+    ) or ""
+    if not li_at:
+        return None
+    if not looks_like_valid_li_at(li_at):
+        raise RuntimeError(
+            "li_at recuperado não tem formato esperado. Cole um li_at fresco "
+            "ou use o Chrome com --remote-debugging-port=9222."
+        )
+    return PlaywrightLinkedInProfilePageFetcher(
+        li_at=li_at,
+        headless=True,
+        min_delay_seconds=2.0,
+        max_delay_seconds=4.5,
+    )
+
+
+class _NoopPhoneHarvester:
+    def harvest(self, domain: str | None) -> list[Any]:  # noqa: ARG002
+        return []
+
+
+def _default_phone_harvester() -> _NoopPhoneHarvester:
+    """Production phone source for now: Telegram-only lookup.
+
+    The site/SERP phone discovery code remains available for isolated
+    tests and future controlled experiments, but the app's "Achar
+    telefones" action should not scrape company sites or SERPs while
+    the Telegram bot is the only trusted source.
+    """
+    return _NoopPhoneHarvester()
+
+
+def _default_phone_validator() -> PhoneValidator:
+    """Production validator. Pure-Python, offline; the only reason for
+    a factory is symmetry with the other ``_default_*`` helpers and to
+    let tests override the default region in non-BR scenarios."""
+    return PhoneValidator()
+
+
+def _default_phone_lookup_providers(settings: Settings) -> list[PhoneLookupProvider]:
+    """Build the list of external phone lookup providers (Bucket B+).
+
+    Clean public-source providers are wired by default — they have low
+    noise and high signal-to-cost: Receita Federal CNPJ open data
+    (company-line phones) and the PDF extractor (individual phones
+    from public decks/papers/CVs). The Telegram bot integration is
+    additive and only fires when the operator configured Telegram
+    credentials in their environment.
+
+    Tests monkeypatch this helper to return ``[]`` so the lookup phase
+    becomes a no-op.
+    """
+    providers: list[PhoneLookupProvider] = []
+
+    engines_map = _resolve_free_engines(settings)
+    engines = list(engines_map.values()) if engines_map else []
+    engine_labels = list(engines_map.keys()) if engines_map else []
+
+    # Receita Federal CNPJ — institutional phone, free, no auth.
+    # Uses the same free engines to resolve "company name → CNPJ"
+    # when the lead row doesn't carry it directly.
+    providers.append(
+        ReceitaCnpjLookupProvider(search_engines=engines)
+    )
+
+    # PDF SERP extractor — individual phones from public PDFs.
+    # Gated on having at least one engine available; otherwise the
+    # provider has no way to discover candidate PDFs.
+    if engines:
+        try:
+            providers.append(
+                PdfPhoneExtractor(
+                    engines=engines,
+                    engine_labels=engine_labels,
+                )
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("PdfPhoneExtractor falhou em build: %s", exc)
+
+    # Optional: Telegram bot adapter, only when configured. Kept as
+    # additive so the clean providers above always run.
+    if settings.telegram_api_id and settings.telegram_api_hash:
+        providers.append(
+            TelegramBotPhoneLookupProvider(
+                api_id=settings.telegram_api_id,
+                api_hash=settings.telegram_api_hash,
+                session_name=settings.telegram_session_name,
+                bot_username=settings.telegram_phone_bot_username,
+            )
+        )
+        # Optional: Telegram public group adapter (e.g. CONSULTASGRATIS4NV).
+        # Only fires when the operator opted in by setting the group username
+        # explicitly — posting in groups carries ban risk.
+        if settings.telegram_group_username:
+            providers.append(
+                TelegramGroupPhoneLookupProvider(
+                    api_id=settings.telegram_api_id,
+                    api_hash=settings.telegram_api_hash,
+                    session_name=settings.telegram_group_session_name,
+                    group_username=settings.telegram_group_username,
+                    capture_seconds=settings.telegram_group_capture_seconds,
+                    throttle_seconds=settings.telegram_group_throttle_seconds,
+                )
+            )
+    return providers
+
+
+def _default_whatsapp_checker() -> WhatsAppNumberChecker | None:
+    """Disabled while the production phone flow is Telegram-only."""
+    return None
+
+
+def _default_hlr_probe() -> HlrProbeProvider:
+    """Production HLR probe.
+
+    Returns the offline NOOP probe by default — paid HLR is gated by
+    future env wiring (``Settings.hlr_provider`` + API key) and is not
+    enabled in this build. Tests monkeypatch this helper to confirm
+    the noop path.
+    """
+    return default_hlr_probe()
+
+
+# Short UI-facing aliases → underlying provider.name. Keeping a mapping
+# means the front can send "telegram_group" without hard-coding the full
+# internal label; new providers can be exposed the same way later.
+_PHONE_SOURCE_ALIASES: dict[str, str] = {
+    "telegram_group": "telegram_group_consultasgratis",
+    "telegram_bot": "consultoria_gonzales_bot",
+    "receita_cnpj": "receita_cnpj",
+    "pdf": "pdf_serp",
+}
+
+
+def _resolve_phone_source_names(sources: list[str] | None) -> set[str] | None:
+    """Translate front-end aliases (``telegram_group``) into the set of
+    ``provider.name`` values the orchestrator filters by. ``None`` means
+    "keep every provider"."""
+    if not sources:
+        return None
+    resolved: set[str] = set()
+    for source in sources:
+        key = source.strip().lower()
+        if not key:
+            continue
+        resolved.add(_PHONE_SOURCE_ALIASES.get(key, key))
+    return resolved or None
+
+
+def _build_phone_orchestrator(
+    *,
+    settings: Settings | None = None,
+    on_event: Callable[[dict[str, Any]], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+    phone_sources: list[str] | None = None,
+) -> InternalPhoneEnrichmentOrchestrator:
+    """Build a phone orchestrator wired with the production harvester,
+    validator, lookup providers, WhatsApp checker, and HLR probe.
+
+    When ``phone_sources`` is set, the orchestrator runs ONLY the
+    matching lookup providers and skips the site harvester — used by the
+    "Buscar via Telegram" button in the UI to scope the run to one
+    channel instead of the full pipeline.
+
+    Tests monkeypatch the ``_default_phone_*`` factories so the call
+    chain stays offline.
+    """
+    settings = settings or load_settings()
+    validator = _default_phone_validator()
+    wa_checker = _default_whatsapp_checker()
+    hlr_probe = _default_hlr_probe()
+    service = InternalPhoneEnrichmentService(
+        validator=validator,
+        wa_checker=wa_checker,
+        hlr_probe=hlr_probe,
+    )
+    lookup_providers = _default_phone_lookup_providers(settings)
+    allowed = _resolve_phone_source_names(phone_sources)
+    if allowed is not None:
+        lookup_providers = [p for p in lookup_providers if p.name in allowed]
+        # Site harvester is a separate bucket from lookup providers; the
+        # UI scope is "only these lookup channels", so harvest is muted.
+        harvest_fn: Callable[..., list] = lambda *_args, **_kwargs: []
+    else:
+        harvester = _default_phone_harvester()
+        harvest_fn = default_phone_harvest_fn(harvester)
+    return InternalPhoneEnrichmentOrchestrator(
+        service=service,
+        harvest_fn=harvest_fn,
+        lookup_providers=lookup_providers,
+        on_event=on_event,
+        cancel_check=cancel_check,
+    )
+
+
+def _run_internal_phone_enrichment(
+    *,
+    leads: list[Lead],
+    company_domains: dict[str, list[str]] | None = None,
+    on_event: Callable[[dict[str, Any]], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+    settings: Settings | None = None,
+    phone_sources: list[str] | None = None,
+) -> list[tuple[Lead, PhoneEnrichmentUpdate]]:
+    """Synchronous wrapper used by both the blocking POST and the SSE
+    streamer. Returns ``[(lead, PhoneEnrichmentUpdate)]``."""
+
+    orchestrator = _build_phone_orchestrator(
+        settings=settings,
+        on_event=on_event,
+        cancel_check=cancel_check,
+        phone_sources=phone_sources,
+    )
+    return orchestrator.run(leads, company_domains=company_domains)
+
+
+def _telegram_inter_lead_pause(settings: Settings) -> None:
+    """Sleep a uniform-random pause between two consecutive Telegram leads.
+
+    Centralized in this module so tests can monkeypatch a single
+    indirection (``server.app._telegram_inter_lead_pause = lambda s: None``)
+    and skip the wait entirely without disabling the real driver path.
+    """
+    import random
+    import time as _time
+
+    lo = max(0.0, float(settings.telegram_inter_lead_min_seconds))
+    hi = max(lo, float(settings.telegram_inter_lead_max_seconds))
+    if hi <= 0:
+        return
+    _time.sleep(random.uniform(lo, hi) if hi > lo else lo)
+
+
+def _default_telegram_consult_lookup(
+    settings: Settings | None = None,
+) -> TelegramConsultOrchestrator:
+    """Production driver: a :class:`TelegramConsultOrchestrator` that
+    wraps the Gon and Unix subclasses with the operator's CDP endpoint.
+    Tests monkeypatch this helper to return a fake with a ``consult``
+    method returning ``list[TelegramConsultResult]`` so the route stays
+    offline.
+    """
+    settings = settings or load_settings()
+    gon = GonzalesBotConsult(cdp_endpoint=settings.linkedin_cdp_endpoint)
+    unix = UnixBotConsult(cdp_endpoint=settings.linkedin_cdp_endpoint)
+    return TelegramConsultOrchestrator(gon=gon, unix=unix)
+
+
+def _default_telegram_multi_experimental_lookup(
+    settings: Settings | None = None,
+) -> TelegramConsultOrchestrator:
+    """Experimental driver: Finder + Gon + Unix as independent evidence.
+
+    Kept separate from :func:`_default_telegram_consult_lookup` so the
+    production Telegram flow remains unchanged. The orchestrator still
+    serializes access to the single Telegram Web/CDP session; providers
+    are independent from the comparison/storage perspective, not clicked
+    concurrently in the same browser profile.
+    """
+    settings = settings or load_settings()
+    finder = FindexNameConsult(cdp_endpoint=settings.linkedin_cdp_endpoint)
+    gon = GonzalesBotConsult(cdp_endpoint=settings.linkedin_cdp_endpoint)
+    unix = UnixBotConsult(cdp_endpoint=settings.linkedin_cdp_endpoint)
+    return TelegramConsultOrchestrator(gon=gon, unix=unix, finder=finder)
+
+
+def _default_telegram_telethon_multi_experimental_lookup(
+    settings: Settings | None = None,
+) -> TelethonTelegramConsultOrchestrator:
+    """Experimental driver: Finder + Gon + Unix via Telethon.
+
+    Kept separate from the CDP multi-provider lookup so the operator can
+    compare the native Telegram path without changing the existing
+    browser automation flows.
+    """
+    settings = settings or load_settings()
+    if not settings.telegram_api_id or not settings.telegram_api_hash:
+        raise RuntimeError(
+            "Telegram Telethon nao configurado: defina "
+            "BEAUTIFUL_LINKEDIN_TELEGRAM_API_ID e "
+            "BEAUTIFUL_LINKEDIN_TELEGRAM_API_HASH."
+        )
+    return TelethonTelegramConsultOrchestrator(
+        api_id=settings.telegram_api_id,
+        api_hash=settings.telegram_api_hash,
+        session_name=settings.telegram_session_name,
+    )
+
+
+def _default_telethon_gonzales_cpf_consult(
+    settings: Settings | None = None,
+) -> TelethonGonzalesCpfConsult:
+    """Production driver for the Telethon-backed Gonzales /cpf + SISREG flow.
+
+    The same throttle is shared with the /nome orchestrator so the
+    pipeline's name→cpf hand-off respects the global Telethon spacing
+    across phases, not just within a phase.
+    """
+    settings = settings or load_settings()
+    if not settings.telegram_api_id or not settings.telegram_api_hash:
+        raise RuntimeError(
+            "Telegram Telethon nao configurado: defina "
+            "BEAUTIFUL_LINKEDIN_TELEGRAM_API_ID e "
+            "BEAUTIFUL_LINKEDIN_TELEGRAM_API_HASH."
+        )
+    return TelethonGonzalesCpfConsult(
+        api_id=settings.telegram_api_id,
+        api_hash=settings.telegram_api_hash,
+        session_name=settings.telegram_session_name,
+    )
+
+
+def _default_findex_cpf_consult(
+    settings: Settings | None = None,
+) -> FindexCpfConsult:
+    """Production driver for the experimental Finder ``/cpf`` evidence row."""
+    settings = settings or load_settings()
+    return FindexCpfConsult(cdp_endpoint=settings.linkedin_cdp_endpoint)
+
+
+def _lead_ref(lead: Lead) -> str:
+    return _pipeline_lead_ref_for(lead)
+
+
+def _refresh_linkedin_signals_for_telegram(
+    *,
+    selected: list[Lead],
+    selected_refs: list[str],
+    table_id: str,
+    store: Any,
+    settings: Settings,
+) -> list[Lead]:
+    # Inject the module-level names so monkeypatch on this module's
+    # ``_run_linkedin_profile_validation`` / ``probe_cdp_endpoint`` keeps
+    # working from tests — the pipeline helper resolves the callables it
+    # receives, not the import-time references.
+    return _pipeline_refresh_linkedin_signals(
+        selected=selected,
+        selected_refs=selected_refs,
+        table_id=table_id,
+        store=store,
+        settings=settings,
+        validation_runner=_run_linkedin_profile_validation,
+        cdp_probe=probe_cdp_endpoint,
+        select_leads=_select_leads,
+    )
+
+
+def _run_telegram_consult(
+    *,
+    selected: list[Lead],
+    table_id: str,
+    store: Any,
+    lookup: Any,
+) -> list[TelegramConsultPayload]:
+    rows = _pipeline_run_telegram_consult(
+        selected=selected,
+        table_id=table_id,
+        store=store,
+        lookup=lookup,
+    )
+    return [_consult_to_payload(row) for row in rows]
+
+
+def _run_experimental_finder_cpf_followup(
+    *,
+    selected: list[Lead],
+    table_id: str,
+    store: Any,
+    finder_cpf: Any,
+    max_cpfs_per_lead: int = 3,
+) -> list[TelegramConsultPayload]:
+    """Persist Finder ``/cpf`` evidence for strong name-stage matches.
+
+    The experimental button is meant to compare evidence and then fetch
+    phone payloads. Every CPF extracted from Finder itself is a follow-up
+    target; CPFs seen only in other providers still need consensus or a
+    high matcher score. We rank consensus/high-score CPFs first and cap
+    the count per lead so one homonym-heavy name does not burn the bot
+    quota.
+    """
+    out: list[TelegramConsultPayload] = []
+    for lead in selected:
+        ref = _lead_ref(lead)
+        name = (lead.person_name or "").strip()
+        if not ref or not name:
+            continue
+        rows = store.list_telegram_consults_for_lead(
+            table_id, ref, query_type="name"
+        )
+        for cpf in _experimental_finder_cpf_targets(rows)[:max_cpfs_per_lead]:
+            result = finder_cpf.consult(cpf)
+            extraction = parse_telegram_text(result.raw_text, provider=result.provider)
+            saved = store.save_telegram_consult(
+                table_id=table_id,
+                lead_ref=ref,
+                provider=result.provider,
+                lead_name=name,
+                query=result.query,
+                raw_text=result.raw_text,
+                source_url=result.source_url,
+                downloaded_at=result.downloaded_at,
+                error=result.error,
+                extracted_nome=extraction.primary_nome,
+                extracted_cpf=extraction.primary_cpf,
+                extracted_birth_date=extraction.primary_birth_date,
+                extracted_address=extraction.primary_address,
+                extracted_candidates=[
+                    candidate.to_dict() for candidate in extraction.candidates
+                ],
+                run_id=getattr(result, "run_id", None),
+                query_type="cpf",
+                query_value=cpf,
+            )
+            out.append(_consult_to_payload(saved))
+    return out
+
+
+def _experimental_finder_cpf_targets(rows: list[Any]) -> list[str]:
+    by_cpf: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        provider = str(getattr(row, "provider", "") or "")
+        primary_cpf = str(getattr(row, "extracted_cpf", "") or "").strip()
+        if primary_cpf:
+            entry = by_cpf.setdefault(
+                primary_cpf, {"providers": set(), "best_score": 0}
+            )
+            entry["providers"].add(provider)
+        for candidate in getattr(row, "extracted_candidates", None) or []:
+            if not isinstance(candidate, dict):
+                continue
+            cpf = str(candidate.get("cpf") or "").strip()
+            if not cpf:
+                continue
+            entry = by_cpf.setdefault(
+                cpf, {"providers": set(), "best_score": 0}
+            )
+            entry["providers"].add(provider)
+            try:
+                score = int(candidate.get("match_score") or 0)
+            except (TypeError, ValueError):
+                score = 0
+            entry["best_score"] = max(entry["best_score"], score)
+
+    ranked = [
+        (cpf, len(data["providers"]), int(data["best_score"]))
+        for cpf, data in by_cpf.items()
+        if (
+            "finder" in data["providers"]
+            or len(data["providers"]) >= 2
+            or int(data["best_score"]) >= 65
+        )
+    ]
+    ranked.sort(key=lambda item: (item[1], item[2]), reverse=True)
+    return [cpf for cpf, _count, _score in ranked]
+
+
+def _parse_and_rank(
+    result: TelegramConsultResult, lead: Lead
+) -> tuple[TelegramExtraction, list[dict[str, Any]], MatchScore | None]:
+    return _pipeline_parse_and_rank(result, lead)
+
+
+def _linkedin_experience_years(lead: Lead) -> list[int]:
+    from beautiful_linkedin.storage.telegram_pipeline import linkedin_experience_years
+
+    return linkedin_experience_years(lead)
+
+
+def _consult_to_payload(
+    consult: Any, *, lead: Lead | None = None
+) -> TelegramConsultPayload:
+    extracted_nome = consult.extracted_nome
+    extracted_cpf = consult.extracted_cpf
+    extracted_birth_date = consult.extracted_birth_date
+    extracted_address = consult.extracted_address
+    extracted_candidates = consult.extracted_candidates or []
+    match_score = consult.match_score
+    match_details = consult.match_details or {}
+
+    if (
+        consult.raw_text
+        and not any(
+            [
+                extracted_nome,
+                extracted_cpf,
+                extracted_birth_date,
+                extracted_address,
+                extracted_candidates,
+            ]
+        )
+    ):
+        result = TelegramConsultResult(
+            provider=consult.provider,
+            lead_name=consult.lead_name,
+            query=consult.query,
+            raw_text=consult.raw_text,
+            source_url=consult.source_url,
+            downloaded_at=consult.downloaded_at,
+            error=consult.error,
+        )
+        if lead is not None:
+            extraction, ranked_candidates, top_score = _parse_and_rank(result, lead)
+            extracted_candidates = ranked_candidates
+            match_score = top_score.score if top_score else match_score
+            match_details = top_score.breakdown if top_score else match_details
+        else:
+            extraction = parse_telegram_text(consult.raw_text, provider=consult.provider)
+            extracted_candidates = [
+                candidate.to_dict() for candidate in extraction.candidates
+            ]
+        extracted_nome = extraction.primary_nome
+        extracted_cpf = extraction.primary_cpf
+        extracted_birth_date = extraction.primary_birth_date
+        extracted_address = extraction.primary_address
+
+    return TelegramConsultPayload(
+        id=consult.id,
+        table_id=consult.table_id,
+        lead_ref=consult.lead_ref,
+        provider=consult.provider,
+        lead_name=consult.lead_name,
+        query=consult.query,
+        raw_text=consult.raw_text,
+        source_url=consult.source_url,
+        downloaded_at=consult.downloaded_at,
+        error=consult.error,
+        extracted_nome=extracted_nome,
+        extracted_cpf=extracted_cpf,
+        extracted_birth_date=extracted_birth_date,
+        extracted_address=extracted_address,
+        extracted_candidates=extracted_candidates,
+        match_score=match_score,
+        match_details=match_details,
+        created_at=consult.created_at,
+        run_id=getattr(consult, "run_id", None),
+        query_type=getattr(consult, "query_type", "name") or "name",
+        query_value=getattr(consult, "query_value", None),
+        blocked_reason=getattr(consult, "blocked_reason", None),
+    )
+
+
+def _default_gonzales_cpf_consult(
+    settings: Settings | None = None,
+) -> GonzalesCpfConsult:
+    """Production driver: a :class:`GonzalesCpfConsult` bound to the
+    operator's Chrome CDP endpoint. Tests monkeypatch this helper to
+    return a fake whose ``consult(cpf)`` is deterministic and offline.
+    """
+    settings = settings or load_settings()
+    return GonzalesCpfConsult(
+        cdp_endpoint=settings.linkedin_cdp_endpoint,
+        post_send_min_seconds=settings.telegram_post_send_min_seconds,
+        post_send_max_seconds=settings.telegram_post_send_max_seconds,
+        gon_abort_timeout_seconds=settings.telegram_gon_abort_timeout_seconds,
+    )
+
+
+def _default_gonzales_consult(
+    settings: Settings | None = None,
+) -> GonzalesBotConsult:
+    """Production driver: a :class:`GonzalesBotConsult` for the name
+    stage. Tests monkeypatch this helper to return a deterministic
+    offline fake. Kept separate from
+    :func:`_default_telegram_consult_lookup` (which bundles Gon + Unix)
+    so the unified phone flow can pay only for Gon — Unix is skipped to
+    cut Playwright time per lead.
+    """
+    settings = settings or load_settings()
+    return GonzalesBotConsult(
+        cdp_endpoint=settings.linkedin_cdp_endpoint,
+        post_send_min_seconds=settings.telegram_post_send_min_seconds,
+        post_send_max_seconds=settings.telegram_post_send_max_seconds,
+        gon_abort_timeout_seconds=settings.telegram_gon_abort_timeout_seconds,
+    )
+
+
+def _default_findex_email_consult(
+    settings: Settings | None = None,
+) -> FindexEmailConsult:
+    """Production driver for the Findex e-mail -> phone fallback.
+
+    Tests monkeypatch this helper to keep endpoint tests offline.
+    """
+    settings = settings or load_settings()
+    return FindexEmailConsult(
+        cdp_endpoint=settings.linkedin_cdp_endpoint,
+        post_send_min_seconds=settings.telegram_post_send_min_seconds,
+        post_send_max_seconds=settings.telegram_post_send_max_seconds,
+        gon_abort_timeout_seconds=settings.telegram_gon_abort_timeout_seconds,
+    )
+
+
+def _telegram_phone_candidate_to_update(
+    candidate: TelegramPhoneCandidate,
+) -> PhoneEnrichmentUpdate:
+    """Project a pipeline candidate onto the existing phone enrichment
+    update shape so :meth:`SavedLeadsStore.apply_internal_phone_enrichment_updates`
+    handles the verification trail uniformly.
+
+    The phone is normalized to ``+55<digits>`` when missing the country
+    code — the pipeline harvests Brazilian numbers and the validator
+    downstream expects an E.164-ish prefix. ``confidence`` is forwarded
+    untouched from the matcher.
+    """
+    digits = candidate.phone_digits or ""
+    e164 = digits if digits.startswith("55") else f"55{digits}"
+    source_kind = (
+        "telegram_consult_email"
+        if candidate.provenance.get("score_source") == "findex_email_fallback"
+        else "telegram_consult_cpf"
+    )
+    return PhoneEnrichmentUpdate(
+        phone=f"+{e164}" if e164 else None,
+        national=candidate.phone_raw,
+        confidence=candidate.confidence,
+        source=f"{source_kind}:{candidate.source_provider}",
+        source_url=candidate.provenance.get("raw_source_url"),
+    )
+
+
+@dataclass(frozen=True)
+class _TelegramContactEmailUpdate:
+    email: str
+    source: str
+    confidence: int
+    email_type: str = "personal"
+    email_validation_status: str = "unknown"
+
+
+def _apply_telegram_contact_email_candidates(
+    *,
+    store: Any,
+    table_id: str,
+    lead: Lead,
+    candidates: list[TelegramPhoneCandidate],
+) -> None:
+    updates: list[tuple[Lead, _TelegramContactEmailUpdate]] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        emails = candidate.provenance.get("contact_emails") or []
+        if not isinstance(emails, list):
+            continue
+        source_kind = (
+            "telegram_consult_email"
+            if candidate.provenance.get("score_source") == "findex_email_fallback"
+            else "telegram_consult_cpf"
+        )
+        source = f"{source_kind}:{candidate.source_provider}"
+        for value in emails:
+            email = str(value or "").strip().lower()
+            if not email or "@" not in email or email in seen:
+                continue
+            seen.add(email)
+            updates.append(
+                (
+                    lead,
+                    _TelegramContactEmailUpdate(
+                        email=email,
+                        source=source,
+                        confidence=candidate.confidence,
+                    ),
+                )
+            )
+    if updates:
+        store.apply_contact_email_updates(table_id, updates)
+
+
+def _telegram_phone_candidate_to_payload(
+    candidate: TelegramPhoneCandidate,
+) -> TelegramFollowupPhoneCandidate:
+    return TelegramFollowupPhoneCandidate(
+        phone_raw=candidate.phone_raw,
+        phone_digits=candidate.phone_digits,
+        cpf=candidate.cpf,
+        confidence=candidate.confidence,
+        source_provider=candidate.source_provider,
+        nome=candidate.nome,
+        provenance=dict(candidate.provenance),
+    )
+
+
+def _ranked_candidate_to_payload(
+    candidate: TelegramParsedCandidate, *, eligible: bool
+) -> TelegramPhoneRankedCandidatePayload:
+    return TelegramPhoneRankedCandidatePayload(
+        cpf=candidate.cpf,
+        nome=candidate.nome,
+        data_nascimento=candidate.data_nascimento,
+        endereco=candidate.endereco,
+        match_score=candidate.match_score,
+        signals_used=list(candidate.signals_used),
+        breakdown=dict(candidate.breakdown),
+        eligible=eligible,
+    )
+
+
+def _ranked_candidates_payload(
+    stage: TelegramNameStageResult,
+) -> list[TelegramPhoneRankedCandidatePayload]:
+    eligible_cpfs = {c.cpf for c in stage.eligible_candidates}
+    return [
+        _ranked_candidate_to_payload(c, eligible=c.cpf in eligible_cpfs)
+        for c in stage.all_candidates
+        if _pipeline_cpf_candidate_allowed_for_review(c)
+    ]
+
+
+def _build_extract_cpfs_response_from_persisted(
+    app: FastAPI,
+    record: "TelegramPhoneRunRecord",
+    table_id: str,
+    target_ref: str,
+) -> TelegramPhoneExtractCpfsResponse:
+    """Devolve o estado de awaiting_cpf_confirmation já persistido sem
+    rerodar ``/nome``. Usado quando o cliente chama ``/extract-cpfs``
+    duas vezes em sequência para o mesmo lead (refresh do modal, retry
+    de rede, etc.)."""
+    store = get_saved_leads_store(app)
+    persisted = _pipeline_collect_name_stage_candidates(
+        store=store, table_id=table_id, lead_ref=target_ref
+    )
+    eligible = _pipeline_select_followup_candidates(persisted)
+    eligible_cpfs = [c.cpf for c in eligible]
+    eligible_set = set(eligible_cpfs)
+    candidates_payload = [
+        _ranked_candidate_to_payload(c, eligible=c.cpf in eligible_set)
+        for c in persisted
+        if _pipeline_cpf_candidate_allowed_for_review(c)
+    ]
+    consult = latest_name_stage_consult(
+        store=store, table_id=table_id, lead_ref=target_ref
+    )
+    return TelegramPhoneExtractCpfsResponse(
+        run_id=record.run_id,
+        status="awaiting_cpf_confirmation",
+        next_index=record.next_index,
+        total_leads=len(record.lead_refs),
+        lead_ref=target_ref,
+        lead_name=consult.lead_name if consult is not None else None,
+        blocked_reason=None,
+        eligible_cpfs=eligible_cpfs,
+        candidates=candidates_payload,
+        name_consult=(
+            _consult_to_payload(consult) if consult is not None else None
+        ),
+    )
+
+
+def _process_one_telegram_phone_lead(
+    *,
+    lead: Lead,
+    table_id: str,
+    store: SavedLeadsStore,
+    name_consult_fn: Callable[[str], Any],
+    cpf_consult_fn: Callable[[str], Any],
+    email_consult_fn: Callable[[str], Any] | None,
+    target_titles: list[str] | None,
+    run_id: str | None = None,
+) -> tuple[TelegramPhoneLeadResult, dict[str, int]]:
+    """Executa o fluxo /nome → /cpf → telefone para UM lead e devolve o
+    payload + os contadores (``leads_with_phone``, ``leads_blocked``,
+    ``phones_persisted``, ``skipped_existing_phone``).
+
+    Compartilhado entre o endpoint legado em batch
+    (``POST /lead-tables/{id}/telegram-phone``) e o endpoint resumível
+    (``POST /lead-tables/{id}/telegram-phone/next``), que processa um
+    lead por vez com confirmação humana entre cada um — esse split é
+    o que protege os bots Telegram de ban por volume.
+    """
+    counters = {
+        "leads_with_phone": 0,
+        "leads_blocked": 0,
+        "phones_persisted": 0,
+        "skipped_existing_phone": 0,
+    }
+    flow: TelegramPhoneFlowResult = _pipeline_run_extract_phone_via_cpf(
+        lead=lead,
+        table_id=table_id,
+        store=store,
+        name_consult_fn=name_consult_fn,
+        cpf_consult_fn=cpf_consult_fn,
+        email_consult_fn=email_consult_fn,
+        target_titles=target_titles,
+        run_id=run_id,
+    )
+    if flow.blocked_reason:
+        counters["leads_blocked"] += 1
+
+    had_new_phone = False
+    if flow.phone_candidates:
+        ordered = sorted(
+            flow.phone_candidates,
+            key=lambda c: c.confidence,
+            reverse=True,
+        )
+        primary_update = _telegram_phone_candidate_to_update(ordered[0])
+        primary_counters = store.apply_internal_phone_enrichment_updates(
+            table_id, [(lead, primary_update)]
+        )
+        if primary_counters.get("enriched", 0) > 0:
+            counters["phones_persisted"] += primary_counters["enriched"]
+            had_new_phone = True
+        counters["skipped_existing_phone"] += primary_counters.get(
+            "skipped_existing_phone", 0
+        )
+        for extra in ordered[1:]:
+            extras_counter = store.apply_internal_phone_enrichment_updates(
+                table_id,
+                [(lead, _telegram_phone_candidate_to_update(extra))],
+            )
+            counters["phones_persisted"] += extras_counter.get("enriched", 0)
+            counters["skipped_existing_phone"] += extras_counter.get(
+                "skipped_existing_phone", 0
+            )
+        _apply_telegram_contact_email_candidates(
+            store=store,
+            table_id=table_id,
+            lead=lead,
+            candidates=ordered,
+        )
+    if had_new_phone:
+        counters["leads_with_phone"] += 1
+
+    stages_payload = [
+        TelegramPhoneStageEvent(
+            stage=event.stage,
+            timestamp=event.timestamp,
+            detail=dict(event.detail),
+        )
+        for event in (flow.stages or [])
+    ]
+    payload = TelegramPhoneLeadResult(
+        lead_ref=flow.lead_ref,
+        lead_name=flow.lead_name,
+        blocked_reason=flow.blocked_reason,
+        candidates=[
+            _telegram_phone_candidate_to_payload(c)
+            for c in flow.phone_candidates
+        ],
+        name_consult=(
+            _consult_to_payload(flow.name_consult)
+            if flow.name_consult is not None
+            else None
+        ),
+        cpf_consult=(
+            _consult_to_payload(flow.cpf_consult)
+            if flow.cpf_consult is not None
+            else None
+        ),
+        stages=stages_payload,
+        last_stage=stages_payload[-1].stage if stages_payload else None,
+    )
+    return payload, counters
 
 
 def _run_internal_enrichment(

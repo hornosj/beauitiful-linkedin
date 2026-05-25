@@ -11,6 +11,7 @@ import {
 } from '../../shared/validation'
 import type {
   ApiKeyOverrides,
+  FoundLead,
   Lead,
   ProspectingSummary,
   ProviderDiagnostic,
@@ -23,11 +24,12 @@ import ResultsTable from './components/ResultsTable'
 import RiskWarning from './components/RiskWarning'
 import SettingsPanel from './components/SettingsPanel'
 import DiagnosticPanel from './components/DiagnosticPanel'
-import ChromeBootstrapModal from './components/ChromeBootstrapModal'
 import SavedLeadsLibrary from './components/SavedLeadsLibrary'
 import SmallCompanyDialog from './components/SmallCompanyDialog'
 import ProbeProgress from './components/ProbeProgress'
+import LiveFoundLeads from './components/LiveFoundLeads'
 import InternalEnrichProgress from './components/InternalEnrichProgress'
+import TelethonAuthDialog from './components/TelethonAuthDialog'
 import LiveActivityBubbles, {
   type LiveActivityItem
 } from './components/LiveActivityBubbles'
@@ -46,6 +48,8 @@ interface RunResult {
 
 type ThemeMode = 'light' | 'dark'
 type View = 'search' | 'leads' | 'providers'
+type LinkedInSessionState = 'unknown' | 'logged_out' | 'logged_in' | 'open'
+type TelegramSessionState = 'unknown' | 'logged_out' | 'logged_in' | 'not_configured'
 
 const API_KEYS_STORAGE_KEY = 'beautiful-linkedin.api-keys'
 const THEME_STORAGE_KEY = 'beautiful-linkedin.theme'
@@ -66,7 +70,10 @@ export default function App() {
   const [revealing, setRevealing] = useState(false)
   const [visibleLeadCount, setVisibleLeadCount] = useState(0)
   const [showRiskModal, setShowRiskModal] = useState(false)
-  const [showChromeBootstrap, setShowChromeBootstrap] = useState(false)
+  const [linkedInSession, setLinkedInSession] = useState<LinkedInSessionState>('unknown')
+  const [linkedInPanelVisible, setLinkedInPanelVisible] = useState(false)
+  const [telegramSession, setTelegramSession] = useState<TelegramSessionState>('unknown')
+  const [telethonAuthOpen, setTelethonAuthOpen] = useState(false)
   const [smallCompanyProbe, setSmallCompanyProbe] =
     useState<PeopleSearchProbeResponse | null>(null)
   const [probeEvents, setProbeEvents] = useState<ProbeEvent[]>([])
@@ -78,6 +85,7 @@ export default function App() {
     null
   )
   const [liveActivities, setLiveActivities] = useState<LiveActivityItem[]>([])
+  const [foundLeads, setFoundLeads] = useState<FoundLead[]>([])
   const [tableQuery, setTableQuery] = useState('')
   const [tableFilter, setTableFilter] = useState<'all' | 'head' | 'growth'>('all')
   const liveActivitySeqRef = useRef(0)
@@ -188,8 +196,13 @@ export default function App() {
   }, [result, visibleLeadCount])
 
   useEffect(() => {
-    if (!feedback || feedback.kind !== 'success') return
-    const t = window.setTimeout(() => setFeedback(null), 3500)
+    if (!feedback) return
+    // Toasts now auto-dismiss for both kinds — sucess after 3.5s, erros
+    // após 6.5s (mais tempo pra ler a mensagem técnica). O usuário pode
+    // fechar manualmente clicando no ✕. Sem essa regra os erros ficavam
+    // presos no topo da view até a próxima ação.
+    const timeout = feedback.kind === 'error' ? 6500 : 3500
+    const t = window.setTimeout(() => setFeedback(null), timeout)
     return () => window.clearTimeout(t)
   }, [feedback])
 
@@ -286,7 +299,142 @@ export default function App() {
     }
   }
 
-  const runSearch = async (formOverride?: SearchFormState) => {
+  const refreshLinkedInSession = useCallback(async (): Promise<boolean> => {
+    const bridge = window.beautifulLinkedIn?.embeddedBrowser
+    if (!bridge) {
+      setLinkedInSession('logged_out')
+      return false
+    }
+    const session = await bridge.checkSession()
+    const loggedIn = session.hasLiAt && session.hasJsessionid
+    setLinkedInSession(loggedIn ? 'logged_in' : 'logged_out')
+    return loggedIn
+  }, [])
+
+  const handleLinkedInLogin = async () => {
+    const bridge = window.beautifulLinkedIn?.embeddedBrowser
+    if (!bridge) {
+      setFeedback({ kind: 'error', message: 'Browser embutido indisponível neste modo.' })
+      return
+    }
+    if (linkedInPanelVisible && linkedInSession === 'logged_in') {
+      await bridge.hide()
+      setLinkedInPanelVisible(false)
+      setFeedback({ kind: 'success', message: 'LinkedIn logado. Sessão mantida em background.' })
+      return
+    }
+    setFeedback(null)
+    setLinkedInSession('open')
+    const result = await bridge.openLogin()
+    if (!result.ready) {
+      setLinkedInSession('logged_out')
+      setFeedback({
+        kind: 'error',
+        message: result.error ?? 'Não consegui abrir o LinkedIn no browser embutido.'
+      })
+      return
+    }
+    setLinkedInPanelVisible(true)
+    window.setTimeout(() => {
+      void refreshLinkedInSession()
+    }, 1200)
+  }
+
+  const refreshTelegramSession = useCallback(async (): Promise<TelegramSessionState> => {
+    if (!client) {
+      setTelegramSession('unknown')
+      return 'unknown'
+    }
+    try {
+      const status = await client.getTelethonAuthStatus()
+      const next: TelegramSessionState = !status.configured
+        ? 'not_configured'
+        : status.authorized
+          ? 'logged_in'
+          : 'logged_out'
+      setTelegramSession(next)
+      return next
+    } catch {
+      setTelegramSession('logged_out')
+      return 'logged_out'
+    }
+  }, [client])
+
+  const handleTelegramLogin = async () => {
+    if (!client) {
+      setFeedback({ kind: 'error', message: 'Sidecar offline. O login Telegram precisa da API local ativa.' })
+      return
+    }
+    setFeedback(null)
+    const session = await refreshTelegramSession()
+    if (session === 'not_configured') {
+      setFeedback({
+        kind: 'error',
+        message:
+          'Telegram não configurado: defina BEAUTIFUL_LINKEDIN_TELEGRAM_API_ID e BEAUTIFUL_LINKEDIN_TELEGRAM_API_HASH no .env.'
+      })
+      return
+    }
+    if (session === 'logged_in') {
+      setFeedback({ kind: 'success', message: 'Telegram conectado. Sessão pronta para consultas.' })
+      return
+    }
+    setTelethonAuthOpen(true)
+  }
+
+  const markTelegramLoggedIn = useCallback((): void => {
+    setTelethonAuthOpen(false)
+    setTelegramSession('logged_in')
+  }, [])
+
+  const handleTelethonAuthSuccess = (): void => {
+    markTelegramLoggedIn()
+    setFeedback({ kind: 'success', message: 'Telegram conectado. Sessão pronta para consultas.' })
+  }
+
+  const handleTelethonAuthClose = (): void => {
+    setTelethonAuthOpen(false)
+    void refreshTelegramSession()
+  }
+
+  const handleTelegramLogout = async (): Promise<void> => {
+    if (!client) {
+      setFeedback({ kind: 'error', message: 'Sidecar offline. O logout do Telegram precisa da API local ativa.' })
+      return
+    }
+    setFeedback(null)
+    try {
+      await client.logoutTelethonAuth()
+      setTelegramSession('logged_out')
+      setFeedback({
+        kind: 'success',
+        message: 'Telegram desconectado. Você já pode entrar com outra conta (ou a mesma).'
+      })
+    } catch (error) {
+      const message =
+        error instanceof ApiError
+          ? `${error.status}: ${error.message}`
+          : error instanceof Error
+            ? error.message
+            : 'Não foi possível desconectar o Telegram.'
+      setFeedback({ kind: 'error', message })
+    }
+  }
+
+  useEffect(() => {
+    if (!linkedInPanelVisible) return
+    const timer = window.setInterval(() => {
+      void refreshLinkedInSession()
+    }, 1500)
+    return () => window.clearInterval(timer)
+  }, [linkedInPanelVisible, refreshLinkedInSession])
+
+  useEffect(() => {
+    if (!client) return
+    void refreshTelegramSession()
+  }, [client, refreshTelegramSession])
+
+  const runSearch = async (formOverride?: SearchFormState, requestOverrides?: { cdp_endpoint?: string }) => {
     if (!client) {
       setFeedback({
         kind: 'error',
@@ -301,9 +449,36 @@ export default function App() {
     setRevealing(false)
     setVisibleLeadCount(0)
     setResult(null)
+    setFoundLeads([])
     lastSearchActivityRef.current = null
     try {
-      const response = await client.search(buildSearchRequestFromForm(effectiveForm, apiKeys))
+      const baseRequest = buildSearchRequestFromForm(effectiveForm, apiKeys)
+      const finalRequest = requestOverrides ? { ...baseRequest, ...requestOverrides } : baseRequest
+      if (requestOverrides) {
+        console.log('[App runSearch] overrides aplicados:', JSON.stringify(requestOverrides))
+      }
+      console.log(`[App runSearch] scrapeMode=${finalRequest.scrape_mode} cdp_endpoint=${finalRequest.cdp_endpoint ?? 'padrão'} maxResults=${finalRequest.max_results}`)
+      // Async run + polling so the UI can surface leads as they are found
+      // instead of blocking on a single request. people_search can take
+      // several minutes, so the timeout is generous.
+      const started = await client.startRun(finalRequest)
+      const finalState = await client.waitForRun(started.run_id, {
+        intervalMs: 600,
+        timeoutMs: 16 * 60_000,
+        onState: (state) => {
+          if (state.found_leads && state.found_leads.length > 0) {
+            setFoundLeads(state.found_leads)
+          }
+        }
+      })
+      if (finalState.status === 'failed') {
+        throw new ApiError(500, finalState.error ?? 'A busca falhou no servidor.')
+      }
+      if (finalState.status === 'cancelled' || !finalState.result) {
+        setFeedback({ kind: 'error', message: 'Busca cancelada.' })
+        return
+      }
+      const response = finalState.result
       setResult(response)
       setVisibleLeadCount(0)
       setRevealing(response.leads.length > 0)
@@ -386,53 +561,44 @@ export default function App() {
     if (form.scrapeMode === 'people_search') {
       setErrors({})
       setFeedback(null)
-      // Step-by-step probe: stream events into the UI while CDP+Playwright
-      // navigate to the company People page in the user's open Chrome.
       setProbeEvents([])
-      setProbeStatus('running')
-      try {
-        const finalState = await client.followPeopleSearchProbe(
-          {
-            company_name: form.companyName,
-            company_domain: form.companyDomain || undefined,
-            linkedin_url: form.linkedinUrl || undefined
-          },
-          (_event, state) => setProbeEvents([...state.events])
-        )
-        setProbeStatus(finalState.status === 'failed' ? 'failed' : 'completed')
-        const classification = finalState.classification
-        if (classification?.should_offer_general_search) {
-          setSmallCompanyProbe(classification)
+      setProbeStatus('idle')
+
+      const embedded = window.beautifulLinkedIn?.embeddedBrowser
+      if (embedded) {
+        const loggedIn = await refreshLinkedInSession()
+        if (!loggedIn) {
+          setFeedback({
+            kind: 'error',
+            message: 'Clique em "Logar LinkedIn" e conclua o login antes de buscar leads.'
+          })
           return
         }
-      } catch {
-        setProbeStatus('failed')
-        // Probe is best-effort; fall through to the legacy chrome bootstrap
-        // path below so the user can still run a search.
-      }
-
-      if (window.beautifulLinkedIn?.chrome) {
-        // Fast-path: if CDP is already alive and the user isn't on a login
-        // wall, skip the bootstrap modal.
-        try {
-          const chrome = window.beautifulLinkedIn.chrome
-          const probe = await chrome.probe()
-          const linkedinState = probe.alive ? await chrome.checkLinkedIn() : null
-          if (probe.alive && linkedinState?.state !== 'logged_out') {
-            void runSearch()
-            return
-          }
-        } catch {
-          // fall through to bootstrap modal
-        }
-        setShowChromeBootstrap(true)
+        await embedded.hide()
+        setLinkedInPanelVisible(false)
+        void runSearch(undefined, { cdp_endpoint: 'http://127.0.0.1:9223' })
         return
       }
+
     }
     void runSearch()
   }
 
   const sidecarOk = baseUrl !== null
+  const linkedInSessionLabel =
+    linkedInSession === 'logged_in'
+      ? linkedInPanelVisible
+        ? 'LinkedIn logado · pode fechar essa aba'
+        : 'LinkedIn logado'
+      : linkedInSession === 'open'
+        ? 'LinkedIn aberto'
+        : 'Logar LinkedIn'
+  const telegramSessionLabel =
+    telegramSession === 'logged_in'
+      ? 'Telegram logado'
+      : telegramSession === 'not_configured'
+        ? 'Telegram não configurado'
+        : 'Telegram não logado'
 
   return (
     <EnrichmentRunnerProvider
@@ -447,6 +613,37 @@ export default function App() {
           <div className="w-5 h-5 rounded-[6px] bg-gradient-to-br from-accent to-[#5856d6] flex items-center justify-center text-white text-[11px] font-bold shadow-[0_1px_2px_rgba(0,122,255,0.3)]">B</div>
           Beautiful LinkedIn
         </div>
+        <button
+          type="button"
+          className={`linkedin-session-btn ${linkedInSession === 'logged_in' ? 'ready' : ''}`}
+          aria-label={linkedInSessionLabel}
+          onClick={handleLinkedInLogin}
+          title="Abrir LinkedIn no browser embutido"
+        >
+          <span className="linkedin-session-dot" />
+          {linkedInSessionLabel}
+        </button>
+        <button
+          type="button"
+          className={`linkedin-session-btn ${telegramSession === 'logged_in' ? 'ready' : ''}`}
+          aria-label={telegramSessionLabel}
+          onClick={handleTelegramLogin}
+          title="Autenticar Telegram para consultas"
+        >
+          <span className="linkedin-session-dot" />
+          {telegramSessionLabel}
+        </button>
+        {telegramSession === 'logged_in' && (
+          <button
+            type="button"
+            className="linkedin-session-btn"
+            aria-label="Desconectar Telegram"
+            onClick={handleTelegramLogout}
+            title="Desconectar o Telegram para entrar com outra conta"
+          >
+            Sair do Telegram
+          </button>
+        )}
         {form.companyName && (
           <div className="text-[12px] font-normal text-ink-3 pl-3 ml-1 border-l border-line select-none">
             {form.companyName}
@@ -587,42 +784,50 @@ export default function App() {
           </button>
           </div>
 
-          <div className="px-5 pt-6 pb-16 max-w-[1240px] mx-auto max-sm:px-3">
-          <div className="hero">
-            <div>
-              <h1>Bem-vindo de volta.</h1>
-              <p>
-                {result
-                  ? `Última busca: ${result.summary.total_deduplicated_leads} leads únicos · arquivo ${result.summary.output_file}.`
-                  : 'Configure a empresa, escolha o perfil de cargo e rode a busca. Os resultados aparecem ao lado.'}
-              </p>
-            </div>
-            <div className="stat-strip">
-              <div className="stat">
-                <div className="v">{totalLeads || '—'}</div>
-                <div className="l">Leads totais</div>
+          <div
+            className={
+              view === 'leads'
+                ? 'px-5 pt-6 pb-16 max-w-[1760px] mx-auto max-sm:px-3'
+                : 'px-5 pt-6 pb-16 max-w-[1240px] mx-auto max-sm:px-3'
+            }
+          >
+          {view !== 'leads' && (
+            <div className="hero">
+              <div>
+                <h1>Bem-vindo de volta.</h1>
+                <p>
+                  {result
+                    ? `Última busca: ${result.summary.total_deduplicated_leads} leads únicos · arquivo ${result.summary.output_file}.`
+                    : 'Configure a empresa, escolha o perfil de cargo e rode a busca. Os resultados aparecem ao lado.'}
+                </p>
               </div>
-              <div className="stat">
-                <div className="v">{result?.summary.total_raw_leads ?? '—'}</div>
-                <div className="l">Brutos</div>
-              </div>
-              <div className="stat">
-                <div className="v">
-                  {matchRate !== null ? matchRate : '—'}
-                  {matchRate !== null && (
-                    <span style={{ fontSize: 14, color: 'var(--ink-3)' }}>%</span>
-                  )}
+              <div className="stat-strip">
+                <div className="stat">
+                  <div className="v">{totalLeads || '—'}</div>
+                  <div className="l">Leads totais</div>
                 </div>
-                <div className="l">Taxa de match</div>
-              </div>
-              <div className="stat">
-                <div className="v" style={{ color: 'var(--success)' }}>
-                  {configuredApiKeyCount}
+                <div className="stat">
+                  <div className="v">{result?.summary.total_raw_leads ?? '—'}</div>
+                  <div className="l">Brutos</div>
                 </div>
-                <div className="l">APIs ativas</div>
+                <div className="stat">
+                  <div className="v">
+                    {matchRate !== null ? matchRate : '—'}
+                    {matchRate !== null && (
+                      <span style={{ fontSize: 14, color: 'var(--ink-3)' }}>%</span>
+                    )}
+                  </div>
+                  <div className="l">Taxa de match</div>
+                </div>
+                <div className="stat">
+                  <div className="v" style={{ color: 'var(--success)' }}>
+                    {configuredApiKeyCount}
+                  </div>
+                  <div className="l">APIs ativas</div>
+                </div>
               </div>
             </div>
-          </div>
+          )}
 
           {probeStatus !== 'idle' && probeEvents.length > 0 && view === 'search' && (
             <ProbeProgress
@@ -630,28 +835,6 @@ export default function App() {
               events={probeEvents}
               status={probeStatus}
             />
-          )}
-
-          {feedback && (
-            <div
-              style={{
-                marginBottom: 14,
-                padding: '10px 14px',
-                borderRadius: 10,
-                fontSize: 12,
-                background:
-                  feedback.kind === 'error'
-                    ? 'rgba(255,59,48,0.08)'
-                    : 'rgba(52,199,89,0.10)',
-                color: feedback.kind === 'error' ? 'var(--risky)' : '#1d6f3f',
-                border:
-                  feedback.kind === 'error'
-                    ? '0.5px solid rgba(255,59,48,0.25)'
-                    : '0.5px solid rgba(52,199,89,0.25)'
-              }}
-            >
-              {feedback.message}
-            </div>
           )}
 
           <div key={view} className="animate-fade-in-up duration-300">
@@ -662,9 +845,10 @@ export default function App() {
                 currentKeywords={parseKeywords(form.titles)}
                 currentSearchRequest={buildPersistedSearchRequest(form)}
                 onFeedback={(kind, message) => setFeedback({ kind, message })}
+                onTelethonAuthSuccess={markTelegramLoggedIn}
               />
             ) : (
-              <div className="grid grid-cols-1 xl:grid-cols-[360px_minmax(0,1fr)] gap-[18px] items-start">
+              <div className="search-workspace-grid">
                 <div className="flex flex-col gap-[18px]">
                   <SearchForm
                     form={form}
@@ -686,20 +870,24 @@ export default function App() {
                   />
                 </div>
 
-                <ResultsTable
-                  leads={filteredLeads}
-                  total={allLeads.length}
-                  summary={result?.summary ?? null}
-                  loading={running || revealing}
-                  pendingLeadCount={pendingLeadCount}
-                  query={tableQuery}
-                  onQueryChange={setTableQuery}
-                  filter={tableFilter}
-                  onFilterChange={setTableFilter}
-                  onSaveCurrent={saveCurrentSearch}
-                  saveCurrentDisabled={!client || !result?.leads.length}
-                  suggestedSaveName={form.companyName || 'Leads salvos'}
-                />
+                <div className="search-results-stack">
+                  <LiveFoundLeads leads={foundLeads} running={running} />
+
+                  <ResultsTable
+                    leads={filteredLeads}
+                    total={allLeads.length}
+                    summary={result?.summary ?? null}
+                    loading={running || revealing}
+                    pendingLeadCount={pendingLeadCount}
+                    query={tableQuery}
+                    onQueryChange={setTableQuery}
+                    filter={tableFilter}
+                    onFilterChange={setTableFilter}
+                    onSaveCurrent={saveCurrentSearch}
+                    saveCurrentDisabled={!client || !result?.leads.length}
+                    suggestedSaveName={form.companyName || 'Leads salvos'}
+                  />
+                </div>
               </div>
             )}
           </div>
@@ -737,26 +925,6 @@ export default function App() {
           />
         )}
 
-        {showChromeBootstrap && (() => {
-          const { url, slug } = buildPeopleTarget(form.linkedinUrl, form.companyName)
-          return (
-            <ChromeBootstrapModal
-              targetUrl={url}
-              targetSlug={slug}
-              onReady={() => {
-                setShowChromeBootstrap(false)
-                void runSearch()
-              }}
-              onCancel={() => {
-                setShowChromeBootstrap(false)
-                setFeedback({
-                  kind: 'error',
-                  message: 'Busca cancelada antes de preparar o Chrome.'
-                })
-              }}
-            />
-          )
-        })()}
 
         {showSettings && (
           <SettingsPanel
@@ -782,6 +950,32 @@ export default function App() {
       </div>
       <EnrichmentBackground onActivity={pushLiveActivity} />
       <LiveActivityBubbles items={liveActivities} />
+      {feedback && (
+        <div
+          className={`toast ${feedback.kind === 'error' ? 'error' : ''}`}
+          role={feedback.kind === 'error' ? 'alert' : 'status'}
+          aria-live={feedback.kind === 'error' ? 'assertive' : 'polite'}
+        >
+          {feedback.kind === 'success' && <span className="check">✓</span>}
+          <span className="toast-msg">{feedback.message}</span>
+          <button
+            type="button"
+            className="toast-close"
+            aria-label="Fechar notificação"
+            onClick={() => setFeedback(null)}
+          >
+            ✕
+          </button>
+        </div>
+      )}
+      {client && (
+        <TelethonAuthDialog
+          open={telethonAuthOpen}
+          client={client}
+          onSuccess={handleTelethonAuthSuccess}
+          onClose={handleTelethonAuthClose}
+        />
+      )}
     </div>
     </EnrichmentRunnerProvider>
   )
@@ -815,7 +1009,7 @@ function EnrichmentBackground(props: {
   useEffect(() => {
     const latest = run?.recentLeads[0]
     if (!latest) return
-    const key = `${run?.meta.startedAt ?? 0}:${latest.lead_ref ?? latest.person_name ?? ''}:${latest.status}:${latest.email ?? ''}`
+    const key = `${run?.meta.startedAt ?? 0}:${latest.lead_ref ?? latest.person_name ?? ''}:${latest.status}:${latest.email ?? latest.phone ?? ''}`
     if (lastLeadEventRef.current === key) return
     lastLeadEventRef.current = key
     onActivity(formatEnrichmentActivity(latest))
@@ -825,6 +1019,7 @@ function EnrichmentBackground(props: {
     <>
       <InternalEnrichProgress
         open={Boolean(run) && modalOpen}
+        fields={run?.meta.fields ?? 'email'}
         running={Boolean(run?.running)}
         phase={run?.phase ?? null}
         totalLeads={run?.totalLeads ?? 0}
@@ -914,11 +1109,21 @@ function formatEnrichmentActivity(
       tone: 'success'
     }
   }
+  if (event.phone) {
+    return {
+      title: 'Telefone encontrado',
+      detail: `${person} · ${event.phone}`,
+      tone: 'success'
+    }
+  }
   const label: Record<InternalEnrichLeadEvent['status'], string> = {
-    enriched: 'E-mail encontrado',
+    enriched: 'Contato encontrado',
     skipped_existing_email: 'Lead já tinha e-mail',
+    skipped_existing_phone: 'Lead já tinha telefone',
     failed_missing_domain: 'Sem domínio para validar',
-    failed: 'Sem e-mail válido',
+    failed_no_candidate: 'Sem candidato de telefone',
+    failed_existing_phone: 'Lead já tinha telefone',
+    failed: 'Sem candidato válido',
     no_change: 'Sem mudança'
   }
   return {

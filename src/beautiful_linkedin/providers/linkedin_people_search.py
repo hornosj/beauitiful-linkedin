@@ -32,6 +32,7 @@ from bs4 import BeautifulSoup, Tag
 from beautiful_linkedin.cookie_resolver import resolve_linkedin_li_at_cookie
 from beautiful_linkedin.models import CompanyInput, Lead
 from beautiful_linkedin.processing.company_size import parse_company_size_from_html
+from beautiful_linkedin.processing.deduplicator import global_dedupe_key
 from beautiful_linkedin.processing.lead_extractor import (
     NO_RELATED_KEYWORDS_NOTE,
     match_target_title,
@@ -175,12 +176,22 @@ class LinkedInPeopleSearchProvider(LeadProvider):
         fetcher: PeopleListFetcher | None = None,
         options: PeopleSearchOptions | None = None,
         progress_store: ProgressStore | None = None,
+        exclude_lead_keys: set[str] | None = None,
+        on_lead_found: "Callable[[Lead], None] | None" = None,
     ) -> None:
         self.cookie = cookie
         self.cookie_browser = cookie_browser
         self.options = options or PeopleSearchOptions()
         self._fetcher = fetcher
         self._progress_store = progress_store
+        # Cross-table dedup: global identity keys of leads already saved. Cards
+        # whose key is in this set are ignored (not counted toward
+        # ``max_results``) so the loop keeps clicking until it fills the target
+        # with fresh leads. Injected by the runner after construction.
+        self.exclude_lead_keys: set[str] = set(exclude_lead_keys or set())
+        # Real-time feedback: invoked with each accepted lead the moment it is
+        # extracted during scrolling, so the UI can show progress live.
+        self.on_lead_found: "Callable[[Lead], None] | None" = on_lead_found
 
     def _effective_scrolls(self, max_results: int) -> int:
         """How many load-more iterations the fetcher should run.
@@ -200,6 +211,12 @@ class LinkedInPeopleSearchProvider(LeadProvider):
         cards = max(1, int(self.options.cards_per_cycle or 1))
         wanted = max(1, int(max_results))
         derived = math.ceil(wanted / cards) + 1
+        # When a global-exclusion set is active, a large fraction of the cards
+        # we scroll past may already be saved. Dig deeper (roughly double the
+        # budget) so the loop can still reach ``max_results`` fresh leads
+        # before the cap. The cap stays the hard ceiling either way.
+        if self.exclude_lead_keys:
+            derived = derived * 2 + 1
         cap = max(1, int(self.options.max_scrolls_cap or 1))
         return min(derived, cap)
 
@@ -361,6 +378,9 @@ class LinkedInPeopleSearchProvider(LeadProvider):
                         company, card, True, requested_title_label
                     )
                     if lead is not None:
+                        if self._is_globally_known(lead):
+                            progress.record_rejection(card.profile_url)
+                            continue
                         if (
                             title_terms
                             and not include_uncertain
@@ -373,6 +393,7 @@ class LinkedInPeopleSearchProvider(LeadProvider):
                             target_matched_count += 1
                         _annotate_lead(lead, progress, card.profile_url, position_zero + 1)
                         accepted_leads.append(lead)
+                        self._emit_lead_found(lead)
                         if target_matched_count >= max_results:
                             return False
                     continue
@@ -386,6 +407,13 @@ class LinkedInPeopleSearchProvider(LeadProvider):
                     company, card, True, requested_title_label
                 )
                 if lead is None:
+                    progress.record_rejection(card.profile_url)
+                    continue
+
+                # Global cross-table dedup: drop leads already saved elsewhere
+                # without counting them toward ``max_results`` — the loop then
+                # keeps clicking to find genuinely new people.
+                if self._is_globally_known(lead):
                     progress.record_rejection(card.profile_url)
                     continue
 
@@ -410,6 +438,7 @@ class LinkedInPeopleSearchProvider(LeadProvider):
                 )
                 _annotate_lead(lead, progress, card.profile_url, position_zero + 1)
                 accepted_leads.append(lead)
+                self._emit_lead_found(lead)
                 if target_matched_count >= max_results:
                     return False  # tell fetcher to stop clicking
 
@@ -444,6 +473,26 @@ class LinkedInPeopleSearchProvider(LeadProvider):
             return []
 
         return accepted_leads
+
+    # ------------------------------------------------------------------
+    # Global dedup + live feedback helpers
+    # ------------------------------------------------------------------
+
+    def _is_globally_known(self, lead: Lead) -> bool:
+        """True when this lead was already saved in some other table."""
+        if not self.exclude_lead_keys:
+            return False
+        key = global_dedupe_key(lead)
+        return key is not None and key in self.exclude_lead_keys
+
+    def _emit_lead_found(self, lead: Lead) -> None:
+        """Push a freshly accepted lead to the live-feedback sink, if any."""
+        if self.on_lead_found is None:
+            return
+        try:
+            self.on_lead_found(lead)
+        except Exception as exc:  # pragma: no cover - sink best-effort
+            logger.debug("linkedin_people_search: on_lead_found falhou: %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -707,12 +756,18 @@ def _default_fetcher(options: PeopleSearchOptions) -> PeopleListFetcher | None:
         and getattr(options, "cdp_endpoint", "")
         and probe_cdp_endpoint(options.cdp_endpoint)
     ):
+        # Embedded Electron browser uses port 9223; reuse the existing page
+        # instead of opening a new tab (avoid navigating away from the page
+        # that the app already loaded via embeddedBrowser.prepare()).
+        embedded_port = ":9223"
+        reuse = embedded_port in options.cdp_endpoint
         logger.info(
-            "linkedin_people_search: usando CDP em %s (Chrome aberto). "
-            "Você não será deslogado.",
+            "linkedin_people_search: usando CDP em %s (%s). %s",
             options.cdp_endpoint,
+            "browser embutido no app" if reuse else "Chrome aberto",
+            "Página existente será reaproveitada." if reuse else "Você não será deslogado.",
         )
-        return CDPPeopleFetcher(options.cdp_endpoint, options)
+        return CDPPeopleFetcher(options.cdp_endpoint, options, reuse_page=reuse)
 
     # 2) Stealthy out-of-process fetcher.
     fetcher = _try_build_scrapling_fetcher(options)
@@ -799,6 +854,32 @@ class _ScraplingPeopleFetcher:
         return str(html)
 
 
+def _find_page_by_url(browser: Any, url_hint: str) -> Any | None:
+    """Return the first open page whose URL contains *url_hint*, or None.
+
+    Used by CDPPeopleFetcher in reuse_page mode to find the LinkedIn page
+    that was already navigated by the Electron embedded browser, avoiding
+    the need to open (and navigate) a new tab.
+    """
+    contexts = getattr(browser, "contexts", []) or []
+    logger.debug(
+        "[EmbeddedCDP] _find_page_by_url: hint=%r | %d contexto(s) encontrado(s)",
+        url_hint,
+        len(contexts),
+    )
+    for i, ctx in enumerate(contexts):
+        pages = getattr(ctx, "pages", []) or []
+        logger.debug("[EmbeddedCDP] contexto[%d]: %d página(s)", i, len(pages))
+        for j, page in enumerate(pages):
+            page_url = getattr(page, "url", "") or ""
+            logger.debug("[EmbeddedCDP]   página[%d][%d]: %s", i, j, page_url)
+            if url_hint in page_url:
+                logger.info("[EmbeddedCDP] Página encontrada: contexto[%d] página[%d] → %s", i, j, page_url)
+                return page
+    logger.warning("[EmbeddedCDP] Nenhuma página com hint=%r encontrada entre os contextos", url_hint)
+    return None
+
+
 class CDPPeopleFetcher:
     """Connect to the user's already-running Chrome via remote debugging.
 
@@ -811,6 +892,11 @@ class CDPPeopleFetcher:
 
     Requirements: Chrome must have been launched with
     ``--remote-debugging-port=9222`` (or whatever endpoint is configured).
+
+    When *reuse_page* is True (embedded browser mode), the fetcher finds
+    an existing LinkedIn page instead of opening a new one and skips the
+    initial ``goto`` since the Electron host already navigated there.
+    The page is also not closed at the end (it belongs to the host window).
     """
 
     needs_li_at = False
@@ -820,10 +906,12 @@ class CDPPeopleFetcher:
         endpoint: str,
         options: PeopleSearchOptions,
         connect: Callable[[str], Any] | None = None,
+        reuse_page: bool = False,
     ) -> None:
         self._endpoint = endpoint
         self._options = options
         self._connect = connect
+        self._reuse_page = reuse_page
 
     def fetch_listing(self, url: str, *, li_at: str, scrolls: int) -> str:
         return self._run(url, max_clicks=scrolls, on_step=None)
@@ -845,26 +933,68 @@ class CDPPeopleFetcher:
         max_clicks: int,
         on_step: Callable[[int, str], bool] | None,
     ) -> str:
+        mode_label = "EMBUTIDO (reuse_page)" if self._reuse_page else "CHROME EXTERNO"
+        logger.info(
+            "[CDPPeopleFetcher] _run iniciado. modo=%s endpoint=%s url=%s max_clicks=%d",
+            mode_label,
+            self._endpoint,
+            url,
+            max_clicks,
+        )
         connect = self._connect or self._default_connect
         try:
             browser = connect(self._endpoint)
+            logger.info("[CDPPeopleFetcher] Conectado ao CDP em %s ✓", self._endpoint)
         except Exception as exc:
+            logger.error("[CDPPeopleFetcher] FALHA ao conectar em %s: %s", self._endpoint, exc)
             raise LinkedInAuthError(
-                f"Não consegui conectar ao Chrome via CDP em {self._endpoint}. "
-                "Inicie o Chrome com --remote-debugging-port=9222."
+                f"Não consegui conectar ao browser via CDP em {self._endpoint}. "
+                "Verifique se o app está rodando ou inicie o Chrome com --remote-debugging-port=9222."
             ) from exc
 
-        contexts = list(getattr(browser, "contexts", []) or [])
-        if not contexts:
-            raise LinkedInAuthError(
-                "Chrome conectado mas sem contextos abertos. Abra uma janela e tente de novo."
-            )
-        context = contexts[0]
-        page = context.new_page()
+        page_owned = not self._reuse_page
+        if self._reuse_page:
+            logger.info("[CDPPeopleFetcher] Modo embutido: buscando página existente com 'linkedin.com'")
+            page = _find_page_by_url(browser, "linkedin.com")
+            if page is None:
+                logger.warning(
+                    "[CDPPeopleFetcher] Página do LinkedIn NÃO encontrada no browser embutido. "
+                    "Abrindo nova aba como fallback."
+                )
+                contexts = list(getattr(browser, "contexts", []) or [])
+                if not contexts:
+                    raise LinkedInAuthError(
+                        "Browser conectado mas sem contextos. Tente reabrir o app."
+                    )
+                page = contexts[0].new_page()
+                page_owned = True
+            else:
+                logger.info("[CDPPeopleFetcher] Página reutilizada. URL atual: %s", getattr(page, "url", "?"))
+        else:
+            contexts = list(getattr(browser, "contexts", []) or [])
+            logger.info("[CDPPeopleFetcher] %d contexto(s) disponível(is). Abrindo nova página.", len(contexts))
+            if not contexts:
+                raise LinkedInAuthError(
+                    "Chrome conectado mas sem contextos abertos. Abra uma janela e tente de novo."
+                )
+            context = contexts[0]
+            page = context.new_page()
+
         try:
+            # Always navigate to the full keyword URL, even in reuse_page mode.
+            # Electron's prepare() loads /people/ without ?keywords= — Python must
+            # navigate to the keyword-filtered URL or the People tab shows everyone.
+            if self._reuse_page:
+                page.set_default_timeout(15000)
+            logger.info(
+                "[CDPPeopleFetcher] Navegando para: %s (reuse_page=%s)",
+                url, self._reuse_page,
+            )
             try:
                 page.goto(url, wait_until="domcontentloaded")
+                logger.info("[CDPPeopleFetcher] page.goto() concluído. URL final: %s", getattr(page, "url", "?"))
             except Exception as exc:
+                logger.error("[CDPPeopleFetcher] page.goto() FALHOU: %s", exc)
                 raise classify_playwright_error(exc) from exc
 
             final_url = getattr(page, "url", "") or ""
@@ -872,24 +1002,44 @@ class CDPPeopleFetcher:
                 marker in final_url
                 for marker in ("/login", "/authwall", "/checkpoint", "/uas/login")
             ):
+                logger.error("[CDPPeopleFetcher] AUTHWALL/LOGIN detectado. URL: %s", final_url)
                 raise LinkedInAuthError(
-                    f"Você não está logado no LinkedIn neste Chrome (URL final: {final_url}). "
-                    "Faça login na sua janela do Chrome e tente de novo."
+                    f"Não está logado no LinkedIn (URL: {final_url}). "
+                    "Faça login e tente de novo."
                 )
 
+            logger.info("[CDPPeopleFetcher] Iniciando _expand_results. max_clicks=%d", max_clicks)
             _human_delay(self._options)
-            _expand_results(
-                page,
-                self._options,
-                max_iterations=max(0, max_clicks),
-                on_step=on_step,
+            if self._reuse_page:
+                _expand_results_dom(
+                    page,
+                    self._options,
+                    max_iterations=max(0, max_clicks),
+                    on_step=on_step,
+                )
+            else:
+                _expand_results(
+                    page,
+                    self._options,
+                    max_iterations=max(0, max_clicks),
+                    on_step=on_step,
+                )
+            html = _page_html_snapshot(page)
+            logger.info(
+                "[CDPPeopleFetcher] _expand_results concluído. HTML coletado: %d bytes. page_owned=%s",
+                len(html),
+                page_owned,
             )
-            return page.content()
+            return html
         finally:
-            try:
-                page.close()
-            except Exception:
-                pass
+            if page_owned:
+                logger.info("[CDPPeopleFetcher] Fechando página (page_owned=True)")
+                try:
+                    page.close()
+                except Exception:
+                    pass
+            else:
+                logger.info("[CDPPeopleFetcher] Página NÃO fechada (pertence ao browser embutido)")
 
     def _default_connect(self, endpoint: str) -> Any:
         from playwright.sync_api import sync_playwright
@@ -1017,6 +1167,26 @@ def _human_delay(opts: PeopleSearchOptions) -> None:
 # Load-more automation
 # ---------------------------------------------------------------------------
 
+
+def _page_html_snapshot(page: Any) -> str:
+    """Return the current DOM HTML with a bounded first attempt.
+
+    Electron's CDP target can leave Playwright's ``page.content()`` waiting
+    long enough for the provider-level timeout to fire. Evaluating the root
+    element gives us the same parser input with an explicit timeout.
+    """
+    try:
+        html = page.locator("html").evaluate("(el) => el.outerHTML", timeout=5000)
+        return str(html or "")
+    except Exception as exc:
+        logger.debug("linkedin_people_search: snapshot via locator falhou: %s", exc)
+    try:
+        return str(page.content() or "")
+    except Exception as exc:
+        logger.debug("linkedin_people_search: snapshot via page.content falhou: %s", exc)
+        return ""
+
+
 _LOAD_MORE_SELECTORS: tuple[str, ...] = (
     "button.scaffold-finite-scroll__load-button",
     "button[aria-label*='Exibir mais resultados' i]",
@@ -1057,10 +1227,11 @@ def _expand_results(
     # Initial step (before any click) — let the caller inspect the first
     # render and bail early if it already has what it needs.
     if on_step is not None:
-        try:
-            initial_html = page.content() or ""
-        except Exception:
-            initial_html = ""
+        initial_html = _page_html_snapshot(page)
+        logger.info(
+            "linkedin_people_search: snapshot inicial capturado (%d bytes).",
+            len(initial_html),
+        )
         if not on_step(0, initial_html):
             return
 
@@ -1069,8 +1240,13 @@ def _expand_results(
 
     clicks_done = 0
     consecutive_no_growth = 0
-    for _ in range(max_iterations):
+    for iteration in range(max_iterations):
         before = _count_cards(page)
+        logger.info(
+            "linkedin_people_search: expand iteration=%d before_cards=%d.",
+            iteration + 1,
+            before,
+        )
         # Sometimes the load-more button is below the viewport and needs a
         # scroll first to materialize in the DOM.
         try:
@@ -1086,6 +1262,11 @@ def _expand_results(
             # moment, then re-check.
             _human_delay(opts)
             after = _count_cards(page)
+            logger.info(
+                "linkedin_people_search: sem botão visível; after_cards=%d no_growth=%d.",
+                after,
+                consecutive_no_growth,
+            )
             if after > before:
                 consecutive_no_growth = 0
                 continue
@@ -1117,11 +1298,17 @@ def _expand_results(
             except Exception:
                 pass
         if not clicked:
+            logger.info("linkedin_people_search: botão load-more não clicável; encerrando expansão.")
             break
 
         _wait_for_card_growth(page, before, timeout_seconds=6.5)
         _human_delay(opts)
         after = _count_cards(page)
+        logger.info(
+            "linkedin_people_search: clique=%d concluído; after_cards=%d.",
+            clicks_done + 1,
+            after,
+        )
         if after <= before:
             consecutive_no_growth += 1
             if consecutive_no_growth >= 2:
@@ -1130,12 +1317,127 @@ def _expand_results(
             consecutive_no_growth = 0
         clicks_done += 1
         if on_step is not None:
-            try:
-                snapshot = page.content() or ""
-            except Exception:
-                snapshot = ""
+            snapshot = _page_html_snapshot(page)
+            logger.info(
+                "linkedin_people_search: snapshot pós-clique=%d capturado (%d bytes).",
+                clicks_done,
+                len(snapshot),
+            )
             if not on_step(clicks_done, snapshot):
                 return
+
+
+def _expand_results_dom(
+    page: Any,
+    opts: PeopleSearchOptions,
+    *,
+    max_iterations: int,
+    on_step: Callable[[int, str], bool] | None = None,
+) -> None:
+    """Expand an embedded Electron CDP page using DOM APIs only.
+
+    The in-app WebContentsView may be hidden or unfocused while Python is
+    scraping it. Playwright's mouse/actionability path can stall in that
+    state, so the embedded mode uses direct DOM scroll/click operations.
+    """
+    if on_step is not None:
+        initial_html = _page_html_snapshot(page)
+        logger.info(
+            "linkedin_people_search: embedded snapshot inicial (%d bytes).",
+            len(initial_html),
+        )
+        if not on_step(0, initial_html):
+            return
+
+    if max_iterations <= 0:
+        return
+
+    for click_index in range(1, max_iterations + 1):
+        before = _count_cards_dom(page)
+        logger.info(
+            "linkedin_people_search: embedded expand click=%d before_cards=%d.",
+            click_index,
+            before,
+        )
+        _scroll_people_page_dom(page)
+        _human_delay(opts)
+        clicked = _click_load_more_dom(page)
+        if not clicked:
+            logger.info("linkedin_people_search: embedded sem botão load-more; encerrando.")
+            break
+        _wait_for_card_growth_dom(page, before, timeout_seconds=6.5)
+        _human_delay(opts)
+        after = _count_cards_dom(page)
+        logger.info(
+            "linkedin_people_search: embedded click=%d after_cards=%d.",
+            click_index,
+            after,
+        )
+        if on_step is not None:
+            snapshot = _page_html_snapshot(page)
+            logger.info(
+                "linkedin_people_search: embedded snapshot pós-clique=%d (%d bytes).",
+                click_index,
+                len(snapshot),
+            )
+            if not on_step(click_index, snapshot):
+                return
+        if after <= before:
+            break
+
+
+def _count_cards_dom(page: Any) -> int:
+    try:
+        count = page.evaluate(
+            """() => document.querySelectorAll(
+              "li.org-people-profile-card__profile-card-spacing, li[class*='org-people-profile-card'], div[class*='org-people-profile-card']"
+            ).length"""
+        )
+        return int(count or 0)
+    except Exception as exc:
+        logger.debug("linkedin_people_search: DOM count falhou: %s", exc)
+        return _count_cards(page)
+
+
+def _scroll_people_page_dom(page: Any) -> None:
+    try:
+        page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)")
+    except Exception as exc:
+        logger.debug("linkedin_people_search: DOM scroll falhou: %s", exc)
+
+
+def _click_load_more_dom(page: Any) -> bool:
+    try:
+        clicked = page.evaluate(
+            """() => {
+              const needles = [
+                'exibir mais resultados',
+                'show more results',
+                'mostrar mais resultados'
+              ];
+              const buttons = Array.from(document.querySelectorAll('button'));
+              const button = buttons.find((el) => {
+                const label = `${el.getAttribute('aria-label') || ''} ${el.textContent || ''}`.toLowerCase();
+                return needles.some((needle) => label.includes(needle));
+              });
+              if (!button) return false;
+              button.scrollIntoView({ block: 'center' });
+              button.click();
+              return true;
+            }"""
+        )
+        return bool(clicked)
+    except Exception as exc:
+        logger.debug("linkedin_people_search: DOM click load-more falhou: %s", exc)
+        return False
+
+
+def _wait_for_card_growth_dom(page: Any, baseline: int, *, timeout_seconds: float) -> None:
+    deadline = time.time() + max(0.0, timeout_seconds)
+    while time.time() < deadline:
+        if _count_cards_dom(page) > baseline:
+            return
+        time.sleep(0.25)
 
 
 def _find_load_more_button(page: Any) -> Any | None:

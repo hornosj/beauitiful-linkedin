@@ -1,5 +1,43 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
+export interface EmbeddedPrepareResult {
+  ready: boolean
+  url: string | null
+  onAuthwall: boolean
+  needsLogin?: boolean
+  error: string | null
+}
+
+export interface EmbeddedStatus {
+  url: string | null
+  onAuthwall: boolean
+  visible: boolean
+}
+
+export interface EmbeddedLoginResult {
+  ready: boolean
+  url: string | null
+  error: string | null
+}
+
+export interface EmbeddedBounds {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+export interface EmbeddedBrowserBridge {
+  prepare(liAt: string, url: string): Promise<EmbeddedPrepareResult>
+  openLogin(): Promise<EmbeddedLoginResult>
+  show(bounds?: EmbeddedBounds): Promise<void>
+  hide(): Promise<void>
+  status(): Promise<EmbeddedStatus>
+  getCdpEndpoint(): Promise<{ endpoint: string; port: number }>
+  checkSession(): Promise<{ hasLiAt: boolean; hasJsessionid: boolean }>
+  awaitLogin(timeoutMs?: number): Promise<boolean>
+}
+
 export interface BeautifulLinkedInBridge {
   getBaseUrl(): Promise<string | null>
   getStatus(): Promise<{
@@ -9,6 +47,7 @@ export interface BeautifulLinkedInBridge {
     error: string | null
   }>
   chrome: ChromeBridge
+  embeddedBrowser?: EmbeddedBrowserBridge
 }
 
 export interface ChromeBridge {
@@ -40,10 +79,22 @@ const chrome: ChromeBridge = {
   listTabs: () => ipcRenderer.invoke('chrome:list-tabs')
 }
 
+const embeddedBrowser: EmbeddedBrowserBridge = {
+  prepare: (liAt, url) => ipcRenderer.invoke('embedded:prepare', liAt, url),
+  openLogin: () => ipcRenderer.invoke('embedded:open-login'),
+  show: (bounds) => ipcRenderer.invoke('embedded:show', bounds),
+  hide: () => ipcRenderer.invoke('embedded:hide'),
+  status: () => ipcRenderer.invoke('embedded:status'),
+  getCdpEndpoint: () => ipcRenderer.invoke('embedded:cdp-endpoint'),
+  checkSession: () => ipcRenderer.invoke('embedded:check-session'),
+  awaitLogin: (timeoutMs) => ipcRenderer.invoke('embedded:await-login', timeoutMs)
+}
+
 const bridge: BeautifulLinkedInBridge = {
   getBaseUrl: () => ipcRenderer.invoke('sidecar:get-base-url'),
   getStatus: () => ipcRenderer.invoke('sidecar:status'),
-  chrome
+  chrome,
+  embeddedBrowser
 }
 
 contextBridge.exposeInMainWorld('beautifulLinkedIn', bridge)

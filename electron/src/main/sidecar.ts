@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { once } from 'node:events'
-import { delimiter, join } from 'node:path'
+import { delimiter, join, posix, win32 } from 'node:path'
 import { parseBootStdout, READY_TOKEN } from './sidecar-protocol'
 
 export interface SidecarHandle {
@@ -12,6 +12,8 @@ export interface SidecarHandle {
 
 export interface StartSidecarOptions {
   pythonExecutable?: string
+  sidecarExecutablePath?: string
+  projectRoot?: string
   cwd?: string
   env?: NodeJS.ProcessEnv
   startTimeoutMs?: number
@@ -25,6 +27,11 @@ interface PythonCommand {
   args: string[]
 }
 
+interface SidecarCommand {
+  executable: string
+  args: string[]
+}
+
 export function buildPythonCommands(
   explicitExecutable?: string,
   platform: NodeJS.Platform = process.platform
@@ -33,6 +40,35 @@ export function buildPythonCommands(
   const commands: PythonCommand[] = [{ executable: 'python', args: [] }]
   if (platform === 'win32') commands.push({ executable: 'py', args: ['-3'] })
   return commands
+}
+
+export function buildSidecarCommands(options: {
+  explicitPythonExecutable?: string
+  packagedSidecarExecutable?: string
+  platform?: NodeJS.Platform
+} = {}): SidecarCommand[] {
+  if (options.packagedSidecarExecutable) {
+    return [{ executable: options.packagedSidecarExecutable, args: [] }]
+  }
+
+  return buildPythonCommands(options.explicitPythonExecutable, options.platform).map((command) => ({
+    executable: command.executable,
+    args: [...command.args, '-m', 'beautiful_linkedin.server']
+  }))
+}
+
+export function resolvePackagedSidecarExecutable(
+  isPackaged: boolean,
+  resourcesPath: string,
+  platform: NodeJS.Platform = process.platform
+): string | undefined {
+  if (!isPackaged) return undefined
+  const executableName =
+    platform === 'win32'
+      ? 'beautiful-linkedin-sidecar.exe'
+      : 'beautiful-linkedin-sidecar'
+  const pathApi = platform === 'win32' ? win32 : posix
+  return pathApi.join(resourcesPath, 'sidecar', executableName)
 }
 
 export const DEFAULT_LOCAL_SEARXNG_URL = 'http://127.0.0.1:8080'
@@ -54,9 +90,10 @@ export function buildSidecarEnv(projectRoot: string | undefined, env: NodeJS.Pro
 }
 
 export async function startSidecar(options: StartSidecarOptions = {}): Promise<SidecarHandle> {
-  const commands = buildPythonCommands(
-    options.pythonExecutable ?? process.env.BEAUTIFUL_LINKEDIN_PYTHON
-  )
+  const commands = buildSidecarCommands({
+    explicitPythonExecutable: options.pythonExecutable ?? process.env.BEAUTIFUL_LINKEDIN_PYTHON,
+    packagedSidecarExecutable: options.sidecarExecutablePath
+  })
   const errors: string[] = []
   for (const command of commands) {
     try {
@@ -71,12 +108,12 @@ export async function startSidecar(options: StartSidecarOptions = {}): Promise<S
 }
 
 async function startSidecarWithCommand(
-  command: PythonCommand,
+  command: SidecarCommand,
   options: StartSidecarOptions
 ): Promise<SidecarHandle> {
-  const child = spawn(command.executable, [...command.args, '-m', 'beautiful_linkedin.server'], {
-    cwd: options.cwd,
-    env: buildSidecarEnv(options.cwd, { ...process.env, ...(options.env ?? {}) }),
+  const child = spawn(command.executable, command.args, {
+    cwd: options.cwd ?? options.projectRoot,
+    env: buildSidecarEnv(options.projectRoot, { ...process.env, ...(options.env ?? {}) }),
     stdio: ['ignore', 'pipe', 'pipe']
   })
 

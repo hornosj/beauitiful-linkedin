@@ -299,6 +299,47 @@ def test_provider_respects_max_results():
     assert len(leads) == 2
 
 
+def test_provider_skips_globally_known_leads_and_emits_found():
+    """Cross-table dedup: a lead whose global key is excluded must not be
+    returned, and only fresh leads fire the live-feedback callback."""
+    from beautiful_linkedin.processing.deduplicator import compute_global_key
+
+    combined_url = (
+        "https://www.linkedin.com/company/nubank/people/?keywords=marketing"
+    )
+    fetcher = FakeFetcher({combined_url: LINKEDIN_PEOPLE_HTML_PRIMARY})
+
+    ana_key = compute_global_key(
+        linkedin_url="https://www.linkedin.com/in/ana-silva-marketing/",
+        person_name=None,
+        company_name=None,
+        title=None,
+    )
+    emitted: list[str] = []
+
+    provider = LinkedInPeopleSearchProvider(
+        cookie="AQED" + "x" * 180,
+        cookie_browser="none",
+        fetcher=fetcher,
+        options=PeopleSearchOptions(scrolls=0),
+        exclude_lead_keys={ana_key},
+        on_lead_found=lambda lead: emitted.append(lead.linkedin_url or ""),
+    )
+    company = CompanyInput(
+        company_name="Nubank",
+        linkedin_url="https://www.linkedin.com/company/nubank/",
+        titles=["marketing"],
+    )
+
+    leads = provider.find_leads(company, max_results=10, include_uncertain=True)
+    urls = [lead.linkedin_url for lead in leads]
+
+    assert "https://www.linkedin.com/in/ana-silva-marketing/" not in urls
+    assert "https://www.linkedin.com/in/joao-growth/" in urls
+    # The live-feedback sink only sees the fresh lead.
+    assert emitted == ["https://www.linkedin.com/in/joao-growth/"]
+
+
 def test_provider_swallows_fetcher_failure():
     class BoomFetcher:
         def fetch_listing(self, url, *, li_at, scrolls):
@@ -571,6 +612,71 @@ def test_cdp_fetcher_raises_auth_error_when_not_logged_in():
         fetcher.fetch_listing(
             "https://www.linkedin.com/company/x/people/", li_at="", scrolls=0
         )
+
+
+def test_page_html_snapshot_prefers_bounded_locator_evaluate():
+    from beautiful_linkedin.providers.linkedin_people_search import _page_html_snapshot
+
+    calls: list[tuple[str, str]] = []
+
+    class FakeLocator:
+        def evaluate(self, expression, *, timeout=None):
+            calls.append(("evaluate", str(timeout)))
+            assert "outerHTML" in expression
+            return "<html><body>via evaluate</body></html>"
+
+    class FakePage:
+        def locator(self, selector):
+            calls.append(("locator", selector))
+            return FakeLocator()
+
+        def content(self):
+            raise AssertionError("content() should not be used when locator evaluate works")
+
+    assert _page_html_snapshot(FakePage()) == "<html><body>via evaluate</body></html>"
+    assert calls == [("locator", "html"), ("evaluate", "5000")]
+
+
+def test_embedded_dom_expansion_uses_evaluate_instead_of_mouse_actions():
+    from beautiful_linkedin.providers.linkedin_people_search import (
+        PeopleSearchOptions,
+        _expand_results_dom,
+    )
+
+    actions: list[str] = []
+
+    class FakePage:
+        def __init__(self) -> None:
+            self.clicks = 0
+
+        def evaluate(self, expression):
+            if "querySelectorAll" in expression and "org-people-profile-card" in expression:
+                actions.append("count")
+                return self.clicks + 1
+            if "window.scrollTo" in expression:
+                actions.append("scroll")
+                return None
+            if "button" in expression and ".click()" in expression:
+                actions.append("click")
+                self.clicks += 1
+                return True
+            raise AssertionError(expression)
+
+        @property
+        def mouse(self):
+            raise AssertionError("embedded DOM expansion must not use mouse")
+
+    steps: list[int] = []
+    _expand_results_dom(
+        FakePage(),
+        PeopleSearchOptions(min_delay_seconds=0, max_delay_seconds=0),
+        max_iterations=2,
+        on_step=lambda click, html: steps.append(click) or True,
+    )
+
+    assert steps == [0, 1, 2]
+    assert "scroll" in actions
+    assert "click" in actions
 
 
 def test_default_fetcher_prefers_cdp_when_endpoint_alive(monkeypatch):

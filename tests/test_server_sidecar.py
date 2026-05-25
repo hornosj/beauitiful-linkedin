@@ -1,4 +1,5 @@
 import io
+import logging
 import socket
 import subprocess
 import sys
@@ -32,6 +33,19 @@ def test_announce_prints_protocol_line(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(sidecar.sys, "stdout", buffer)
     sidecar.announce(39712)
     assert buffer.getvalue().strip() == f"{sidecar.PORT_ENV_VAR}=39712"
+
+
+def test_configure_logging_enables_info_logs_for_sidecar() -> None:
+    root = logging.getLogger()
+    previous_level = root.level
+    previous_handlers = list(root.handlers)
+    try:
+        sidecar.configure_logging()
+        assert root.level == logging.INFO
+        assert logging.getLogger("beautiful_linkedin").isEnabledFor(logging.INFO)
+    finally:
+        root.handlers[:] = previous_handlers
+        root.setLevel(previous_level)
 
 
 def _free_port() -> int:

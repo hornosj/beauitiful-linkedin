@@ -10,6 +10,7 @@ import {
 
 import { ApiClient } from '../../../shared/api'
 import type {
+  InternalEnrichField,
   InternalEnrichStreamDoneEvent,
   InternalEnrichStreamEvent
 } from '../../../shared/types'
@@ -32,6 +33,7 @@ export interface EnrichmentRunMeta {
   tableId: string
   tableName: string
   startedAt: number
+  fields: InternalEnrichField
 }
 
 export interface EnrichmentRunState extends ProgressState {
@@ -50,6 +52,18 @@ export interface StartEnrichmentArgs {
   leadRefs?: string[]
   totalLeads: number
   companyDomain?: string | null
+  /**
+   * Which contact pipelines to run. Defaults to ``'email'`` so existing
+   * callers behave exactly as before. Use ``'phone'`` to only descend
+   * the phone discovery pipeline (Bucket A + B + WhatsApp) or
+   * ``'both'`` to run e-mail and phone sequentially in the same call.
+   */
+  fields?: InternalEnrichField
+  /**
+   * Restrict the phone pipeline to specific sources (e.g. ``['telegram_group']``).
+   * Forwarded as-is to the backend; ``undefined`` keeps the full pipeline.
+   */
+  phoneSources?: string[]
 }
 
 export interface EnrichmentRunnerContextValue {
@@ -108,7 +122,8 @@ export function EnrichmentRunnerProvider(props: ProviderProps) {
       const meta: EnrichmentRunMeta = {
         tableId: args.tableId,
         tableName: args.tableName,
-        startedAt: Date.now()
+        startedAt: Date.now(),
+        fields: args.fields ?? 'email'
       }
       const controller = new AbortController()
       abortRef.current = controller
@@ -125,13 +140,15 @@ export function EnrichmentRunnerProvider(props: ProviderProps) {
 
       void (async () => {
         try {
+          const fields: InternalEnrichField = meta.fields
           const done = await client.streamInternalEnrich(
             args.tableId,
             {
               lead_refs: args.leadRefs,
-              fields: 'email',
+              fields,
               confirmed: true,
-              company_domain: args.companyDomain ?? null
+              company_domain: args.companyDomain ?? null,
+              phone_sources: args.phoneSources
             },
             applyEvent,
             controller.signal
@@ -150,11 +167,20 @@ export function EnrichmentRunnerProvider(props: ProviderProps) {
             }
           })
           const s = done.summary
-          onSuccess?.(
-            `Enriquecimento concluído: ${s.enriched_leads} novo(s), ` +
-              `${s.skipped_existing_email} já tinha e-mail, ` +
-              `${s.failed_missing_domain} sem domínio.`
-          )
+          const parts: string[] = []
+          if (fields === 'email' || fields === 'both') {
+            parts.push(`${s.enriched_leads} e-mail(s) novo(s)`)
+            parts.push(`${s.skipped_existing_email} já tinha e-mail`)
+            parts.push(`${s.failed_missing_domain} sem domínio`)
+          }
+          if (fields === 'phone' || fields === 'both') {
+            parts.push(`${s.enriched_phone_leads ?? 0} telefone(s) novo(s)`)
+            parts.push(`${s.skipped_existing_phone ?? 0} já tinha telefone`)
+            parts.push(
+              `${s.failed_no_phone_candidate ?? 0} sem candidato de telefone`
+            )
+          }
+          onSuccess?.(`Enriquecimento concluído: ${parts.join(' · ')}.`)
         } catch (err) {
           if (controller.signal.aborted) {
             setRun((prev) =>

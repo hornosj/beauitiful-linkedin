@@ -1,7 +1,11 @@
 import { app, BrowserWindow, ipcMain, shell } from 'electron'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
-import { startSidecar, type SidecarHandle } from './sidecar'
+import {
+  resolvePackagedSidecarExecutable,
+  startSidecar,
+  type SidecarHandle
+} from './sidecar'
 import {
   probeCdp,
   isChromeRunning,
@@ -12,6 +16,13 @@ import {
   openUrl,
   listTabs
 } from './chrome'
+import { embeddedManager, type EmbeddedBounds } from './embedded-browser'
+
+// Expose Electron's Chromium as a CDP target on a dedicated port (9223).
+// This is loopback-only and lets the Python sidecar connect to the in-app
+// WebContentsView without spawning a separate Chrome window.
+app.commandLine.appendSwitch('remote-debugging-port', '9223')
+app.commandLine.appendSwitch('remote-debugging-address', '127.0.0.1')
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const isDev = !!process.env.ELECTRON_RENDERER_URL
@@ -20,12 +31,66 @@ let sidecar: SidecarHandle | null = null
 let mainWindow: BrowserWindow | null = null
 let sidecarError: string | null = null
 
+function packagedSidecarExecutable(): string | undefined {
+  return resolvePackagedSidecarExecutable(
+    app.isPackaged,
+    process.resourcesPath,
+    process.platform
+  )
+}
+
 async function bootSidecar(): Promise<void> {
   const projectRoot = resolve(__dirname, '..', '..', '..')
+  const isPackaged = app.isPackaged
   sidecarError = null
   sidecar = await startSidecar({
-    cwd: projectRoot,
+    cwd: isPackaged ? app.getPath('userData') : projectRoot,
+    projectRoot: isPackaged ? undefined : projectRoot,
+    sidecarExecutablePath: packagedSidecarExecutable(),
     onLog: (line) => console.log(line)
+  })
+}
+
+function registerEmbeddedBrowserHandlers(): void {
+  ipcMain.handle('embedded:prepare', async (_event, liAt: string, url: string) => {
+    console.log('[IPC embedded:prepare] url=', url, 'liAt length=', liAt?.length ?? 0)
+    if (!mainWindow) {
+      console.error('[IPC embedded:prepare] mainWindow é null')
+      return { ready: false, url: null, onAuthwall: false, error: 'Janela não encontrada.' }
+    }
+    const result = await embeddedManager.prepare(liAt, url)
+    console.log('[IPC embedded:prepare] result=', JSON.stringify(result))
+    return result
+  })
+  ipcMain.handle('embedded:show', (_event, bounds?: EmbeddedBounds) => {
+    console.log('[IPC embedded:show] bounds=', bounds ?? 'default')
+    embeddedManager.show(bounds)
+  })
+  ipcMain.handle('embedded:open-login', () => {
+    console.log('[IPC embedded:open-login]')
+    return embeddedManager.openLogin()
+  })
+  ipcMain.handle('embedded:hide', () => {
+    console.log('[IPC embedded:hide]')
+    embeddedManager.hide()
+  })
+  ipcMain.handle('embedded:status', () => {
+    const s = embeddedManager.getStatus()
+    console.log('[IPC embedded:status]', JSON.stringify(s))
+    return s
+  })
+  ipcMain.handle('embedded:cdp-endpoint', () => {
+    console.log('[IPC embedded:cdp-endpoint] → http://127.0.0.1:9223')
+    return { endpoint: 'http://127.0.0.1:9223', port: 9223 }
+  })
+  ipcMain.handle('embedded:check-session', () => {
+    console.log('[IPC embedded:check-session]')
+    return embeddedManager.checkSession()
+  })
+  ipcMain.handle('embedded:await-login', (_event, timeoutMs?: number) => {
+    const ms = typeof timeoutMs === 'number' ? timeoutMs : 120_000
+    console.log(`[IPC embedded:await-login] timeoutMs=${ms}`)
+    return embeddedManager.awaitLogin(ms)
   })
 }
 
@@ -89,7 +154,9 @@ app.whenReady().then(async () => {
   ipcMain.handle('chrome:open-url', (_event, url: string) => openUrl(url))
   ipcMain.handle('chrome:list-tabs', () => listTabs())
 
+  registerEmbeddedBrowserHandlers()
   createWindow()
+  embeddedManager.attach(mainWindow!)
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -101,6 +168,7 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', async () => {
+  embeddedManager.destroy()
   if (sidecar) {
     await sidecar.shutdown()
     sidecar = null

@@ -11,6 +11,7 @@ env/
 .env
 build/
 dist/
+electron/release/
 *.egg-info/
 output/*
 !output/.gitkeep

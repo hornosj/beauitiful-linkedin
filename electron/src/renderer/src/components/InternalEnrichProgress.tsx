@@ -1,5 +1,6 @@
 import type {
   InternalEnrichLeadEvent,
+  InternalEnrichField,
   InternalEnrichPhase,
   InternalEnrichStreamEvent,
   InternalEnrichSummary
@@ -7,6 +8,7 @@ import type {
 
 interface Props {
   open: boolean
+  fields?: InternalEnrichField
   totalLeads: number
   running: boolean
   phase: InternalEnrichPhase | null
@@ -22,16 +24,20 @@ interface Props {
 
 const PHASE_LABEL: Record<InternalEnrichPhase, string> = {
   discovering: 'Descobrindo domínios irmãos (CT, SPF/DMARC, ccTLD)',
-  harvesting: 'Coletando e-mails publicados no site das empresas',
-  validating: 'Validando endereços (MX + SMTP)',
+  harvesting: 'Coletando contatos publicados nas páginas das empresas',
+  lookup: 'Buscando telefones individuais em SERPs públicas',
+  validating: 'Validando contatos (MX, SMTP, WhatsApp, formato)',
   completed: 'Concluído',
   cancelled: 'Cancelado'
 }
 
 const STATUS_LABEL: Record<InternalEnrichLeadEvent['status'], string> = {
-  enriched: 'novo e-mail',
+  enriched: 'novo contato',
   skipped_existing_email: 'já tinha e-mail',
+  skipped_existing_phone: 'já tinha telefone',
   failed_missing_domain: 'sem domínio',
+  failed_no_candidate: 'sem candidato',
+  failed_existing_phone: 'já tinha telefone',
   failed: 'sem candidato válido',
   no_change: 'sem mudança'
 }
@@ -39,7 +45,10 @@ const STATUS_LABEL: Record<InternalEnrichLeadEvent['status'], string> = {
 const STATUS_COLOR: Record<InternalEnrichLeadEvent['status'], string> = {
   enriched: 'var(--success)',
   skipped_existing_email: 'var(--ink-3)',
+  skipped_existing_phone: 'var(--ink-3)',
   failed_missing_domain: 'var(--warn)',
+  failed_no_candidate: 'var(--warn)',
+  failed_existing_phone: 'var(--ink-3)',
   failed: 'var(--risky)',
   no_change: 'var(--ink-3)'
 }
@@ -48,6 +57,7 @@ export default function InternalEnrichProgress(props: Props) {
   if (!props.open) return null
 
   const {
+    fields = 'email',
     totalLeads,
     running,
     phase,
@@ -83,7 +93,7 @@ export default function InternalEnrichProgress(props: Props) {
             />
             <h3>
               {running
-                ? 'Procurando e-mails profissionais'
+                ? runningTitle(fields)
                 : summary
                   ? 'Enriquecimento concluído'
                   : errorMessage
@@ -123,6 +133,7 @@ export default function InternalEnrichProgress(props: Props) {
             <ul className="enrich-lead-feed" aria-label="Últimos leads processados">
               {recentLeads.slice(0, 6).map((event, index) => {
                 const domainTrace = formatDomainTrace(event)
+                const foundContact = event.email ?? event.phone ?? null
                 return (
                   <li
                     key={`${event.lead_ref ?? event.person_name ?? 'lead'}-${index}`}
@@ -156,10 +167,10 @@ export default function InternalEnrichProgress(props: Props) {
                       className="enrich-lead-result"
                       style={{ color: STATUS_COLOR[event.status] }}
                     >
-                      {event.email ? (
+                      {foundContact ? (
                         <>
                           <span className="enrich-found-badge">Encontrado</span>
-                          <span>{event.email}</span>
+                          <span>{foundContact}</span>
                         </>
                       ) : (
                         STATUS_LABEL[event.status]
@@ -200,6 +211,12 @@ export default function InternalEnrichProgress(props: Props) {
   )
 }
 
+function runningTitle(fields: InternalEnrichField): string {
+  if (fields === 'phone') return 'Procurando telefones'
+  if (fields === 'both') return 'Procurando contatos'
+  return 'Procurando e-mails profissionais'
+}
+
 function ProgressBar(props: {
   label: string
   metric: string
@@ -230,8 +247,23 @@ function SummaryGrid(props: { summary: InternalEnrichSummary }) {
   const { summary } = props
   const stats: Array<{ label: string; value: number; tone: string }> = [
     { label: 'Novos e-mails', value: summary.enriched_leads, tone: 'success' },
+    {
+      label: 'Novos telefones',
+      value: summary.enriched_phone_leads ?? 0,
+      tone: 'success'
+    },
     { label: 'Já tinham', value: summary.skipped_existing_email, tone: 'muted' },
+    {
+      label: 'Já tinham tel.',
+      value: summary.skipped_existing_phone ?? 0,
+      tone: 'muted'
+    },
     { label: 'Sem domínio', value: summary.failed_missing_domain, tone: 'warn' },
+    {
+      label: 'Sem tel.',
+      value: summary.failed_no_phone_candidate ?? 0,
+      tone: 'warn'
+    },
     { label: 'Sem mudança', value: summary.no_change, tone: 'muted' }
   ]
   return (
@@ -247,11 +279,20 @@ function SummaryGrid(props: { summary: InternalEnrichSummary }) {
 }
 
 function buildSummaryHeadline(summary: InternalEnrichSummary): string {
-  if (summary.enriched_leads === 0) {
-    return 'Nenhum e-mail novo foi inferido. Verifique domínios e padrões.'
+  const phones = summary.enriched_phone_leads ?? 0
+  if (summary.enriched_leads === 0 && phones === 0) {
+    return 'Nenhum contato novo foi encontrado. Verifique domínios, padrões e fontes públicas.'
   }
-  const noun = summary.enriched_leads === 1 ? 'e-mail novo' : 'e-mails novos'
-  return `${summary.enriched_leads} ${noun} adicionados aos seus leads.`
+  const parts: string[] = []
+  if (summary.enriched_leads > 0) {
+    const noun = summary.enriched_leads === 1 ? 'e-mail novo' : 'e-mails novos'
+    parts.push(`${summary.enriched_leads} ${noun}`)
+  }
+  if (phones > 0) {
+    const noun = phones === 1 ? 'telefone novo' : 'telefones novos'
+    parts.push(`${phones} ${noun}`)
+  }
+  return `${parts.join(' e ')} adicionados aos seus leads.`
 }
 
 /**
@@ -300,6 +341,22 @@ export interface ProgressState {
   recentLeads: InternalEnrichLeadEvent[]
   summary: InternalEnrichSummary | null
   errorMessage: string | null
+  /**
+   * Phone pipeline progress, tracked separately from the e-mail
+   * pipeline so ``fields="both"`` runs can render two progress lanes
+   * without one side hiding the other.
+   *
+   * Events tagged ``channel: "phone"`` write here; un-tagged events
+   * continue to update the legacy e-mail counters above (the existing
+   * SSE contract).
+   */
+  phonePhase: InternalEnrichPhase | null
+  phoneCompleted: number
+  phoneDomainsDone: number
+  /** Sum of SERP/lookup candidates returned across all leads. */
+  phoneLookupCandidates: number
+  /** Convenience counter: phones found so far for the live tail. */
+  phonesFound: number
 }
 
 export const INITIAL_PROGRESS: ProgressState = {
@@ -314,13 +371,25 @@ export const INITIAL_PROGRESS: ProgressState = {
   discoveryBySource: {},
   recentLeads: [],
   summary: null,
-  errorMessage: null
+  errorMessage: null,
+  phonePhase: null,
+  phoneCompleted: 0,
+  phoneDomainsDone: 0,
+  phoneLookupCandidates: 0,
+  phonesFound: 0
 }
 
 export function reduceProgress(
   state: ProgressState,
   event: InternalEnrichStreamEvent
 ): ProgressState {
+  // ``channel`` is the demultiplexer for ``fields="both"`` runs. Events
+  // without a channel default to "email" — that's the historical
+  // contract from before the phone pipeline existed and keeps the
+  // existing UI working unchanged when the request only asked for
+  // e-mail. Phone events arrive tagged ``channel: "phone"``.
+  const channel = ('channel' in event ? event.channel : undefined) ?? 'email'
+
   switch (event.type) {
     case 'start':
       return {
@@ -334,11 +403,20 @@ export function reduceProgress(
         discoveryBySource: {},
         recentLeads: [],
         summary: null,
-        errorMessage: null
+        errorMessage: null,
+        phonePhase: null,
+        phoneCompleted: 0,
+        phoneDomainsDone: 0,
+        phoneLookupCandidates: 0,
+        phonesFound: 0
       }
     case 'phase':
+      if (channel === 'phone') {
+        return { ...state, phonePhase: event.phase }
+      }
       return { ...state, phase: event.phase }
     case 'discovery': {
+      // Discovery is e-mail-only today; ignore channel for now.
       const nextBySource = { ...state.discoveryBySource }
       for (const [source, items] of Object.entries(event.sources ?? {})) {
         nextBySource[source] = (nextBySource[source] ?? 0) + items.length
@@ -347,29 +425,47 @@ export function reduceProgress(
         ...state,
         discoveredDomains: state.discoveredDomains + event.discovered,
         discoveryBySource: nextBySource,
-        // Discovery widens the harvest universe — surface the bigger
-        // denominator on the UI bar so the progress reads true.
         uniqueDomains: state.uniqueDomains + event.discovered
       }
     }
     case 'domain':
+      if (channel === 'phone') {
+        return { ...state, phoneDomainsDone: state.phoneDomainsDone + 1 }
+      }
       return { ...state, domainsDone: state.domainsDone + 1 }
+    case 'lookup':
+      return {
+        ...state,
+        phoneLookupCandidates:
+          state.phoneLookupCandidates + (event.candidates ?? 0)
+      }
     case 'progress':
+      if (channel === 'phone') {
+        return {
+          ...state,
+          phoneCompleted: event.completed,
+          totalLeads: event.total || state.totalLeads
+        }
+      }
       return {
         ...state,
         completed: event.completed,
         totalLeads: event.total || state.totalLeads
       }
-    case 'lead':
-      return {
-        ...state,
-        recentLeads: [event, ...state.recentLeads].slice(0, 12)
-      }
+    case 'lead': {
+      const recent = [event, ...state.recentLeads].slice(0, 12)
+      const phonesFound =
+        channel === 'phone' && event.phone
+          ? state.phonesFound + 1
+          : state.phonesFound
+      return { ...state, recentLeads: recent, phonesFound }
+    }
     case 'done':
       return {
         ...state,
         running: false,
         phase: 'completed',
+        phonePhase: state.phonePhase ? 'completed' : state.phonePhase,
         summary: event.summary,
         completed: state.totalLeads
       }

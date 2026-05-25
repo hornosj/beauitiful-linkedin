@@ -8,14 +8,22 @@ type Phase =
   | 'settling'
   | 'ready'
   | 'failed'
+  | 'preparing'
+  | 'login_required'
 
 interface Props {
   targetUrl: string
-  // Substring used to detect that an open tab landed on the company People
-  // page (e.g. "/company/nubank/" + we always require "/people").
+  // Substring used to detect that an open tab landed on the target page.
   targetSlug: string
+  targetKind?: 'people' | 'profile'
+  /** 'external' = spawn Chrome (default), 'embedded' = use in-app WebContentsView. */
+  mode?: 'external' | 'embedded'
+  /** li_at cookie to inject when mode='embedded'. */
+  liAt?: string
   onReady(): void
   onCancel(): void
+  /** Called in embedded mode when li_at is rejected (authwall). Falls back to external Chrome. */
+  onFallback?(): void
   settleMs?: number
 }
 
@@ -24,7 +32,9 @@ const DEFAULT_SETTLE_MS = 3000
 const LOGIN_HINTS = ['/login', '/checkpoint', '/uas/login', '/authwall', '/signup']
 
 export default function ChromeBootstrapModal(props: Props) {
-  const [phase, setPhase] = useState<Phase>('checking')
+  const targetKind = props.targetKind ?? 'people'
+  const mode = props.mode ?? 'external'
+  const [phase, setPhase] = useState<Phase>(mode === 'embedded' ? 'preparing' : 'checking')
   const [error, setError] = useState<string | null>(null)
   const [settleProgress, setSettleProgress] = useState(0)
   const [hint, setHint] = useState<'loading' | 'login' | null>(null)
@@ -41,6 +51,57 @@ export default function ChromeBootstrapModal(props: Props) {
       cancelledRef.current = true
     }
   }, [])
+
+  // Embedded mode: inject li_at into the in-app WebContentsView and navigate directly.
+  // If the cookie is rejected (authwall), invoke onFallback so the caller can switch
+  // to the external Chrome path instead.
+  useEffect(() => {
+    if (phase !== 'preparing' || mode !== 'embedded') return
+    void (async () => {
+      console.log('[ChromeBootstrapModal] modo=embedded fase=preparing → iniciando')
+      const bridge = window.beautifulLinkedIn?.embeddedBrowser
+      if (!bridge) {
+        console.error('[ChromeBootstrapModal] embeddedBrowser bridge indisponível em window.beautifulLinkedIn')
+        setError('Bridge do browser embutido indisponível.')
+        setPhase('failed')
+        return
+      }
+      const liAt = props.liAt?.trim() ?? ''
+      if (!liAt) {
+        console.error('[ChromeBootstrapModal] li_at vazio — não configurado')
+        setError('Cookie li_at não configurado. Configure-o em Conta > Cookie li_at.')
+        setPhase('failed')
+        return
+      }
+      console.log(`[ChromeBootstrapModal] Chamando bridge.prepare(liAt="${liAt.slice(0,8)}…", url="${props.targetUrl}")`)
+      const result = await bridge.prepare(liAt, props.targetUrl)
+      console.log('[ChromeBootstrapModal] bridge.prepare() retornou:', JSON.stringify(result))
+      if (cancelledRef.current) {
+        console.log('[ChromeBootstrapModal] cancelado após prepare()')
+        return
+      }
+      if (!result.ready) {
+        if (result.needsLogin) {
+          console.warn('[ChromeBootstrapModal] needsLogin=true — painel in-app exibido para login.')
+          // The embedded panel is already showing /login (prepare() called show() internally).
+          setPhase('login_required')
+          return
+        }
+        console.error('[ChromeBootstrapModal] prepare() não pronto. error=', result.error)
+        setError(result.error ?? 'Falha ao carregar a página do LinkedIn.')
+        setPhase('failed')
+        return
+      }
+      if (result.onAuthwall) {
+        console.warn('[ChromeBootstrapModal] AUTHWALL detectado. Mostrando painel e chamando onFallback().')
+        await bridge.show()
+        props.onFallback?.()
+        return
+      }
+      console.log('[ChromeBootstrapModal] Página carregada com sucesso ✓ → fase settling')
+      setPhase('settling')
+    })()
+  }, [phase, mode, props.liAt, props.targetUrl, props.onFallback])
 
   // Phase: checking — probe CDP, then either jump to launching or to target
   // monitoring if CDP is already alive from a previous run.
@@ -63,7 +124,7 @@ export default function ChromeBootstrapModal(props: Props) {
     })()
   }, [phase])
 
-  // Phase: launching — spawn the dedicated Chrome with the People URL as the
+  // Phase: launching — spawn the dedicated Chrome with the target URL as the
   // initial tab. Chrome will redirect to /login if needed.
   useEffect(() => {
     if (phase !== 'launching') return
@@ -113,7 +174,7 @@ export default function ChromeBootstrapModal(props: Props) {
   }, [phase, props.targetUrl])
 
   // Phase: awaiting_target — single-shot ensure a tab is on the target URL,
-  // then poll until one of the existing tabs reaches the target People URL.
+  // then poll until one of the existing tabs reaches the target URL.
   // No new tabs are opened during this phase.
   useEffect(() => {
     if (phase !== 'awaiting_target') return
@@ -128,7 +189,10 @@ export default function ChromeBootstrapModal(props: Props) {
       const slug = props.targetSlug.toLowerCase()
       const alreadyOnTarget = tabs.some((t) => {
         const u = (t.url || '').toLowerCase()
-        return u.includes(slug) || u.includes('/feed') || u.includes('/login')
+        if (targetKind === 'people') {
+          return u.includes(slug) || u.includes('/feed') || u.includes('/login')
+        }
+        return u.includes(slug) || LOGIN_HINTS.some((hint) => u.includes(hint))
       })
       if (!alreadyOnTarget) {
         await bridge.openUrl(props.targetUrl)
@@ -144,7 +208,11 @@ export default function ChromeBootstrapModal(props: Props) {
       let onLogin = false
       for (const tab of tabs) {
         const u = (tab.url || '').toLowerCase()
-        if (u.includes(slug) && u.includes('/people')) {
+        const targetMatched =
+          targetKind === 'people'
+            ? u.includes(slug) && u.includes('/people')
+            : u.includes(slug)
+        if (targetMatched) {
           onTarget = true
           break
         }
@@ -166,7 +234,47 @@ export default function ChromeBootstrapModal(props: Props) {
     return () => {
       cancelled = true
     }
-  }, [phase, props.targetSlug, props.targetUrl])
+  }, [phase, props.targetSlug, props.targetUrl, targetKind])
+
+  // Phase: login_required — the embedded panel is showing the LinkedIn login page.
+  // Poll checkSession() every 2s; once JSESSIONID appears, re-run prepare() which
+  // will find the complete session and navigate to the target URL.
+  useEffect(() => {
+    if (phase !== 'login_required') return
+    let cancelled = false
+    const bridge = window.beautifulLinkedIn?.embeddedBrowser
+    if (!bridge) return
+
+    const poll = async () => {
+      if (cancelled || cancelledRef.current) return
+      console.log('[ChromeBootstrapModal] login_required: verificando sessão…')
+      const { hasJsessionid } = await bridge.checkSession()
+      if (hasJsessionid && !cancelled && !cancelledRef.current) {
+        console.log('[ChromeBootstrapModal] login_required: JSESSIONID detectado ✓ → escondendo painel e re-preparando')
+        await bridge.hide()
+        const result = await bridge.prepare(props.liAt?.trim() ?? '', props.targetUrl)
+        console.log('[ChromeBootstrapModal] login_required: re-prepare result =', JSON.stringify(result))
+        if (cancelled || cancelledRef.current) return
+        if (result.ready && !result.onAuthwall) {
+          setPhase('settling')
+        } else if (result.needsLogin) {
+          // Still needs login — show panel again
+          await bridge.show()
+          window.setTimeout(poll, 3000)
+        } else {
+          setError(result.error ?? 'Falha após login.')
+          setPhase('failed')
+        }
+        return
+      }
+      window.setTimeout(poll, 2000)
+    }
+
+    void poll()
+    return () => {
+      cancelled = true
+    }
+  }, [phase, props.liAt, props.targetUrl])
 
   useEffect(() => {
     if (phase !== 'settling') return
@@ -211,8 +319,8 @@ export default function ChromeBootstrapModal(props: Props) {
         onClick={(e) => e.stopPropagation()}
       >
         <div className="card-body" style={{ padding: 22 }}>
-          {renderHeader(phase, hint)}
-          {renderBody(phase, { error, settleProgress, hint, targetUrl: props.targetUrl })}
+          {renderHeader(phase, hint, targetKind)}
+          {renderBody(phase, { error, settleProgress, hint, targetUrl: props.targetUrl, targetKind })}
           {renderFooter(phase, { onCancel: handleCancel })}
         </div>
       </div>
@@ -220,8 +328,18 @@ export default function ChromeBootstrapModal(props: Props) {
   )
 }
 
-function renderHeader(phase: Phase, hint: 'loading' | 'login' | null) {
+function renderHeader(phase: Phase, hint: 'loading' | 'login' | null, targetKind: 'people' | 'profile') {
+  const targetLabel = targetKind === 'profile' ? 'perfil' : 'página da empresa'
+  const actionLabel = targetKind === 'profile' ? 'validação' : 'busca'
   const titleMap: Record<Phase, { title: string; sub: string }> = {
+    login_required: {
+      title: 'Faça login no LinkedIn',
+      sub: 'O cookie li_at não autenticou. Faça login na janela abaixo — a busca começa sozinha.'
+    },
+    preparing: {
+      title: 'Abrindo LinkedIn…',
+      sub: 'Carregando a página dentro do app — sem abrir o Chrome separado.'
+    },
     checking: { title: 'Preparando Chrome…', sub: 'Verificando porta de debug 9222.' },
     launching: {
       title: 'Abrindo Chrome dedicado…',
@@ -232,17 +350,20 @@ function renderHeader(phase: Phase, hint: 'loading' | 'login' | null) {
       hint === 'login'
         ? {
             title: 'Logue no LinkedIn',
-            sub: 'Assim que você logar, o LinkedIn vai te redirecionar para a página da empresa.'
+            sub: `Assim que você logar, o LinkedIn vai te redirecionar para o ${targetLabel}.`
           }
         : {
-            title: 'Aguardando a página da empresa…',
-            sub: 'A busca começa assim que essa aba abrir.'
+            title: `Aguardando ${targetLabel}…`,
+            sub: `A ${actionLabel} começa assim que essa aba abrir.`
           },
     settling: {
       title: 'Página carregada. Aguardando 3s…',
-      sub: 'Pequena pausa para a listagem renderizar antes da coleta.'
+      sub:
+        targetKind === 'profile'
+          ? 'Pequena pausa para a experiência e contatos renderizarem antes da coleta.'
+          : 'Pequena pausa para a listagem renderizar antes da coleta.'
     },
-    ready: { title: 'Tudo pronto', sub: 'Iniciando busca.' },
+    ready: { title: 'Tudo pronto', sub: `Iniciando ${actionLabel}.` },
     failed: { title: 'Não consegui preparar o Chrome', sub: 'Veja o erro abaixo.' }
   }
   const item = titleMap[phase]
@@ -276,6 +397,7 @@ interface BodyContext {
   settleProgress: number
   hint: 'loading' | 'login' | null
   targetUrl: string
+  targetKind: 'people' | 'profile'
 }
 
 function renderBody(phase: Phase, ctx: BodyContext) {
@@ -286,13 +408,27 @@ function renderBody(phase: Phase, ctx: BodyContext) {
       </p>
     )
   }
+  if (phase === 'login_required') {
+    return (
+      <div style={{ margin: '0 0 18px', fontSize: 13, color: 'var(--ink-2)', lineHeight: 1.55 }}>
+        <p style={{ marginTop: 0 }}>
+          O LinkedIn pediu login. Faça login na janela embutida abaixo.
+          Quando terminar, a busca começa automaticamente.
+        </p>
+        <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span className="spinner" />
+          <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Aguardando login…</span>
+        </div>
+      </div>
+    )
+  }
   if (phase === 'awaiting_target') {
     return (
       <div style={{ margin: '0 0 18px', fontSize: 13, color: 'var(--ink-2)', lineHeight: 1.55 }}>
         <p style={{ marginTop: 0 }}>
           {ctx.hint === 'login'
-            ? 'Faça login na janela do Chrome dedicado. Não preciso de cookie nem de cole-aqui — quando o LinkedIn carregar a página da empresa, a busca começa sozinha.'
-            : 'O LinkedIn está carregando a página da empresa nesta janela do Chrome dedicado. Estou só observando — não vou abrir novas abas.'}
+            ? `Faça login na janela do Chrome dedicado. Não preciso de cookie nem de cole-aqui — quando o LinkedIn carregar ${ctx.targetKind === 'profile' ? 'o perfil' : 'a página da empresa'}, ${ctx.targetKind === 'profile' ? 'a validação' : 'a busca'} começa sozinha.`
+            : `O LinkedIn está carregando ${ctx.targetKind === 'profile' ? 'o perfil' : 'a página da empresa'} nesta janela do Chrome dedicado. Estou só observando — não vou abrir novas abas.`}
         </p>
         <div
           style={{
@@ -321,7 +457,7 @@ function renderBody(phase: Phase, ctx: BodyContext) {
     return (
       <div style={{ margin: '0 0 18px' }}>
         <p style={{ marginTop: 0, fontSize: 13, color: 'var(--ink-2)' }}>
-          Esperando 3 segundos antes de mandar a busca…
+          Esperando 3 segundos antes de mandar {ctx.targetKind === 'profile' ? 'a validação' : 'a busca'}…
         </p>
         <div
           style={{
@@ -347,6 +483,7 @@ function renderBody(phase: Phase, ctx: BodyContext) {
     <div style={{ margin: '0 0 18px', display: 'flex', alignItems: 'center', gap: 10 }}>
       <span className="spinner" />
       <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>
+        {phase === 'preparing' && 'Injetando sessão e carregando LinkedIn no app…'}
         {phase === 'checking' && 'Probing 127.0.0.1:9222…'}
         {phase === 'launching' && 'Spawn chrome.exe --remote-debugging-port=9222…'}
         {phase === 'waiting_cdp' && 'Aguardando resposta de /json/version…'}

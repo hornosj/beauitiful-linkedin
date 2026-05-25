@@ -15,6 +15,7 @@ Bind only to 127.0.0.1 — never expose this to the LAN.
 from __future__ import annotations
 
 import os
+import logging
 import socket
 import sys
 
@@ -25,6 +26,21 @@ from beautiful_linkedin.server.app import build_app
 DEFAULT_HOST = "127.0.0.1"
 PORT_ENV_VAR = "BEAUTIFUL_LINKEDIN_PORT"
 READY_TOKEN = "BEAUTIFUL_LINKEDIN_READY"
+
+
+def configure_logging() -> None:
+    """Route application INFO logs to the sidecar process output.
+
+    Electron already tails the Python child process stdout/stderr and
+    surfaces those lines as sidecar logs. The missing piece was the
+    Python sidecar defaulting to WARNING, which hid the Telegram flow's
+    step-by-step INFO logs while the operator needed to debug it.
+    """
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        force=True,
+    )
 
 
 def pick_free_port(host: str = DEFAULT_HOST) -> int:
@@ -51,6 +67,7 @@ def announce(port: int) -> None:
 
 
 def main() -> None:
+    configure_logging()
     port = resolve_port()
     announce(port)
     app = build_app()
