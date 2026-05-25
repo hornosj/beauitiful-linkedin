@@ -95,6 +95,8 @@ function registerEmbeddedBrowserHandlers(): void {
 }
 
 function createWindow(): void {
+  const devIcon = isDev ? join(__dirname, '../../resources/icon.png') : undefined
+
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 820,
@@ -103,6 +105,7 @@ function createWindow(): void {
     show: false,
     backgroundColor: '#10131e',
     autoHideMenuBar: true,
+    icon: devIcon,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: true,

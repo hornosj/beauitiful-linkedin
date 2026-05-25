@@ -609,9 +609,13 @@ export default function App() {
     <div className="app-shell flex flex-col h-screen w-screen overflow-hidden bg-bg text-ink font-sans">
       {/* Title bar */}
       <div className="h-11 bg-surface/60 backdrop-blur-xl border-b border-line flex items-center px-4 gap-3 relative z-50 shrink-0">
-        <div className="flex items-center gap-2.5 text-[13px] font-semibold text-ink tracking-tight select-none">
-          <div className="w-5 h-5 rounded-[6px] bg-gradient-to-br from-accent to-[#5856d6] flex items-center justify-center text-white text-[11px] font-bold shadow-[0_1px_2px_rgba(0,122,255,0.3)]">B</div>
-          Beautiful LinkedIn
+        <div className="app-brand-lockup" aria-label="Beautiful LinkedIn">
+          <img src="./beautiful-linkedin-icon.svg" alt="Beautiful LinkedIn logo" />
+          <span className="app-brand-wordmark" aria-hidden="true">
+            <span className="app-brand-beautiful">Beautiful</span>
+            <span className="app-brand-linked">Linked</span>
+            <span className="app-brand-in">in</span>
+          </span>
         </div>
         <button
           type="button"
@@ -653,10 +657,6 @@ export default function App() {
           </div>
         )}
         <div className="flex items-center gap-1 ml-auto select-none">
-          <div className="jpaoh-credit jpaoh-credit-top" title="Developed by jpAoH Software Solutions">
-            <img src="./jpaoh-logo.svg" alt="jpAoH logo" />
-            <span>made by jpAoH</span>
-          </div>
           <button
             type="button"
             className="tb-btn"
@@ -747,11 +747,11 @@ export default function App() {
           </nav>
 
           <div className="sidebar-bottom">
-            <div className="jpaoh-credit jpaoh-credit-bottom" title="© 2026 jpAoH Software Solutions">
+            <div className="jpaoh-credit jpaoh-credit-bottom" title="made by jpAoH Software Solutions">
               <img src="./jpaoh-logo.svg" alt="jpAoH logo" />
               <div>
-                <strong>© 2026 jpAoH</strong>
-                <span>Software Solutions · todos os direitos reservados</span>
+                <strong>made by jpAoH</strong>
+                <span>Software Solutions</span>
               </div>
             </div>
             <div className="px-2 pt-2.5 border-t border-line flex items-center gap-2 text-[11px] text-ink-3">
@@ -963,6 +963,9 @@ export default function App() {
       </div>
       <EnrichmentBackground onActivity={pushLiveActivity} />
       <LiveActivityBubbles items={liveActivities} />
+      <div className="app-copyright-corner" aria-label="jpAoH Software Solutions © 2026">
+        jpAoH Software Solutions © 2026
+      </div>
       {feedback && (
         <div
           className={`toast ${feedback.kind === 'error' ? 'error' : ''}`}
