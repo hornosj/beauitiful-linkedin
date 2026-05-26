@@ -24,6 +24,16 @@ import { embeddedManager, type EmbeddedBounds } from './embedded-browser'
 app.commandLine.appendSwitch('remote-debugging-port', '9223')
 app.commandLine.appendSwitch('remote-debugging-address', '127.0.0.1')
 
+// LinkedIn aciona passkey/Windows Hello na tela de login. No Windows, o diálogo
+// nativo de WebAuthn pode nunca receber foco e travar a página indefinidamente
+// (a Promise de navigator.credentials nunca resolve). Desabilitamos a integração
+// com a API nativa do Windows e o autofill condicional para que o LinkedIn caia
+// sempre no fluxo de senha, sem disparar o modal nativo que congela a janela.
+app.commandLine.appendSwitch(
+  'disable-features',
+  'WebAuthenticationUseNativeWinApi,WebAuthenticationConditionalUI'
+)
+
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const isDev = !!process.env.ELECTRON_RENDERER_URL
 
@@ -69,6 +79,10 @@ function registerEmbeddedBrowserHandlers(): void {
   ipcMain.handle('embedded:open-login', () => {
     console.log('[IPC embedded:open-login]')
     return embeddedManager.openLogin()
+  })
+  ipcMain.handle('embedded:reload-login', () => {
+    console.log('[IPC embedded:reload-login]')
+    return embeddedManager.reloadLogin()
   })
   ipcMain.handle('embedded:hide', () => {
     console.log('[IPC embedded:hide]')
