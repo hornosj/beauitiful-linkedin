@@ -142,43 +142,63 @@ function createWindow(): void {
   }
 }
 
-app.whenReady().then(async () => {
-  try {
-    await bootSidecar()
-  } catch (error) {
-    sidecarError = error instanceof Error ? error.message : String(error)
-    console.error('Falha ao iniciar o sidecar Python:', error)
-  }
-
-  ipcMain.handle('sidecar:get-base-url', () => sidecar?.baseUrl ?? null)
-  ipcMain.handle('sidecar:status', () => ({
-    running: sidecar !== null,
-    baseUrl: sidecar?.baseUrl ?? null,
-    port: sidecar?.port ?? null,
-    error: sidecarError
-  }))
-
-  ipcMain.handle('chrome:probe', () => probeCdp())
-  ipcMain.handle('chrome:is-running', () => isChromeRunning())
-  ipcMain.handle('chrome:kill', () => killChrome())
-  ipcMain.handle('chrome:launch', (_event, initialUrl?: string) =>
-    launchChromeWithCdp(typeof initialUrl === 'string' ? initialUrl : undefined)
-  )
-  ipcMain.handle('chrome:wait-cdp', (_event, timeoutMs?: number) =>
-    waitForCdp(typeof timeoutMs === 'number' ? timeoutMs : 15000)
-  )
-  ipcMain.handle('chrome:check-linkedin', () => checkLinkedInLogin())
-  ipcMain.handle('chrome:open-url', (_event, url: string) => openUrl(url))
-  ipcMain.handle('chrome:list-tabs', () => listTabs())
-
-  registerEmbeddedBrowserHandlers()
-  createWindow()
-  embeddedManager.attach(mainWindow!)
-
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+// Garante uma única instância. Sem isso, abrir o app duas vezes (comum quando o
+// usuário acha que "não abriu" e clica de novo) faz instâncias concorrerem pelo
+// mesmo userData/GPUCache (erro de cache → tela não abre) e pela porta de debug
+// fixa 9223. A segunda instância apenas foca a janela existente.
+const gotSingleInstanceLock = app.requestSingleInstanceLock()
+if (!gotSingleInstanceLock) {
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isMinimized()) mainWindow.restore()
+      mainWindow.show()
+      mainWindow.focus()
+    }
   })
-})
+
+  app.whenReady().then(() => {
+    ipcMain.handle('sidecar:get-base-url', () => sidecar?.baseUrl ?? null)
+    ipcMain.handle('sidecar:status', () => ({
+      running: sidecar !== null,
+      baseUrl: sidecar?.baseUrl ?? null,
+      port: sidecar?.port ?? null,
+      error: sidecarError
+    }))
+
+    ipcMain.handle('chrome:probe', () => probeCdp())
+    ipcMain.handle('chrome:is-running', () => isChromeRunning())
+    ipcMain.handle('chrome:kill', () => killChrome())
+    ipcMain.handle('chrome:launch', (_event, initialUrl?: string) =>
+      launchChromeWithCdp(typeof initialUrl === 'string' ? initialUrl : undefined)
+    )
+    ipcMain.handle('chrome:wait-cdp', (_event, timeoutMs?: number) =>
+      waitForCdp(typeof timeoutMs === 'number' ? timeoutMs : 15000)
+    )
+    ipcMain.handle('chrome:check-linkedin', () => checkLinkedInLogin())
+    ipcMain.handle('chrome:open-url', (_event, url: string) => openUrl(url))
+    ipcMain.handle('chrome:list-tabs', () => listTabs())
+
+    registerEmbeddedBrowserHandlers()
+
+    // Abre a janela IMEDIATAMENTE e inicia o sidecar em paralelo. Antes, a janela
+    // só era criada após `await bootSidecar()` (timeout de 20s); um cold start
+    // lento do exe (varredura de antivírus/SmartScreen) fazia o app parecer que
+    // "não abria". O renderer faz polling de sidecar:status até o backend subir.
+    createWindow()
+    embeddedManager.attach(mainWindow!)
+
+    void bootSidecar().catch((error) => {
+      sidecarError = error instanceof Error ? error.message : String(error)
+      console.error('Falha ao iniciar o sidecar Python:', error)
+    })
+
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    })
+  })
+}
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()

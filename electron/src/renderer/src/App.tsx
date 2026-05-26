@@ -30,6 +30,7 @@ import ProbeProgress from './components/ProbeProgress'
 import LiveFoundLeads from './components/LiveFoundLeads'
 import InternalEnrichProgress from './components/InternalEnrichProgress'
 import TelethonAuthDialog from './components/TelethonAuthDialog'
+import TelegramConfigDialog from './components/TelegramConfigDialog'
 import LiveActivityBubbles, {
   type LiveActivityItem
 } from './components/LiveActivityBubbles'
@@ -72,8 +73,10 @@ export default function App() {
   const [showRiskModal, setShowRiskModal] = useState(false)
   const [linkedInSession, setLinkedInSession] = useState<LinkedInSessionState>('unknown')
   const [linkedInPanelVisible, setLinkedInPanelVisible] = useState(false)
+  const [linkedInLoginBusy, setLinkedInLoginBusy] = useState(false)
   const [telegramSession, setTelegramSession] = useState<TelegramSessionState>('unknown')
   const [telethonAuthOpen, setTelethonAuthOpen] = useState(false)
+  const [telegramConfigOpen, setTelegramConfigOpen] = useState(false)
   const [smallCompanyProbe, setSmallCompanyProbe] =
     useState<PeopleSearchProbeResponse | null>(null)
   const [probeEvents, setProbeEvents] = useState<ProbeEvent[]>([])
@@ -132,20 +135,41 @@ export default function App() {
 
   useEffect(() => {
     const configuredBaseUrl = import.meta.env.VITE_BEAUTIFUL_LINKEDIN_BASE_URL as string | undefined
-    if (window.beautifulLinkedIn) {
-      void window.beautifulLinkedIn.getStatus().then((status) => {
-        setBaseUrl(status.baseUrl)
+    const bridge = window.beautifulLinkedIn
+    if (bridge) {
+      // O sidecar agora inicia em paralelo à janela (cold start do exe pode levar
+      // alguns segundos). Fazemos polling até ele responder, em vez de uma única
+      // checagem no mount — senão o app ficaria preso em "offline" se a janela
+      // abrisse antes do backend.
+      let cancelled = false
+      let attempts = 0
+      const maxAttempts = 40 // ~40s de tolerância para o cold start
+      const poll = async () => {
+        if (cancelled) return
+        const status = await bridge.getStatus()
+        if (cancelled) return
+        if (status.running && status.baseUrl) {
+          setBaseUrl(status.baseUrl)
+          setSidecarError(null)
+          return
+        }
         setSidecarError(status.error)
-        if (!status.running) {
+        attempts += 1
+        if (attempts >= maxAttempts) {
           setFeedback({
             kind: 'error',
             message: status.error
               ? `Sidecar Python offline: ${status.error}`
               : 'Sidecar Python offline. Abra pelo Electron ou configure a API local para testar no navegador.'
           })
+          return
         }
-      })
-      return
+        window.setTimeout(() => void poll(), 1000)
+      }
+      void poll()
+      return () => {
+        cancelled = true
+      }
     }
     if (configuredBaseUrl) {
       setBaseUrl(configuredBaseUrl)
@@ -317,6 +341,7 @@ export default function App() {
       setFeedback({ kind: 'error', message: 'Browser embutido indisponível neste modo.' })
       return
     }
+    if (linkedInLoginBusy) return
     if (linkedInPanelVisible && linkedInSession === 'logged_in') {
       await bridge.hide()
       setLinkedInPanelVisible(false)
@@ -325,19 +350,70 @@ export default function App() {
     }
     setFeedback(null)
     setLinkedInSession('open')
-    const result = await bridge.openLogin()
-    if (!result.ready) {
+    setLinkedInLoginBusy(true)
+    try {
+      const result = await bridge.openLogin()
+      if (!result.ready) {
+        setLinkedInSession('logged_out')
+        setFeedback({
+          kind: 'error',
+          message: result.error ?? 'Não consegui abrir o LinkedIn no browser embutido.'
+        })
+        return
+      }
+      setLinkedInPanelVisible(true)
+      window.setTimeout(() => {
+        void refreshLinkedInSession()
+      }, 1200)
+    } catch (error) {
       setLinkedInSession('logged_out')
       setFeedback({
         kind: 'error',
-        message: result.error ?? 'Não consegui abrir o LinkedIn no browser embutido.'
+        message:
+          error instanceof Error
+            ? error.message
+            : 'Não consegui abrir o LinkedIn no browser embutido.'
       })
-      return
+    } finally {
+      setLinkedInLoginBusy(false)
     }
+  }
+
+  const handleRefreshLinkedInLogin = async () => {
+    const bridge = window.beautifulLinkedIn?.embeddedBrowser
+    if (!bridge || linkedInLoginBusy) return
+    setFeedback(null)
+    setLinkedInSession('open')
     setLinkedInPanelVisible(true)
-    window.setTimeout(() => {
-      void refreshLinkedInSession()
-    }, 1200)
+    setLinkedInLoginBusy(true)
+    try {
+      const result = await bridge.reloadLogin()
+      if (!result.ready) {
+        setFeedback({
+          kind: 'error',
+          message: result.error ?? 'Não consegui recarregar o LinkedIn.'
+        })
+      }
+      window.setTimeout(() => {
+        void refreshLinkedInSession()
+      }, 1200)
+    } catch (error) {
+      setFeedback({
+        kind: 'error',
+        message: error instanceof Error ? error.message : 'Não consegui recarregar o LinkedIn.'
+      })
+    } finally {
+      setLinkedInLoginBusy(false)
+    }
+  }
+
+  const handleCloseLinkedInPanel = async () => {
+    const bridge = window.beautifulLinkedIn?.embeddedBrowser
+    if (!bridge) return
+    await bridge.hide()
+    setLinkedInPanelVisible(false)
+    const loggedIn = await refreshLinkedInSession()
+    if (!loggedIn) setLinkedInSession('logged_out')
   }
 
   const refreshTelegramSession = useCallback(async (): Promise<TelegramSessionState> => {
@@ -368,11 +444,7 @@ export default function App() {
     setFeedback(null)
     const session = await refreshTelegramSession()
     if (session === 'not_configured') {
-      setFeedback({
-        kind: 'error',
-        message:
-          'Telegram não configurado: defina BEAUTIFUL_LINKEDIN_TELEGRAM_API_ID e BEAUTIFUL_LINKEDIN_TELEGRAM_API_HASH no .env.'
-      })
+      setTelegramConfigOpen(true)
       return
     }
     if (session === 'logged_in') {
@@ -380,6 +452,34 @@ export default function App() {
       return
     }
     setTelethonAuthOpen(true)
+  }
+
+  // Credentials saved via the tutorial dialog → advance straight to the
+  // phone-login step so the operator finishes the flow in one go.
+  const handleTelegramConfigSaved = (): void => {
+    setTelegramConfigOpen(false)
+    setTelegramSession('logged_out')
+    setTelethonAuthOpen(true)
+  }
+
+  const handleTelegramConfigClose = (): void => {
+    setTelegramConfigOpen(false)
+    void refreshTelegramSession()
+  }
+
+  // Escape hatch from the phone step when the saved api_id/api_hash were
+  // wrong: forget them and reopen the tutorial so the user can re-enter.
+  const handleTelegramReconfigure = async (): Promise<void> => {
+    setTelethonAuthOpen(false)
+    if (client) {
+      try {
+        await client.clearTelethonConfig()
+      } catch {
+        // best-effort — reopening the dialog lets the user overwrite anyway
+      }
+    }
+    setTelegramSession('not_configured')
+    setTelegramConfigOpen(true)
   }
 
   const markTelegramLoggedIn = useCallback((): void => {
@@ -627,6 +727,29 @@ export default function App() {
           <span className="linkedin-session-dot" />
           {linkedInSessionLabel}
         </button>
+        {(linkedInPanelVisible || linkedInSession === 'open') && (
+          <div className="linkedin-session-tools" aria-label="Controles da aba LinkedIn">
+            <button
+              type="button"
+              className="linkedin-session-btn compact"
+              aria-label="Recarregar LinkedIn"
+              onClick={handleRefreshLinkedInLogin}
+              title="Recarregar a aba do LinkedIn se a tela travar"
+              disabled={linkedInLoginBusy}
+            >
+              Recarregar
+            </button>
+            <button
+              type="button"
+              className="linkedin-session-btn compact"
+              aria-label="Fechar janela LinkedIn"
+              onClick={handleCloseLinkedInPanel}
+              title="Fechar a janela do LinkedIn"
+            >
+              Fechar janela
+            </button>
+          </div>
+        )}
         <button
           type="button"
           className={`linkedin-session-btn ${telegramSession === 'logged_in' ? 'ready' : ''}`}
@@ -787,7 +910,7 @@ export default function App() {
                 background: sidecarOk ? 'var(--success)' : 'var(--ink-4)'
               }}
             />
-            v0.1.0
+            v0.1.2
           </button>
           <button className="pill-btn max-sm:hidden" onClick={() => setShowSettings(true)}>
             ⚙ Preferências{configuredApiKeyCount ? ` · ${configuredApiKeyCount}` : ''}
@@ -985,11 +1108,20 @@ export default function App() {
         </div>
       )}
       {client && (
+        <TelegramConfigDialog
+          open={telegramConfigOpen}
+          client={client}
+          onSaved={handleTelegramConfigSaved}
+          onClose={handleTelegramConfigClose}
+        />
+      )}
+      {client && (
         <TelethonAuthDialog
           open={telethonAuthOpen}
           client={client}
           onSuccess={handleTelethonAuthSuccess}
           onClose={handleTelethonAuthClose}
+          onReconfigure={handleTelegramReconfigure}
         />
       )}
     </div>
