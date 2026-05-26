@@ -1,4 +1,4 @@
-import { WebContentsView, session, type BrowserWindow } from 'electron'
+import { BrowserWindow, WebContentsView, session, shell, type WebContents } from 'electron'
 import { LINKEDIN_AUTH_COOKIE_NAMES, parseLinkedInCookieInput } from './linkedin-cookies'
 
 const LINKEDIN_SESSION = 'persist:linkedin-scrape'
@@ -8,6 +8,7 @@ const LINKEDIN_UA =
 const AUTH_WALL_HINTS = ['/login', '/checkpoint', '/uas/login', '/authwall', '/signup']
 const LINKEDIN_FEED_URL = 'https://www.linkedin.com/feed/'
 const LINKEDIN_LOGIN_URL = 'https://www.linkedin.com/login'
+const IGNORED_LOAD_ERROR_CODES = new Set([-3])
 
 const tag = '[EmbeddedBrowser]'
 
@@ -42,6 +43,7 @@ export interface EmbeddedBounds {
 export class EmbeddedBrowserManager {
   private view: WebContentsView | null = null
   private window: BrowserWindow | null = null
+  private loginWindow: BrowserWindow | null = null
   private _visible = false
   private _lastUrl: string | null = null
   private _onAuthwall = false
@@ -88,6 +90,9 @@ export class EmbeddedBrowserManager {
     })
     this.view.webContents.on('did-fail-load', (_event, code, desc, failedUrl) => {
       console.error(`${tag} did-fail-load code=${code} desc="${desc}" url=${failedUrl}`)
+    })
+    this.view.webContents.on('did-finish-load', () => {
+      this._focusVisibleView()
     })
     this.view.webContents.on('dom-ready', () => {
       void this._disablePasskeyPrompts()
@@ -205,6 +210,12 @@ export class EmbeddedBrowserManager {
       }
 
       const onFail = (_e: unknown, code: number, desc: string, failedUrl: string) => {
+        if (IGNORED_LOAD_ERROR_CODES.has(code)) {
+          console.warn(
+            `${tag} _loadPageWithTimeout ignorando load abortado code=${code} "${desc}" url=${failedUrl}`
+          )
+          return
+        }
         clearTimeout(timeout)
         wc.removeListener('did-finish-load', onLoad)
         console.error(
@@ -221,8 +232,12 @@ export class EmbeddedBrowserManager {
 
   private async _disablePasskeyPrompts(): Promise<void> {
     if (!this.view) return
+    return this._disablePasskeyPromptsFor(this.view.webContents)
+  }
+
+  private async _disablePasskeyPromptsFor(webContents: WebContents): Promise<void> {
     try {
-      await this.view.webContents.executeJavaScript(
+      await webContents.executeJavaScript(
         `(() => {
           try {
             const credentials = navigator.credentials;
@@ -250,9 +265,25 @@ export class EmbeddedBrowserManager {
     if (!existing.hasLiAt || !existing.hasJsessionid) {
       await this._clearLinkedInAuthCookies('login manual solicitado')
     }
-    this.show()
-    const result = await this._loadPageWithTimeout(targetUrl, 30_000)
-    return { ready: result.ready, url: result.url, error: result.error }
+    return this._openLoginWindow(targetUrl)
+  }
+
+  async reloadLogin(): Promise<EmbeddedLoginResult> {
+    console.log(`${tag} reloadLogin() chamado`)
+    if (!this.view || !this.window) {
+      return { ready: false, url: null, error: 'Browser não inicializado.' }
+    }
+    if (this.loginWindow && !this.loginWindow.isDestroyed()) {
+      const currentUrl = this.loginWindow.webContents.getURL()
+      const targetUrl = isLinkedInUrl(currentUrl) ? currentUrl : LINKEDIN_LOGIN_URL
+      this._focusLoginWindow()
+      void this.loginWindow.loadURL(targetUrl)
+      return { ready: true, url: targetUrl, error: null }
+    }
+    // Sem janela de login aberta: abrimos uma BrowserWindow dedicada em vez de
+    // exibir a WebContentsView. A view embutida perde mouse/teclado em algumas
+    // máquinas Windows (tela "congelada"); a janela separada sempre recebe input.
+    return this._openLoginWindow(LINKEDIN_LOGIN_URL)
   }
 
   async prepare(liAt: string, url: string): Promise<EmbeddedPrepareResult> {
@@ -306,10 +337,10 @@ export class EmbeddedBrowserManager {
           'Exibindo painel de login in-app.'
       )
       await this._clearLinkedInAuthCookies('li_at rejeitado no warm-up')
-      // Navigate the embedded panel to /login and show it for one-time in-app login.
+      // Open a normal child window for one-time login. A WebContentsView can render
+      // LinkedIn but lose pointer/keyboard input on some Windows machines.
       // The modal will poll checkSession() until JSESSIONID appears, then re-call prepare().
-      void this.view.webContents.loadURL(LINKEDIN_LOGIN_URL)
-      this.show()
+      await this._openLoginWindow(LINKEDIN_LOGIN_URL)
       return {
         ready: false,
         url: LINKEDIN_LOGIN_URL,
@@ -341,9 +372,11 @@ export class EmbeddedBrowserManager {
       console.log(`${tag} Painel já visível, bounds atualizados: ${JSON.stringify(b)}`)
     }
     this.view.setBounds(b)
+    this._focusVisibleView()
   }
 
   hide(): void {
+    this._closeLoginWindow()
     if (!this.view || !this.window || !this._visible) return
     this.window.contentView.removeChildView(this.view)
     this._visible = false
@@ -351,11 +384,14 @@ export class EmbeddedBrowserManager {
   }
 
   getStatus(): EmbeddedStatus {
-    const url = this._lastUrl ?? this.view?.webContents.getURL() ?? null
-    return { url, onAuthwall: this._onAuthwall, visible: this._visible }
+    const loginVisible = Boolean(this.loginWindow && !this.loginWindow.isDestroyed())
+    const url =
+      this._lastUrl ?? this.loginWindow?.webContents.getURL() ?? this.view?.webContents.getURL() ?? null
+    return { url, onAuthwall: this._onAuthwall, visible: this._visible || loginVisible }
   }
 
   destroy(): void {
+    this._closeLoginWindow()
     this.hide()
     if (this.view) {
       try {
@@ -373,6 +409,187 @@ export class EmbeddedBrowserManager {
     const cb = this.window.getContentBounds()
     return { x: 0, y: 44, width: cb.width, height: cb.height - 44 }
   }
+
+  private _focusVisibleView(): void {
+    if (!this.view || !this.window || !this._visible) return
+    this.window.focus()
+    const focus = () => {
+      if (!this.view || this.view.webContents.isDestroyed()) return
+      this.view.webContents.focus()
+    }
+    focus()
+    setTimeout(focus, 50)
+  }
+
+  private _loginResultFromLoad(result: EmbeddedPrepareResult): EmbeddedLoginResult {
+    if (result.ready) {
+      return { ready: true, url: result.url, error: null }
+    }
+    if (result.url && isLinkedInUrl(result.url) && result.error?.toLowerCase().includes('timeout')) {
+      console.warn(
+        `${tag} LinkedIn não finalizou o load, mas a URL já está aberta. Mantendo painel interativo: ${result.url}`
+      )
+      return { ready: true, url: result.url, error: null }
+    }
+    return { ready: false, url: result.url, error: result.error }
+  }
+
+  private _openLoginWindow(url: string): EmbeddedLoginResult {
+    if (!this.window) {
+      return { ready: false, url: null, error: 'Janela principal não encontrada.' }
+    }
+    const existing = this.loginWindow && !this.loginWindow.isDestroyed() ? this.loginWindow : null
+    if (existing) {
+      this._focusLoginWindow()
+      void existing.loadURL(url)
+      return { ready: true, url, error: null }
+    }
+
+    const ses = session.fromPartition(LINKEDIN_SESSION)
+    const win = new BrowserWindow({
+      width: 1120,
+      height: 760,
+      minWidth: 860,
+      minHeight: 620,
+      title: 'Login LinkedIn - Beautiful LinkedIn',
+      parent: this.window,
+      modal: false,
+      show: true,
+      autoHideMenuBar: true,
+      backgroundColor: '#ffffff',
+      webPreferences: {
+        session: ses,
+        nodeIntegration: false,
+        contextIsolation: true,
+        sandbox: true
+      }
+    })
+    this.loginWindow = win
+    const wc = win.webContents
+    if (typeof wc.setUserAgent === 'function') {
+      wc.setUserAgent(LINKEDIN_UA)
+    }
+    wc.on('did-navigate', (_event, nextUrl) => {
+      this._lastUrl = nextUrl
+      this._onAuthwall = AUTH_WALL_HINTS.some((h) => nextUrl.includes(h))
+      console.log(`${tag} loginWindow did-navigate → ${nextUrl}`)
+    })
+    wc.on('did-navigate-in-page', (_event, nextUrl) => {
+      this._lastUrl = nextUrl
+      this._onAuthwall = AUTH_WALL_HINTS.some((h) => nextUrl.includes(h))
+      console.log(`${tag} loginWindow did-navigate-in-page → ${nextUrl}`)
+    })
+    wc.on('dom-ready', () => {
+      void this._disablePasskeyPromptsFor(wc)
+    })
+    // Garante input após cada carga: foca a janela e o webContents. Algumas
+    // versões do Windows entregam a janela sem foco de teclado até este passo.
+    wc.on('did-finish-load', () => this._focusLoginWindow())
+    // Watchdog de travamento: se o processo de renderização morrer ou ficar
+    // irresponsivo (ex.: diálogo nativo de WebAuthn preso), recarrega a página
+    // de login em vez de deixar o usuário com a tela congelada.
+    wc.on('unresponsive', () => {
+      console.warn(`${tag} loginWindow IRRESPONSIVO — recarregando página de login`)
+      try {
+        wc.reloadIgnoringCache()
+      } catch (error) {
+        console.warn(`${tag} Falha ao recarregar loginWindow irresponsivo:`, error)
+      }
+    })
+    wc.on('render-process-gone', (_event, details) => {
+      console.error(`${tag} loginWindow render-process-gone reason=${details.reason}`)
+      if (!win.isDestroyed() && details.reason !== 'clean-exit') {
+        try {
+          wc.reloadIgnoringCache()
+        } catch (error) {
+          console.warn(`${tag} Falha ao recarregar após crash:`, error)
+        }
+      }
+    })
+    win.on('closed', () => {
+      if (this.loginWindow === win) this.loginWindow = null
+    })
+    // Popups (ex.: "Continue with Google", desafios): abrir na MESMA sessão e UA
+    // para não nascerem sem cookies/UA. Domínios não-login vão para o navegador
+    // externo. Nunca usamos webPreferences padrão, que quebram a sessão.
+    wc.setWindowOpenHandler(({ url: popupUrl }) => {
+      if (isLoginPopupUrl(popupUrl)) {
+        return {
+          action: 'allow',
+          overrideBrowserWindowOptions: {
+            parent: this.window ?? undefined,
+            autoHideMenuBar: true,
+            backgroundColor: '#ffffff',
+            webPreferences: {
+              session: ses,
+              nodeIntegration: false,
+              contextIsolation: true,
+              sandbox: true
+            }
+          }
+        }
+      }
+      void shell.openExternal(popupUrl)
+      return { action: 'deny' }
+    })
+    wc.on('did-create-window', (childWindow) => {
+      const childWc = childWindow.webContents
+      if (typeof childWc.setUserAgent === 'function') {
+        childWc.setUserAgent(LINKEDIN_UA)
+      }
+      childWc.on('dom-ready', () => {
+        void this._disablePasskeyPromptsFor(childWc)
+      })
+      childWc.setWindowOpenHandler(({ url: nestedUrl }) => {
+        void shell.openExternal(nestedUrl)
+        return { action: 'deny' }
+      })
+    })
+    this._focusLoginWindow()
+    void win.loadURL(url)
+    return { ready: true, url, error: null }
+  }
+
+  private _focusLoginWindow(): void {
+    const win = this.loginWindow
+    if (!win || win.isDestroyed()) return
+    if (win.isMinimized()) win.restore()
+    win.show()
+    win.moveTop()
+    win.focus()
+    const focusContents = () => {
+      if (!win.isDestroyed() && !win.webContents.isDestroyed()) {
+        win.webContents.focus()
+      }
+    }
+    focusContents()
+    setTimeout(focusContents, 50)
+  }
+
+  private _closeLoginWindow(): void {
+    if (!this.loginWindow || this.loginWindow.isDestroyed()) {
+      this.loginWindow = null
+      return
+    }
+    const win = this.loginWindow
+    this.loginWindow = null
+    win.close()
+  }
 }
 
 export const embeddedManager = new EmbeddedBrowserManager()
+
+function isLinkedInUrl(url: string | null | undefined): boolean {
+  return Boolean(url && /(^https?:\/\/)?([^/]+\.)?linkedin\.com(\/|$)/i.test(url))
+}
+
+/**
+ * Popups que devem abrir DENTRO do app (mesma sessão/UA) durante o login:
+ * o próprio LinkedIn e o fluxo OAuth do Google ("Continue with Google").
+ * Qualquer outro destino vai para o navegador externo.
+ */
+function isLoginPopupUrl(url: string | null | undefined): boolean {
+  if (!url) return false
+  if (isLinkedInUrl(url)) return true
+  return /(^https?:\/\/)?([^/]+\.)?(google\.com|accounts\.google\.com|gstatic\.com)(\/|$)/i.test(url)
+}

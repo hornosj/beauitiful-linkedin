@@ -82,8 +82,8 @@ export default function ChromeBootstrapModal(props: Props) {
       }
       if (!result.ready) {
         if (result.needsLogin) {
-          console.warn('[ChromeBootstrapModal] needsLogin=true — painel in-app exibido para login.')
-          // The embedded panel is already showing /login (prepare() called show() internally).
+          console.warn('[ChromeBootstrapModal] needsLogin=true — janela de login separada aberta por prepare().')
+          // prepare() já abriu uma BrowserWindow dedicada em /login (input confiável no Windows).
           setPhase('login_required')
           return
         }
@@ -93,9 +93,11 @@ export default function ChromeBootstrapModal(props: Props) {
         return
       }
       if (result.onAuthwall) {
-        console.warn('[ChromeBootstrapModal] AUTHWALL detectado. Mostrando painel e chamando onFallback().')
-        await bridge.show()
-        props.onFallback?.()
+        console.warn('[ChromeBootstrapModal] AUTHWALL detectado → abrindo janela de login separada.')
+        // Nunca exibimos a WebContentsView para login: ela perde input no Windows.
+        // A janela separada (reloadLogin abre uma se não houver) sempre recebe teclado/mouse.
+        await bridge.reloadLogin()
+        setPhase('login_required')
         return
       }
       console.log('[ChromeBootstrapModal] Página carregada com sucesso ✓ → fase settling')
@@ -258,8 +260,9 @@ export default function ChromeBootstrapModal(props: Props) {
         if (result.ready && !result.onAuthwall) {
           setPhase('settling')
         } else if (result.needsLogin) {
-          // Still needs login — show panel again
-          await bridge.show()
+          // Ainda precisa de login — reabre/foca a janela de login separada
+          // (não a WebContentsView embutida, que perde input no Windows).
+          await bridge.reloadLogin()
           window.setTimeout(poll, 3000)
         } else {
           setError(result.error ?? 'Falha após login.')
@@ -412,7 +415,7 @@ function renderBody(phase: Phase, ctx: BodyContext) {
     return (
       <div style={{ margin: '0 0 18px', fontSize: 13, color: 'var(--ink-2)', lineHeight: 1.55 }}>
         <p style={{ marginTop: 0 }}>
-          O LinkedIn pediu login. Faça login na janela embutida abaixo.
+          O LinkedIn pediu login. Faça login na janela do LinkedIn que acabei de abrir.
           Quando terminar, a busca começa automaticamente.
         </p>
         <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 10 }}>
