@@ -47,6 +47,15 @@ class EnrichmentPattern(str, Enum):
     FIRST_INITIAL_LAST = "flast"  # asilva
     FIRST_DOT_LAST_INITIAL = "first.l"  # ana.s
     FIRST_INITIAL_MIDDLE = "fmiddle"  # amaria
+    # Expanded permutations (lower default priority — appended after the
+    # canonical ones so existing winner selection is preserved).
+    FIRST_LAST = "firstlast"  # anasilva
+    FIRST_UNDERSCORE_LAST = "first_last"  # ana_silva
+    FIRST_HYPHEN_LAST = "first-last"  # ana-silva
+    FIRST_INITIAL_DOT_LAST = "f.last"  # a.silva
+    FIRST_LAST_INITIAL = "firstl"  # anas → "lucianab"
+    LAST_DOT_FIRST = "last.first"  # silva.ana
+    LAST_DOT_FIRST_INITIAL = "last.f"  # silva.a → "bosco.l"
 
 
 class EnrichmentStatus(str, Enum):
@@ -182,6 +191,18 @@ class EnrichmentUpdate:
 # ---------------------------------------------------------------------------
 
 
+# Name particles dropped before building local-parts so compound surnames
+# don't generate noise (e.g. "joao.de.souza"). Lowercased + accent-free to
+# match the tokens produced by ``_split_name``.
+_NAME_PARTICLES: frozenset[str] = frozenset(
+    {
+        "de", "da", "do", "dos", "das", "e",
+        "di", "du", "del", "della", "dello",
+        "van", "von", "la", "le", "den", "der", "ten", "ter",
+    }
+)
+
+
 class EmailPatternGenerator:
     """Generate plausible local-parts for a person + domain combination."""
 
@@ -197,9 +218,19 @@ class EmailPatternGenerator:
         if not parts:
             return []
 
-        first = parts[0]
-        last = parts[-1] if len(parts) > 1 else ""
-        middle = parts[1] if len(parts) >= 3 else ""
+        # Drop name particles (de, da, dos, van, von, …) so compound
+        # Brazilian/European surnames don't generate noise like
+        # "joao.de.souza" or "jde". Keep the original tokens if stripping
+        # would leave nothing.
+        content = [token for token in parts if token not in _NAME_PARTICLES] or parts
+
+        first = content[0]
+        last = content[-1] if len(content) > 1 else ""
+        middle = content[1] if len(content) >= 3 else ""
+        # Penultimate surname — the "family" name in compound surnames
+        # ("Maria da Silva Santos" → silva). Used to emit the alternate
+        # surname branch many companies actually use.
+        penult = content[-2] if len(content) >= 3 else ""
 
         candidates: list[EmailCandidate] = []
         seen: set[str] = set()
@@ -212,6 +243,8 @@ class EmailPatternGenerator:
                 EmailCandidate(local_part=local, domain=domain, pattern=pattern)
             )
 
+        # --- Canonical patterns (order preserved: callers/tests rely on
+        #     "first" being tried before "first.last"). ---
         add(first, EnrichmentPattern.FIRST)
         if last:
             add(f"{first}.{last}", EnrichmentPattern.FIRST_DOT_LAST)
@@ -228,6 +261,21 @@ class EmailPatternGenerator:
                 EnrichmentPattern.FIRST_UNDERSCORE_MIDDLE_DOT_LAST,
             )
             add(f"{first[0]}{middle}", EnrichmentPattern.FIRST_INITIAL_MIDDLE)
+
+        # --- Expanded permutations (appended → lower priority). ---
+        if last:
+            add(f"{first}{last}", EnrichmentPattern.FIRST_LAST)
+            add(f"{first}_{last}", EnrichmentPattern.FIRST_UNDERSCORE_LAST)
+            add(f"{first}-{last}", EnrichmentPattern.FIRST_HYPHEN_LAST)
+            add(f"{first[0]}.{last}", EnrichmentPattern.FIRST_INITIAL_DOT_LAST)
+            add(f"{first}{last[0]}", EnrichmentPattern.FIRST_LAST_INITIAL)
+            add(f"{last}.{first}", EnrichmentPattern.LAST_DOT_FIRST)
+            add(f"{last}.{first[0]}", EnrichmentPattern.LAST_DOT_FIRST_INITIAL)
+
+        # --- Alternate (penultimate) surname for compound names. ---
+        if penult and penult != last:
+            add(f"{first}.{penult}", EnrichmentPattern.FIRST_DOT_LAST)
+            add(f"{first[0]}{penult}", EnrichmentPattern.FIRST_INITIAL_LAST)
 
         return candidates
 

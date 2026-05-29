@@ -24,7 +24,7 @@ describe('ApiClient', () => {
 
   it('builds requests against the configured base URL', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ status: 'ok', version: '0.1.0' }), {
+      new Response(JSON.stringify({ status: 'ok', version: '0.1.3' }), {
         status: 200,
         headers: { 'content-type': 'application/json' }
       })

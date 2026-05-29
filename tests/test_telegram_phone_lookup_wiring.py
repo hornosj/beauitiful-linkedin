@@ -35,6 +35,32 @@ def test_default_phone_lookup_providers_adds_consultoria_gonzales_when_configure
     ]
 
 
+def test_default_phone_lookup_providers_adds_void_phone_when_group_configured(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "beautiful_linkedin.server.app._resolve_free_engines",
+        lambda _settings: {"fake": _FakeEngine()},
+    )
+
+    providers = _default_phone_lookup_providers(
+        Settings(
+            telegram_api_id="12345",
+            telegram_api_hash="abc123",
+            telegram_session_name="data/test-session",
+            telegram_group_username="@CONSULTASGRATIS4NV",
+        )
+    )
+
+    assert [p.name for p in providers] == [
+        "receita_cnpj",
+        "pdf_serp",
+        "consultoria_gonzales_bot",
+        "telegram_group_consultasgratis",
+        "void_phone_consultasgratis",
+    ]
+
+
 def test_default_phone_lookup_providers_skips_consultoria_gonzales_without_credentials(
     monkeypatch,
 ) -> None:

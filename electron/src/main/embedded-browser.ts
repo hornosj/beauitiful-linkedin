@@ -68,8 +68,24 @@ export class EmbeddedBrowserManager {
         session: ses,
         nodeIntegration: false,
         contextIsolation: true,
-        sandbox: true
+        sandbox: true,
+        // Mantém timers/rAF do renderer rodando mesmo com a view oculta. Sem
+        // isso o renderer do People (escondido durante o scrape) congela e o
+        // connect_over_cdp do Playwright trava ao anexar nesse target.
+        backgroundThrottling: false
       }
+    })
+    // Reforça em runtime: garante que este WebContents nunca seja rebaixado
+    // quando removido da janela (removeChildView em hide()), para continuar
+    // respondendo ao CDP durante a busca de leads.
+    this.view.webContents.setBackgroundThrottling(false)
+    // Força o renderer a inicializar com um documento real. Um WebContentsView
+    // recém-criado, nunca navegado, expõe um target CDP "morto" que não responde
+    // a Page.enable/Runtime.enable. O Playwright (connect_over_cdp) anexa a TODOS
+    // os targets e trava nesse renderer morto — era a causa do travamento da
+    // busca de leads. Carregar about:blank garante um renderer vivo desde o boot.
+    void this.view.webContents.loadURL('about:blank').catch((error) => {
+      console.warn(`${tag} Falha ao pré-carregar about:blank na view:`, error)
     })
     console.log(`${tag} WebContentsView criado. webContents.id=${this.view.webContents.id}`)
 

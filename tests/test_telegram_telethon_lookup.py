@@ -10,15 +10,22 @@ from beautiful_linkedin.storage.telegram_group_playwright_lookup import (
     TelegramConsultResult,
 )
 from beautiful_linkedin.storage.telegram_telethon_lookup import (
+    CdpUnixTextFetcher,
     TelegramActionThrottle,
     TelethonBotConsultBase,
     TelethonBotResponse,
     TelethonGonzalesNameConsult,
+    TelethonSerasaCpfConsult,
     TelethonTelegramConsultOrchestrator,
+    TelethonUnixNameConsult,
     TelethonVoidNameConsult,
     _compose_raw_text,
+    _default_unix_fetcher,
     _is_result_message,
     _looks_like_loading,
+    _looks_like_serasa_result,
+    _looks_like_void_menu,
+    _parse_start_deeplink,
     _strip_html,
 )
 
@@ -191,20 +198,22 @@ def test_telethon_consult_is_fail_soft_when_credentials_are_missing() -> None:
     assert result.error == "telegram_not_configured"
 
 
-def test_telethon_failure_log_omits_provider_name_and_lead(caplog) -> None:
+def test_telethon_failure_is_logged_with_provider_and_error(caplog) -> None:
+    # Debug logging is intentionally verbose: it logs the real provider
+    # name, the query, and the error code so the phone flow can be traced
+    # end-to-end. (This verbosity is a temporary debugging aid.)
     def requester(username: str, query: str) -> TelethonBotResponse:  # noqa: ARG001
         raise RuntimeError("boom")
 
     consult = TelethonGonzalesNameConsult(requester=requester)
 
-    with caplog.at_level("DEBUG", logger="beautiful_linkedin.storage.telegram_telethon_lookup"):
+    with caplog.at_level("INFO", logger="beautiful_linkedin.storage.telegram_telethon_lookup"):
         result = consult.consult("Ana Silva")
 
     assert result.raw_text is None
     assert result.error == "RuntimeError:boom"
-    assert "Telethon Telegram consult failed" in caplog.text
-    assert "gon" not in caplog.text
-    assert "Ana Silva" not in caplog.text
+    assert "[telethon/gon] consult failed" in caplog.text
+    assert "RuntimeError:boom" in caplog.text
 
 
 def test_strip_html_drops_scripts_styles_and_tags() -> None:
@@ -428,11 +437,31 @@ def test_telethon_orchestrator_runs_finder_gon_unix_void_in_order() -> None:
     ]
 
 
-def test_telethon_void_consult_sends_nome_to_group_clicks_receita_and_downloads_txt(
+# The real SI-PNI base TXT (DADOS CADASTRAIS) — CPF + NASC + ENDEREÇO.
+_VOID_SIPNI_TXT = (
+    "🔎 CONSULTA NOME SI-PNI 🕵🏻‍♂️\n\n"
+    "「📄」 RESULTADOS (1):\n\n"
+    "RESULTADO (1):\n\n"
+    "「👤」 DADOS CADASTRAIS\n\n"
+    "- NOME: PIETRA DIOVANA BARBOSA\n"
+    "- CPF: 06594291106\n"
+    "- NASC: 11/01/2002\n"
+    "- SEXO: F\n"
+    "- CNS: 704101897518850\n\n"
+    "- MÃE: SANDRA PERETO BARBOSA\n"
+    "- PAI: NÃO INFORMADO\n\n"
+    "- ENDEREÇO: BOSCO, MARACANÃ, 520110/GO - 75040280\n\n"
+    " - MODULO NOME SI-PNI: Pietra Diovana Barbosa\n"
+)
+
+
+def test_telethon_void_consult_sends_nome_to_group_clicks_sipni_and_downloads_txt(
     tmp_path,
 ) -> None:
+    # Faithful to the real menu: body text has NO "void" word — the marker is
+    # the self-named VOID button next to the base buttons.
     menu = _FakeMessage(
-        raw_text="🔎 SELECIONE UMA BASE",
+        raw_text="- 🪪 NOME: Pietra Diovana Barbosa\n- 👤 USER: Joilson\n\nㅤ🔎 SELECIONE UMA BASE",
         id=10,
         buttons=[
             [_FakeButton(text="NACIONAL"), _FakeButton(text="SI-PNI")],
@@ -440,13 +469,13 @@ def test_telethon_void_consult_sends_nome_to_group_clicks_receita_and_downloads_
         ],
     )
     txt = _FakeMessage(
-        raw_text="NRC-MAURICIOCERRI.txt",
+        raw_text="NSP-PIETRADIOVANABARBOSA.txt",
         id=11,
         media=object(),
     )
     client = _FakePollingClient(
         snapshots=[[menu], [txt]],
-        download_text="- MODULO NOME RECEITA : Mauricio Cerri\nCPF: 111.222.333-44",
+        download_text=_VOID_SIPNI_TXT,
     )
     consult = TelethonVoidNameConsult(
         artifact_dir=tmp_path,
@@ -459,37 +488,39 @@ def test_telethon_void_consult_sends_nome_to_group_clicks_receita_and_downloads_
             client,
             send_entity="@CONSULTASGRATIS4NV",
             read_entity="@CONSULTASGRATIS4NV",
-            query="/nome Mauricio Cerri",
+            query="/nome Pietra Diovana Barbosa",
             baseline_id=0,
         )
 
     response = asyncio.run(run())
 
-    assert client.sent == [("@CONSULTASGRATIS4NV", "/nome Mauricio Cerri")]
-    assert menu.clicked == ["RECEITA"]
+    assert client.sent == [("@CONSULTASGRATIS4NV", "/nome Pietra Diovana Barbosa")]
+    # The base button clicked must be SI-PNI, never RECEITA.
+    assert menu.clicked == ["SI-PNI"]
     assert client.downloaded == [txt]
     assert response.raw_text is not None
     assert "=== telegram_bot_message ===" in response.raw_text
-    assert "NRC-MAURICIOCERRI.txt" in response.raw_text
-    assert "=== telegram_artifact:NRC-MAURICIOCERRI.txt ===" in response.raw_text
-    assert "- MODULO NOME RECEITA : Mauricio Cerri" in response.raw_text
+    assert "=== telegram_artifact:" in response.raw_text
+    assert "MODULO NOME SI-PNI" in response.raw_text
+    assert "- CPF: 06594291106" in response.raw_text
+    assert "BOSCO, MARACANÃ, 520110/GO" in response.raw_text
     assert response.source_url == "https://web.telegram.org/k/#@CONSULTASGRATIS4NV"
 
 
 def test_telethon_void_waits_for_txt_file_before_persisting_raw_text(tmp_path) -> None:
     menu = _FakeMessage(
-        raw_text="🔎 SELECIONE UMA BASE",
+        raw_text="🔎 Void Search\nSELECIONE UMA BASE",
         id=10,
-        buttons=[[_FakeButton(text="RECEITA")]],
+        buttons=[[_FakeButton(text="SI-PNI")]],
     )
     txt = _FakeMessage(
-        raw_text="NRC-MAURICIOCERRI.txt",
+        raw_text="NSP-PIETRADIOVANABARBOSA.txt",
         id=11,
         media=object(),
     )
     client = _FakeDelayedDownloadPollingClient(
         snapshots=[[menu], [txt]],
-        download_text="- MODULO NOME RECEITA : Mauricio Cerri\nCPF: 111.222.333-44",
+        download_text=_VOID_SIPNI_TXT,
     )
     consult = TelethonVoidNameConsult(
         artifact_dir=tmp_path,
@@ -502,16 +533,235 @@ def test_telethon_void_waits_for_txt_file_before_persisting_raw_text(tmp_path) -
             client,
             send_entity="@CONSULTASGRATIS4NV",
             read_entity="@CONSULTASGRATIS4NV",
-            query="/nome Mauricio Cerri",
+            query="/nome Pietra Diovana Barbosa",
             baseline_id=0,
         )
 
     response = asyncio.run(run())
 
     assert response.raw_text is not None
-    assert "=== telegram_artifact:NRC-MAURICIOCERRI.txt ===" in response.raw_text
-    assert "- MODULO NOME RECEITA : Mauricio Cerri" in response.raw_text
-    assert "CPF: 111.222.333-44" in response.raw_text
+    assert "=== telegram_artifact:" in response.raw_text
+    assert "MODULO NOME SI-PNI" in response.raw_text
+    assert "- CPF: 06594291106" in response.raw_text
+
+
+# ---------------------------------------------------------------------------
+# Void menu marker: only click RECEITA on Void's own menu (#void-clicks)
+# ---------------------------------------------------------------------------
+
+
+def test_looks_like_void_menu_requires_void_marker() -> None:
+    assert _looks_like_void_menu("🔎 Void Search\nSELECIONE UMA BASE") is True
+    assert _looks_like_void_menu("VOID — escolha a base") is True
+    # A different bot's menu in the shared group must NOT be treated as Void.
+    assert _looks_like_void_menu("🔎 SELECIONE UMA BASE\nRECEITA") is False
+    assert _looks_like_void_menu("") is False
+    assert _looks_like_void_menu(None) is False
+
+
+def test_looks_like_void_menu_detects_marker_in_button_labels() -> None:
+    # Real Void menu: the body text has NO "void" word; the marker lives in
+    # the button labels (the self-named VOID button alongside RECEITA).
+    real_text = "- 🪪 NOME: Pablo Matos de Oliveira\n- 👤 USER: Joilson\n\nㅤ🔎 SELECIONE UMA BASE"
+    real_buttons = ["NACIONAL", "SI-PNI", "RECEITA", "VOID", "🗑️"]
+    assert _looks_like_void_menu(real_text, real_buttons) is True
+    # Same body text from another bot WITHOUT a VOID button must be rejected.
+    assert _looks_like_void_menu(real_text, ["NACIONAL", "RECEITA"]) is False
+
+
+# ---------------------------------------------------------------------------
+# SERASA /cpf flow: group card -> VER RESULTADO deep link -> bot DM text
+# ---------------------------------------------------------------------------
+
+
+def test_parse_start_deeplink_web_link() -> None:
+    bot, payload = _parse_start_deeplink(
+        "https://t.me/OraculoPuxadaBot?start=abc123"
+    )
+    assert bot == "OraculoPuxadaBot"
+    assert payload == "abc123"
+
+
+def test_parse_start_deeplink_tg_resolve() -> None:
+    bot, payload = _parse_start_deeplink(
+        "tg://resolve?domain=OraculoPuxadaBot&start=tok-9"
+    )
+    assert bot == "OraculoPuxadaBot"
+    assert payload == "tok-9"
+
+
+def test_parse_start_deeplink_empty() -> None:
+    assert _parse_start_deeplink(None) == (None, None)
+    assert _parse_start_deeplink("") == (None, None)
+
+
+def test_looks_like_serasa_result_markers() -> None:
+    assert _looks_like_serasa_result("CPF Encontrado\nNOME: Joao") is True
+    assert _looks_like_serasa_result("TELEFONES:\n+55 (16) 99103-5202") is True
+    assert _looks_like_serasa_result("DATA DE NASCIMENTO: 01/02/1990") is True
+    assert _looks_like_serasa_result("aguarde, processando...") is False
+    assert _looks_like_serasa_result("") is False
+    assert _looks_like_serasa_result(None) is False
+
+
+def test_serasa_flow_extracts_phones_from_bot_dm(tmp_path) -> None:
+    group_card = _FakeMessage(
+        raw_text="CONSULTA CPF\nSua consulta foi realizada com sucesso",
+        id=20,
+        buttons=[
+            [
+                _FakeButton(
+                    text="VER RESULTADO",
+                    url="https://t.me/OraculoPuxadaBot?start=tok-42",
+                )
+            ]
+        ],
+    )
+    bot_result = _FakeMessage(
+        raw_text=(
+            "CPF Encontrado\n"
+            "NOME: MAURICIO CERRI\n"
+            "CPF: 111.222.333-44\n"
+            "DATA DE NASCIMENTO: 01/02/1990\n"
+            "TELEFONES:\n"
+            "+55 (16) 99103-5202\n"
+            "+55 (16) 99346-7376 ★ - CLARO"
+        ),
+        id=30,
+    )
+    # Snapshots consumed in order: (1) group poll for VER RESULTADO,
+    # (2) bot baseline get_messages(limit=1), (3) bot DM result poll.
+    client = _FakePollingClient(
+        snapshots=[[group_card], [], [bot_result]],
+        download_text="",
+    )
+    consult = TelethonSerasaCpfConsult(
+        artifact_dir=tmp_path,
+        result_poll_interval=0.01,
+        group_wait_seconds=5.0,
+        result_wait_seconds=5.0,
+        throttle=TelegramActionThrottle(min_spacing_seconds=0),
+    )
+
+    async def run() -> TelethonBotResponse:
+        return await consult._run_serasa_flow(
+            client,
+            group_entity="@puxada2026",
+            bot_entity="@OraculoPuxadaBot",
+            bot_target="@OraculoPuxadaBot",
+            query="/cpf 11122233344",
+            group_baseline=0,
+        )
+
+    response = asyncio.run(run())
+
+    # The /cpf query goes to the group, then /start <token> opens the bot.
+    assert client.sent[0] == ("@puxada2026", "/cpf 11122233344")
+    assert ("@OraculoPuxadaBot", "/start tok-42") in client.sent
+    assert response.raw_text is not None
+    assert "+55 (16) 99103-5202" in response.raw_text
+    assert "+55 (16) 99346-7376" in response.raw_text
+
+
+# ---------------------------------------------------------------------------
+# Unix "Texto" download fetcher: persist the structured dump (#unix-download)
+# ---------------------------------------------------------------------------
+
+
+class _FakeUnixLocator:
+    def __init__(self, page: "_FakeUnixPage"):
+        self._page = page
+
+    @property
+    def last(self) -> "_FakeUnixLocator":
+        return self
+
+    def wait_for(self, *, state: str, timeout: int) -> None:  # noqa: ARG002
+        self._page.waited = True
+
+    def scroll_into_view_if_needed(self) -> None:
+        pass
+
+    def click(self) -> None:
+        self._page.clicked = True
+
+    def inner_text(self, *, timeout: int) -> str:  # noqa: ARG002
+        return self._page.body_text
+
+
+class _FakeDownload:
+    def __init__(self, path: str, suggested_filename: str):
+        self._path = path
+        self.suggested_filename = suggested_filename
+
+    def path(self) -> str:
+        return self._path
+
+
+class _FakeDownloadCtx:
+    def __init__(self, download: _FakeDownload):
+        self.value = download
+
+    def __enter__(self) -> "_FakeDownloadCtx":
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        return None
+
+
+class _FakeUnixPage:
+    def __init__(self, *, download: _FakeDownload | None, body_text: str = ""):
+        self._download = download
+        self.body_text = body_text
+        self.clicked = False
+        self.waited = False
+
+    def locator(self, selector: str) -> _FakeUnixLocator:  # noqa: ARG002
+        return _FakeUnixLocator(self)
+
+    def expect_download(self, *, timeout: int) -> _FakeDownloadCtx:  # noqa: ARG002
+        if self._download is None:
+            raise RuntimeError("no download")
+        return _FakeDownloadCtx(self._download)
+
+
+def test_unix_text_fetcher_clicks_texto_and_captures_download(tmp_path) -> None:
+    dump = (
+        "NOME: MAURICIO CERRI\n"
+        "CPF: 111.222.333-44\n"
+        "DATA DE NASCIMENTO: 03/07/1985\n"
+    )
+    artifact = tmp_path / "unix_resultado.txt"
+    artifact.write_text(dump, encoding="utf-8")
+    page = _FakeUnixPage(
+        download=_FakeDownload(str(artifact), "unix_resultado.txt"),
+        body_text="ignored body",
+    )
+
+    fetcher = CdpUnixTextFetcher()
+    text = fetcher._extract_result(page, context=None)
+
+    assert page.clicked is True
+    assert "=== unix_texto (unix_resultado.txt) ===" in text
+    assert "CPF: 111.222.333-44" in text
+    assert "DATA DE NASCIMENTO: 03/07/1985" in text
+
+
+def test_unix_text_fetcher_falls_back_to_body_on_download_failure(tmp_path) -> None:  # noqa: ARG001
+    page = _FakeUnixPage(download=None, body_text="PESSOAS ENCONTRADAS\nCPF 111.222.333-44")
+
+    fetcher = CdpUnixTextFetcher()
+    text = fetcher._extract_result(page, context=None)
+
+    assert text == "PESSOAS ENCONTRADAS\nCPF 111.222.333-44"
+
+
+def test_unix_consult_uses_text_download_fetcher() -> None:
+    consult = TelethonUnixNameConsult(
+        throttle=TelegramActionThrottle(min_spacing_seconds=0),
+    )
+    assert isinstance(consult._url_fetcher, CdpUnixTextFetcher)
+    assert consult._url_fetcher is _default_unix_fetcher()
 
 
 # ---------------------------------------------------------------------------

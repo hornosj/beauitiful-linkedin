@@ -17,6 +17,13 @@ describe('buildSidecarEnv', () => {
     expect(env.PYTHONUNBUFFERED).toBe('1')
   })
 
+  it('forces UTF-8 for the Python sidecar on Windows codepage consoles', () => {
+    const env = buildSidecarEnv(undefined, {})
+
+    expect(env.PYTHONIOENCODING).toBe('utf-8')
+    expect(env.PYTHONUTF8).toBe('1')
+  })
+
   it('preserves an existing PYTHONPATH after project src', () => {
     const projectRoot = 'C:\\project\\beautiful-linkedin'
     const env = buildSidecarEnv(projectRoot, { PYTHONPATH: 'C:\\already-there' })

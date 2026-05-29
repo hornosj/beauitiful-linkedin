@@ -2,6 +2,8 @@ import type {
   ApiKeyOverrides,
   CookieDiagnosticRequest,
   CookieDiagnosticResponse,
+  PlaywrightDiagnosticRequest,
+  PlaywrightDiagnosticResponse,
   DiagnosticsResponse,
   EnrichLeadTableRequest,
   EnrichLeadTableResponse,
@@ -49,6 +51,7 @@ import type {
   TelethonAuthSignInRequest,
   TelethonAuthSignInResponse,
   TelethonAuthLogoutResponse,
+  TelethonConfigRequest,
   TelethonCpfStageRequest,
   TelethonPipelineRequest,
   TelethonPipelineResponse
@@ -104,6 +107,10 @@ export class ApiClient {
 
   diagnoseCookie(payload?: CookieDiagnosticRequest): Promise<CookieDiagnosticResponse> {
     return this.post<CookieDiagnosticResponse>('/diagnostics/cookie', payload ?? {})
+  }
+
+  diagnosePlaywright(payload?: PlaywrightDiagnosticRequest): Promise<PlaywrightDiagnosticResponse> {
+    return this.post<PlaywrightDiagnosticResponse>('/diagnostics/playwright', payload ?? {})
   }
 
   listLeadTables(): Promise<SavedLeadTable[]> {
@@ -218,6 +225,20 @@ export class ApiClient {
 
   getTelethonAuthStatus(): Promise<TelethonAuthStatusResponse> {
     return this.get<TelethonAuthStatusResponse>('/telegram/telethon/auth/status')
+  }
+
+  /**
+   * Persist the user-supplied Telegram API credentials (api_id/api_hash
+   * from my.telegram.org). After this resolves the sidecar reports
+   * ``configured: true`` and the phone-login flow can proceed.
+   */
+  saveTelethonConfig(payload: TelethonConfigRequest): Promise<TelethonAuthStatusResponse> {
+    return this.post<TelethonAuthStatusResponse>('/telegram/telethon/config', payload)
+  }
+
+  /** Forget the saved API credentials so the operator can re-enter them. */
+  clearTelethonConfig(): Promise<TelethonAuthStatusResponse> {
+    return this.delete<TelethonAuthStatusResponse>('/telegram/telethon/config')
   }
 
   sendTelethonAuthCode(

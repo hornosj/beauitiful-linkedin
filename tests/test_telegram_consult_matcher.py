@@ -60,7 +60,9 @@ def test_only_location_matches() -> None:
         linkedin_location="São Paulo, Brazil",
         linkedin_education=[{"institution": "USP", "end_year": 2007}],
     )
-    assert score.score == 33  # location weight + structured data quality
+    # Full city+state location match → 100% of the 55-pt location weight = 55,
+    # plus 3 pts of partial data quality (cpf+nome+endereço, no birth date).
+    assert score.score == 58
     assert score.signals_used == ["location", "data_quality"]
 
 
@@ -92,9 +94,9 @@ def test_state_only_match_is_partial() -> None:
     )
     # 'sao paulo' is a city in the LinkedIn input; candidate's city is
     # 'campinas' (not in our capital list) but BOTH are SP. So state
-    # matches; city doesn't. State-only → 60% of the 30-pt location
-    # weight = 18, plus 5 points of complete candidate data quality.
-    assert score.score == 23
+    # matches; city doesn't. State-only → 60% of the 55-pt location
+    # weight = 33, plus 5 points of complete candidate data quality.
+    assert score.score == 38
 
 
 def test_age_uses_earliest_grad_year_as_anchor() -> None:
@@ -123,7 +125,8 @@ def test_snippet_used_as_location_fallback() -> None:
         snippet_fallback="Senior Designer at Foo · São Paulo, Brasil",
     )
     assert "location" in score.signals_used
-    assert score.score == 33
+    # Full location match via snippet → 55 (location weight) + 3 (data quality).
+    assert score.score == 58
 
 
 def test_score_breakdown_reports_signals_used() -> None:
@@ -204,6 +207,196 @@ def test_senior_current_role_allows_older_plausible_candidate() -> None:
 
     assert score.score >= 80
     assert score.breakdown["career_age"]["career_stage"] == "executive"
+
+
+# ---- per-piece name scoring (#score-por-pedaco-do-nome) ------------------
+
+
+def test_full_name_coverage_alone_clears_followup_threshold() -> None:
+    """Every piece of the lead's name present in the candidate must clear
+    the 65 follow-up threshold even with NO location/age/birthday signals —
+    this is the 'Julia Pascoli' case the operator flagged.
+    """
+    score = score_candidate(
+        _candidate(nome="Julia Pascoli", endereco=None, data_nascimento=None),
+        lead_name="Julia Pascoli",
+        linkedin_location=None,
+        linkedin_education=None,
+    )
+    # name is the only meaningful signal here, yet it carries the candidate
+    # over the eligibility line on its own.
+    assert score.score >= 65
+    assert score.rejected is False
+    assert score.breakdown["name"]["reason"] == "full_coverage"
+    assert score.breakdown["name"]["coverage"] == 1.0
+
+
+def test_clean_prefix_outranks_buried_name_via_extra_penalty() -> None:
+    """'JULIA PASCOLI DE TOLEDO' (lead name as a clean prefix) must score
+    higher than 'MARIA JULIA GRANDI DE PASCOLI' (lead name buried among
+    extra surnames), because extra candidate surnames are lightly penalized.
+    """
+    prefix = score_candidate(
+        _candidate(nome="Julia Pascoli de Toledo"),
+        lead_name="Julia Pascoli",
+        linkedin_location=None,
+        linkedin_education=None,
+    )
+    buried = score_candidate(
+        _candidate(nome="Maria Julia Grandi de Pascoli"),
+        lead_name="Julia Pascoli",
+        linkedin_location=None,
+        linkedin_education=None,
+    )
+
+    # Both are full-coverage (all lead pieces present), so both stay
+    # eligible — but the clean prefix wins the ranking.
+    assert prefix.score >= 65
+    assert prefix.score > buried.score
+    assert prefix.breakdown["name"]["reason"] == "full_coverage_with_extras"
+    assert prefix.breakdown["name"]["extra_candidate_tokens"] == ["toledo"]
+    assert buried.breakdown["name"]["extra_candidate_tokens"] == ["grandi", "maria"]
+
+
+def test_partial_name_coverage_scores_proportionally_and_stays_weak() -> None:
+    """A lead piece missing from the candidate lowers the name sub-score
+    proportionally; with no other signals it should NOT reach 65.
+    """
+    score = score_candidate(
+        _candidate(nome="Maria Silva", endereco=None, data_nascimento=None),
+        lead_name="Maria Julia Silva",  # 3 pieces; candidate has 2 of them
+        linkedin_location=None,
+        linkedin_education=None,
+    )
+    assert score.breakdown["name"]["reason"] == "partial_coverage"
+    assert round(score.breakdown["name"]["coverage"], 2) == 0.67
+    assert score.score < 65
+
+
+# ---- location outranks name for homonyms (#location-weight) --------------
+
+
+def test_location_outweighs_name_when_comparable() -> None:
+    """With a comparable location present, the name yields weight to the
+    location: a full name match earns only 45, the location earns 55. So a
+    same-name candidate in the RIGHT city outscores the bare name match.
+    """
+    right_city = score_candidate(
+        _candidate(nome="Ana Silva", endereco="Rua X, São Paulo/SP", data_nascimento=None),
+        lead_name="Ana Silva",
+        linkedin_location="São Paulo, Brazil",
+        linkedin_education=None,
+    )
+    # name 45 + location 55 + small data quality → caps high, well above 65.
+    assert right_city.score >= 95
+    assert right_city.breakdown["name"]["weight"] == 45
+    assert right_city.breakdown["location"]["weight"] == 55
+
+
+def test_same_name_wrong_city_is_capped_below_threshold() -> None:
+    """The core homonym fix: same full name, but the candidate's address is
+    in a clearly different state with NO birthday to confirm identity. The
+    location mismatch must cap the score below the 65 follow-up threshold so
+    the wrong-city homonym is not selected for a /cpf.
+    """
+    score = score_candidate(
+        _candidate(
+            nome="Ana Silva",
+            endereco="Rua Y, Belém/PA",
+            data_nascimento="15/03/1998",
+        ),
+        lead_name="Ana Silva",
+        linkedin_location="São Paulo, Brazil",
+        linkedin_experience_title="Analista de Marketing Junior",
+        linkedin_experience_years=[2022],  # age plausible → would pass without cap
+    )
+    assert score.score <= 40
+    assert score.score < 65
+    codes = [p["code"] for p in score.breakdown["penalties"]]
+    assert "location_homonym_mismatch" in codes
+
+
+def test_exact_birthday_overrides_location_mismatch() -> None:
+    """A real person who moved: same name, wrong-city address, but the
+    LinkedIn birthday matches the candidate's data_nascimento exactly. The
+    birthday is identity-decisive, so the location-mismatch cap is skipped
+    and the candidate stays eligible.
+    """
+    score = score_candidate(
+        _candidate(
+            nome="Ana Silva",
+            endereco="Rua Y, Belém/PA",
+            data_nascimento="15/03/1998",
+        ),
+        lead_name="Ana Silva",
+        linkedin_location="São Paulo, Brazil",
+        linkedin_birthday="15/03",
+    )
+    codes = [p["code"] for p in score.breakdown["penalties"]]
+    assert "location_homonym_mismatch" not in codes
+    assert score.score >= 65
+
+
+def test_unparseable_address_keeps_full_name_weight() -> None:
+    """When the candidate's address can't be parsed into a state/city, the
+    location is NOT a usable comparison — the name keeps its full weight so a
+    clean full-coverage match still clears the threshold on its own.
+    """
+    score = score_candidate(
+        _candidate(nome="Ana Silva", endereco="Apto 12, fundos", data_nascimento=None),
+        lead_name="Ana Silva",
+        linkedin_location="São Paulo, Brazil",
+        linkedin_education=None,
+    )
+    assert score.breakdown["name"]["weight"] == 70
+    assert score.score >= 65
+    codes = [p["code"] for p in score.breakdown["penalties"]]
+    assert "location_homonym_mismatch" not in codes
+
+
+def test_void_sipni_address_lights_up_location_when_uf_matches() -> None:
+    """The Void SI-PNI base TXT carries ``ENDEREÇO: BAIRRO, ZONA, <ibge>/UF``.
+    When the lead's LinkedIn location is in the SAME state, the location
+    signal must light up green (earned > 0 and matched) so the operator sees
+    the LOCALIZAÇÃO tag — the behavior the operator asked for.
+    """
+    score = score_candidate(
+        _candidate(
+            nome="Pietra Diovana Barbosa",
+            endereco="BOSCO, MARACANÃ, 520110/GO - 75040280",
+            data_nascimento="11/01/2002",
+        ),
+        lead_name="Pietra Diovana Barbosa",
+        linkedin_location="Goiânia, Goiás",
+        linkedin_education=None,
+    )
+    assert "location" in score.signals_used
+    assert score.breakdown["location"]["state_match"] is True
+    assert score.breakdown["location"]["earned"] > 0
+
+
+def test_void_sipni_address_location_mismatch_does_not_light_up() -> None:
+    """Same address (GO) but the lead's LinkedIn says São Paulo (SP): the
+    location signal is still compared (so the operator sees it), but it does
+    NOT match — no green tag — and the homonym cap keeps the wrong-state
+    candidate below the follow-up threshold.
+    """
+    score = score_candidate(
+        _candidate(
+            nome="Pietra Diovana Barbosa",
+            endereco="BOSCO, MARACANÃ, 520110/GO - 75040280",
+            data_nascimento="11/01/2002",
+        ),
+        lead_name="Pietra Diovana Barbosa",
+        linkedin_location="São Paulo, SP",
+        linkedin_education=None,
+    )
+    assert "location" in score.signals_used
+    assert score.breakdown["location"]["state_match"] is False
+    assert score.breakdown["location"]["city_match"] is False
+    assert score.score < 65
+    codes = [p["code"] for p in score.breakdown["penalties"]]
+    assert "location_homonym_mismatch" in codes
 
 
 # ---- enforce_name_gate ---------------------------------------------------

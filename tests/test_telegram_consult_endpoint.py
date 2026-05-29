@@ -342,7 +342,7 @@ def test_telethon_cpf_stage_uses_telethon_driver_not_playwright(monkeypatch, app
         fail_if_playwright_used,
     )
     monkeypatch.setattr(
-        "beautiful_linkedin.server.app._default_telethon_gonzales_cpf_consult",
+        "beautiful_linkedin.server.app._default_telethon_serasa_cpf_consult",
         lambda settings=None: telethon,
     )
 
@@ -399,7 +399,7 @@ def test_telethon_cpf_stage_accepts_persisted_primary_cpf(monkeypatch, app) -> N
 
     telethon = _FakeTelethonCpf()
     monkeypatch.setattr(
-        "beautiful_linkedin.server.app._default_telethon_gonzales_cpf_consult",
+        "beautiful_linkedin.server.app._default_telethon_serasa_cpf_consult",
         lambda settings=None: telethon,
     )
 
@@ -458,7 +458,11 @@ def test_telegram_consult_multiple_experimental_runs_finder_cpf_on_consensus(
 
     assert response.status_code == 200, response.text
     body = response.json()
-    assert finder_cpf.calls == ["111.222.333-44"]
+    # Both CPFs carry the lead's exact name ("Ana Silva"), so under the
+    # per-piece name scoring both clear the 65 follow-up threshold and become
+    # targets. The consensus CPF (seen by finder+gon) still ranks FIRST; the
+    # single-provider homonym follows. The per-lead cap keeps this bounded.
+    assert finder_cpf.calls == ["111.222.333-44", "999.888.777-66"]
     finder_cpf_payload = next(
         c for c in body["consults"] if c["provider"] == "finder_cpf"
     )
@@ -1022,7 +1026,7 @@ def test_telethon_pipeline_phone_stage_is_limited_to_best_cpf(
         lambda settings=None: object(),
     )
     monkeypatch.setattr(
-        "beautiful_linkedin.server.app._default_telethon_gonzales_cpf_consult",
+        "beautiful_linkedin.server.app._default_telethon_serasa_cpf_consult",
         lambda settings=None: _FakeCpfDriver(),
     )
     monkeypatch.setattr(

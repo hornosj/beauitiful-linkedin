@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { ApiClient, ApiError } from '../../../shared/api'
 import type {
@@ -47,6 +47,19 @@ export default function CpfPickerTelethonDialog(props: Props): JSX.Element | nul
   } = props
   const [busy, setBusy] = useState(false)
   const [progressLabel, setProgressLabel] = useState<string | null>(null)
+  // O modal pode ser fechado enquanto a consulta ainda roda: o loop em
+  // `handleConfirm` é uma promise em voo que continua vivendo após o
+  // desmonte (os callbacks `onResult`/`onError`/`onAuthRequired` são do
+  // pai, então o resultado ainda chega). Esta ref evita `setState` em
+  // componente desmontado depois que o operador manda a consulta pro
+  // background pelo ✕.
+  const mountedRef = useRef(true)
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
 
   useEffect(() => {
     if (!open) {
@@ -65,7 +78,7 @@ export default function CpfPickerTelethonDialog(props: Props): JSX.Element | nul
     try {
       for (let index = 0; index < cpfs.length; index += 1) {
         const cpf = cpfs[index]
-        setProgressLabel(`Consultando ${index + 1}/${cpfs.length}…`)
+        if (mountedRef.current) setProgressLabel(`Consultando ${index + 1}/${cpfs.length}…`)
         try {
           lastResponse = await client.telegramPhoneTelethonCpfStage(tableId, {
             lead_ref: leadRef,
@@ -87,8 +100,10 @@ export default function CpfPickerTelethonDialog(props: Props): JSX.Element | nul
     } catch (error) {
       onError(formatError(error))
     } finally {
-      setBusy(false)
-      setProgressLabel(null)
+      if (mountedRef.current) {
+        setBusy(false)
+        setProgressLabel(null)
+      }
     }
   }
 
@@ -104,22 +119,43 @@ export default function CpfPickerTelethonDialog(props: Props): JSX.Element | nul
       aria-modal="true"
       aria-label="Revisar CPFs encontrados"
     >
-      <div className="enrich-overlay-backdrop" onClick={busy ? undefined : onClose} />
+      <div className="enrich-overlay-backdrop" onClick={onClose} />
       <div className="enrich-modal wide" data-running={busy ? 'true' : 'false'}>
         <header className="enrich-modal-header">
-          <div className="enrich-modal-title">
-            <span
-              className="enrich-modal-dot"
-              data-state={busy ? 'live' : 'idle'}
-              aria-hidden="true"
-            />
-            <h3>Revisar CPFs — {leadName ?? leadRef}</h3>
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+            <div className="enrich-modal-title">
+              <span
+                className="enrich-modal-dot"
+                data-state={busy ? 'live' : 'idle'}
+                aria-hidden="true"
+              />
+              <h3>Revisar CPFs — {leadName ?? leadRef}</h3>
+            </div>
+            <button
+              type="button"
+              className="enrich-modal-close"
+              onClick={onClose}
+              title={
+                busy
+                  ? 'Fechar — a consulta continua rodando em segundo plano'
+                  : 'Fechar'
+              }
+              aria-label="Fechar"
+            >
+              ×
+            </button>
           </div>
           <p className="enrich-modal-sub">
             A consulta encontrou os CPFs abaixo. Desmarque os que você não quer
             consultar e clique em &quot;Buscar telefones&quot;. A consulta é feita
             inteiramente pela sessão nativa do Telegram — nenhum Chrome será aberto.
           </p>
+          {busy && (
+            <p className="enrich-modal-sub" style={{ color: 'var(--ink-3)' }}>
+              Pode fechar esta janela no ✕ — a consulta continua rodando em segundo
+              plano e o resultado aparece quando terminar.
+            </p>
+          )}
           {progressLabel && (
             <p className="enrich-modal-sub" style={{ color: 'var(--ink-2)' }}>
               {progressLabel}

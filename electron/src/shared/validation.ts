@@ -21,6 +21,12 @@ export interface SearchFormState {
   companyName: string
   companyDomain: string
   linkedinUrl: string
+  /** Empresas adicionais (nome OU URL do LinkedIn). Cada entrada dispara
+   *  sua própria busca. Vazio = busca de empresa única (legado). */
+  extraCompanies: string[]
+  /** Com 2+ empresas: 'single' agrega tudo numa tabela (coluna identifica
+   *  a empresa) e 'separate' cria uma tabela por empresa. */
+  tableMode: 'single' | 'separate'
   rolePreset: string
   titles: string
   generalSearch: boolean
@@ -121,6 +127,74 @@ export function buildSearchRequestFromForm(
   return request
 }
 
+/** A single company to search, normalized from the form's primary fields
+ *  or from a free-text "extra company" entry (name or LinkedIn URL). */
+export interface CompanyDraft {
+  name: string
+  domain?: string
+  linkedinUrl?: string
+}
+
+const LINKEDIN_COMPANY_URL = /linkedin\.com\/company\/([^/?#]+)/i
+
+function companyNameFromLinkedInUrl(url: string): string {
+  const match = url.match(LINKEDIN_COMPANY_URL)
+  if (!match) return url.trim()
+  // slug → readable name: "mercadolivre-com" → "mercadolivre com". Good
+  // enough as a label/dedupe key; the URL still drives the actual scrape.
+  return match[1].replace(/-/g, ' ').trim() || url.trim()
+}
+
+function draftFromEntry(value: string): CompanyDraft | null {
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  if (LINKEDIN_COMPANY_URL.test(trimmed)) {
+    return { name: companyNameFromLinkedInUrl(trimmed), linkedinUrl: trimmed }
+  }
+  return { name: trimmed }
+}
+
+/** Collect every company to search: the primary fields first, then each
+ *  non-blank extra entry, deduped by URL/name. Returns [] when the form
+ *  has no company at all. */
+export function collectCompanies(form: SearchFormState): CompanyDraft[] {
+  const drafts: CompanyDraft[] = []
+  const seen = new Set<string>()
+  const push = (draft: CompanyDraft | null): void => {
+    if (!draft) return
+    const key = (draft.linkedinUrl || draft.name).trim().toLowerCase()
+    if (!key || seen.has(key)) return
+    seen.add(key)
+    drafts.push(draft)
+  }
+  if (form.companyName.trim()) {
+    push({
+      name: form.companyName.trim(),
+      domain: form.companyDomain.trim() || undefined,
+      linkedinUrl: form.linkedinUrl.trim() || undefined
+    })
+  }
+  for (const entry of form.extraCompanies) push(draftFromEntry(entry))
+  return drafts
+}
+
+/** Build a search request for one specific company, reusing every shared
+ *  parameter from the form (titles, filters, max_results, scrape mode, …)
+ *  and overriding only the company identity. */
+export function buildSearchRequestForCompany(
+  form: SearchFormState,
+  company: CompanyDraft,
+  apiKeys?: ApiKeyOverrides
+): SearchRequest {
+  const request = buildSearchRequestFromForm(form, apiKeys)
+  request.company_name = company.name
+  if (company.domain) request.company_domain = company.domain
+  else delete request.company_domain
+  if (company.linkedinUrl) request.linkedin_url = company.linkedinUrl
+  else delete request.linkedin_url
+  return request
+}
+
 export function applyRolePresetToForm(
   form: SearchFormState,
   preset: TaxonomyItem | null
@@ -180,6 +254,8 @@ export const emptyFormState: SearchFormState = {
   companyName: '',
   companyDomain: '',
   linkedinUrl: '',
+  extraCompanies: [],
+  tableMode: 'single',
   rolePreset: 'marketing_growth',
   titles: 'marketing, growth, cmo, head of marketing, demand generation, performance marketing',
   generalSearch: false,

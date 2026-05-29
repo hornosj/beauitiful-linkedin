@@ -14,6 +14,9 @@ interface Props {
   onSaveCurrent?(name: string): void
   saveCurrentDisabled?: boolean
   suggestedSaveName?: string
+  /** Optional note shown under the save-name input — used by the
+   *  multi-company "tabelas separadas" mode to explain auto-naming. */
+  saveHint?: string
 }
 
 const AVATAR_PALETTE = [
@@ -136,6 +139,11 @@ export default function ResultsTable(props: Props) {
           <button type="button" className="pill-btn" onClick={() => setSaveDialogOpen(false)}>
             Cancelar
           </button>
+          {props.saveHint && (
+            <div style={{ gridColumn: '1 / -1', fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>
+              {props.saveHint}
+            </div>
+          )}
         </div>
       )}
 

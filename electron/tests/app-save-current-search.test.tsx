@@ -60,6 +60,7 @@ describe('App save current search flow', () => {
           port: 39712,
           error: null
         }),
+      cleanRun: () => Promise.resolve({ killedPids: [], ports: [], errors: [] }),
       chrome: {
         probe: () => Promise.resolve({ alive: true, endpoint: 'http://127.0.0.1:9222' }),
         isRunning: () => Promise.resolve(true),
@@ -102,7 +103,7 @@ describe('App save current search flow', () => {
       if (path.endsWith('/lead-tables')) {
         return Promise.resolve(jsonResponse(savedTableResponse, 201))
       }
-      return Promise.resolve(jsonResponse({ status: 'ok', version: '0.1.0' }))
+      return Promise.resolve(jsonResponse({ status: 'ok', version: '0.1.3' }))
     })
     globalThis.fetch = fetchMock as unknown as typeof fetch
 

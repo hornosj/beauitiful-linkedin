@@ -231,16 +231,28 @@ class LinkedInPeopleSearchProvider(LeadProvider):
         if offset > 0:
             return []
 
+        diagnostic = self._new_diagnostic(company)
+
         slug = _company_slug(company)
         if not slug:
-            logger.warning(
-                "linkedin_people_search: não consegui resolver o slug do LinkedIn para %s.",
-                company.company_name,
+            message = (
+                f"Não consegui resolver o slug do LinkedIn para {company.company_name}."
             )
+            logger.warning("linkedin_people_search: %s", message)
+            diagnostic.last_error = message
             return []
 
-        fetcher = self._fetcher or _default_fetcher(self.options)
+        try:
+            fetcher = self._fetcher or _default_fetcher(self.options)
+        except LinkedInAuthError as exc:
+            logger.warning("linkedin_people_search: %s", exc)
+            diagnostic.last_error = str(exc)
+            return []
         if fetcher is None:
+            diagnostic.last_error = (
+                "Backend Playwright indisponível — confirme se o Chromium do app "
+                "está rodando e se o sidecar foi empacotado com Playwright."
+            )
             return []
 
         # CDP-style fetchers reuse the user's logged-in Chrome and don't need
@@ -445,7 +457,16 @@ class LinkedInPeopleSearchProvider(LeadProvider):
             # Not enough valid leads yet — keep clicking.
             return True
 
-        # Prefer the iterative fetcher API if the fetcher exposes it.
+        # Prefer the iterative fetcher API if the fetcher exposes it. Wrap the
+        # call with a wall-clock timer so the operator can see in the log
+        # whether the time was spent inside the fetcher (CDP / Playwright)
+        # versus our processing pipeline.
+        fetcher_label = type(fetcher).__name__
+        scrape_started = time.monotonic()
+        logger.info(
+            "linkedin_people_search: iniciando scrape via %s (url=%s, max_clicks=%d)",
+            fetcher_label, url, max_clicks,
+        )
         try:
             if hasattr(fetcher, "fetch_listing_iterative"):
                 fetcher.fetch_listing_iterative(
@@ -460,18 +481,38 @@ class LinkedInPeopleSearchProvider(LeadProvider):
                 html = fetcher.fetch_listing(url, li_at=li_at, scrolls=max_clicks)
                 handle_step(0, html)
         except LinkedInAuthError as exc:
-            logger.warning("linkedin_people_search: %s", exc)
+            elapsed = time.monotonic() - scrape_started
+            logger.warning(
+                "linkedin_people_search: %s (após %.1fs no fetcher %s)",
+                exc, elapsed, fetcher_label,
+            )
+            if self.last_diagnostic is not None:
+                self.last_diagnostic.last_error = str(exc)
             return []
         except Exception as exc:
+            elapsed = time.monotonic() - scrape_started
             classified = classify_playwright_error(exc)
             if isinstance(classified, LinkedInAuthError):
-                logger.warning("linkedin_people_search: %s", classified)
+                logger.warning(
+                    "linkedin_people_search: %s (após %.1fs no fetcher %s)",
+                    classified, elapsed, fetcher_label,
+                )
+                if self.last_diagnostic is not None:
+                    self.last_diagnostic.last_error = str(classified)
                 return []
             logger.warning(
-                "linkedin_people_search: falha ao buscar %s: %s.", url, exc
+                "linkedin_people_search: falha ao buscar %s: %s (após %.1fs no fetcher %s).",
+                url, exc, elapsed, fetcher_label,
             )
+            if self.last_diagnostic is not None:
+                self.last_diagnostic.last_error = f"{type(exc).__name__}: {exc}"
             return []
 
+        elapsed = time.monotonic() - scrape_started
+        logger.info(
+            "linkedin_people_search: scrape finalizado em %.1fs (%s) — %d leads aceitos, %d cliques.",
+            elapsed, fetcher_label, len(accepted_leads), progress.clicks_performed,
+        )
         return accepted_leads
 
     # ------------------------------------------------------------------
@@ -749,41 +790,43 @@ def _counts_toward_people_search_target(
 
 
 def _default_fetcher(options: PeopleSearchOptions) -> PeopleListFetcher | None:
-    # 1) Best path: connect to the user's already-running Chrome via CDP.
-    #    Same fingerprint, same cookies in active use → no logout.
-    if (
-        getattr(options, "cdp_enabled", True)
-        and getattr(options, "cdp_endpoint", "")
-        and probe_cdp_endpoint(options.cdp_endpoint)
-    ):
-        # Embedded Electron browser uses port 9223; reuse the existing page
-        # instead of opening a new tab (avoid navigating away from the page
-        # that the app already loaded via embeddedBrowser.prepare()).
-        embedded_port = ":9223"
-        reuse = embedded_port in options.cdp_endpoint
-        logger.info(
-            "linkedin_people_search: usando CDP em %s (%s). %s",
-            options.cdp_endpoint,
-            "browser embutido no app" if reuse else "Chrome aberto",
-            "Página existente será reaproveitada." if reuse else "Você não será deslogado.",
-        )
-        return CDPPeopleFetcher(options.cdp_endpoint, options, reuse_page=reuse)
+    """Return the only supported backend: Playwright over CDP.
 
-    # 2) Stealthy out-of-process fetcher.
-    fetcher = _try_build_scrapling_fetcher(options)
-    if fetcher is not None:
-        return fetcher
+    The desktop app exposes the embedded Electron Chromium at 127.0.0.1:9223
+    and the CLI/Chrome path uses 127.0.0.1:9222. Both require the CDP endpoint
+    to be alive. We deliberately do NOT fall back to Scrapling or to a fresh
+    Playwright browser carrying ``li_at``: the first is unbundled, the second
+    routinely logs the user out of LinkedIn. Surface a clear error instead so
+    the caller can react.
+    """
+    endpoint = getattr(options, "cdp_endpoint", "") or ""
+    cdp_enabled = bool(getattr(options, "cdp_enabled", True))
 
-    # 3) Last resort: vanilla Playwright with the resolver's li_at. May log
-    #    the user out of their main browser; warn loudly.
-    if getattr(options, "cdp_enabled", True):
-        logger.warning(
-            "linkedin_people_search: Chrome com --remote-debugging-port=%s não está rodando. "
-            "Caindo para Playwright com li_at — esse caminho pode deslogar você do LinkedIn. "
-            "Para evitar, inicie o Chrome com --remote-debugging-port=9222.",
-            options.cdp_endpoint,
+    if not cdp_enabled or not endpoint:
+        raise LinkedInAuthError(
+            "Playwright/CDP é o único modo suportado. Configure linkedin_cdp_endpoint "
+            "(o app desktop usa http://127.0.0.1:9223 automaticamente)."
         )
-    return _try_build_playwright_fetcher(options)
+
+    if not probe_cdp_endpoint(endpoint):
+        raise LinkedInAuthError(
+            f"O endpoint CDP ({endpoint}) não respondeu. "
+            "Reinicie o app — o Chromium embutido expõe a porta 9223 no boot. "
+            "Se estiver via Chrome externo, abra-o com --remote-debugging-port=9222."
+        )
+
+    # Embedded Electron browser uses port 9223; reuse the existing page so we
+    # don't navigate away from the tab the app already loaded via
+    # ``embeddedBrowser.prepare()``.
+    embedded_port = ":9223"
+    reuse = embedded_port in endpoint
+    logger.info(
+        "linkedin_people_search: usando CDP em %s (%s). %s",
+        endpoint,
+        "browser embutido no app" if reuse else "Chrome aberto",
+        "Página existente será reaproveitada." if reuse else "Você não será deslogado.",
+    )
+    return CDPPeopleFetcher(endpoint, options, reuse_page=reuse)
 
 
 def _try_build_scrapling_fetcher(
@@ -880,6 +923,63 @@ def _find_page_by_url(browser: Any, url_hint: str) -> Any | None:
     return None
 
 
+def _is_app_shell_url(url: str) -> bool:
+    """True for the Electron React app shell page (never the scrape view).
+
+    The host exposes the renderer as ``file://.../renderer/index.html`` in the
+    packaged build and as ``http://localhost:<port>`` in dev. We must never
+    navigate that page — it is the app UI itself.
+    """
+    u = (url or "").lower()
+    if u.startswith("file://"):
+        return True
+    if u.startswith("devtools://") or u.startswith("chrome://"):
+        return True
+    if "localhost" in u or "127.0.0.1" in u:
+        return True
+    return False
+
+
+def _find_embedded_view_page(browser: Any) -> Any | None:
+    """Return the embedded WebContentsView page used for scraping.
+
+    Electron exposes two page targets over CDP: the React app shell and the
+    ``WebContentsView`` we drive for scraping (``about:blank`` until we
+    navigate it). Electron does **not** implement ``Target.createTarget``, so
+    Playwright cannot open a fresh page over CDP — we must reuse this existing
+    view and navigate it ourselves. Preference order:
+
+    1. a page already on ``linkedin.com`` (warmed up by a prior step),
+    2. an ``about:blank`` page (our pre-loaded scrape view),
+    3. any page that is not the app shell.
+    """
+    candidates: list[tuple[str, Any]] = []
+    for ctx in getattr(browser, "contexts", []) or []:
+        for page in getattr(ctx, "pages", []) or []:
+            candidates.append((getattr(page, "url", "") or "", page))
+
+    logger.info(
+        "[EmbeddedCDP] _find_embedded_view_page: %d página(s) candidata(s): %s",
+        len(candidates),
+        [u[:60] or "(vazia)" for u, _ in candidates],
+    )
+
+    for url, page in candidates:
+        if "linkedin.com" in url.lower():
+            logger.info("[EmbeddedCDP] Reusando página já no LinkedIn: %s", url)
+            return page
+    for url, page in candidates:
+        if url == "" or url.lower().startswith("about:blank"):
+            logger.info("[EmbeddedCDP] Reusando view about:blank pré-carregada.")
+            return page
+    for url, page in candidates:
+        if not _is_app_shell_url(url):
+            logger.info("[EmbeddedCDP] Reusando página não-shell: %s", url)
+            return page
+    logger.warning("[EmbeddedCDP] Nenhuma view embutida reutilizável encontrada.")
+    return None
+
+
 class CDPPeopleFetcher:
     """Connect to the user's already-running Chrome via remote debugging.
 
@@ -945,6 +1045,10 @@ class CDPPeopleFetcher:
         try:
             browser = connect(self._endpoint)
             logger.info("[CDPPeopleFetcher] Conectado ao CDP em %s ✓", self._endpoint)
+        except LinkedInAuthError:
+            # _default_connect already raised a user-facing message (e.g.
+            # "Playwright não está disponível no sidecar"). Preserve it.
+            raise
         except Exception as exc:
             logger.error("[CDPPeopleFetcher] FALHA ao conectar em %s: %s", self._endpoint, exc)
             raise LinkedInAuthError(
@@ -954,20 +1058,29 @@ class CDPPeopleFetcher:
 
         page_owned = not self._reuse_page
         if self._reuse_page:
-            logger.info("[CDPPeopleFetcher] Modo embutido: buscando página existente com 'linkedin.com'")
-            page = _find_page_by_url(browser, "linkedin.com")
+            logger.info("[CDPPeopleFetcher] Modo embutido: reutilizando a view interna do app")
+            page = _find_embedded_view_page(browser)
             if page is None:
+                # Electron não implementa Target.createTarget, então new_page()
+                # via CDP falha. Tentamos mesmo assim (funciona em Chrome real),
+                # mas o caminho normal é reaproveitar a view embutida acima.
                 logger.warning(
-                    "[CDPPeopleFetcher] Página do LinkedIn NÃO encontrada no browser embutido. "
-                    "Abrindo nova aba como fallback."
+                    "[CDPPeopleFetcher] View embutida não encontrada. "
+                    "Tentando abrir nova aba (só funciona em Chrome externo)."
                 )
                 contexts = list(getattr(browser, "contexts", []) or [])
                 if not contexts:
                     raise LinkedInAuthError(
                         "Browser conectado mas sem contextos. Tente reabrir o app."
                     )
-                page = contexts[0].new_page()
-                page_owned = True
+                try:
+                    page = contexts[0].new_page()
+                    page_owned = True
+                except Exception as exc:
+                    raise LinkedInAuthError(
+                        "Não encontrei a aba interna do LinkedIn para reaproveitar. "
+                        "Feche e reabra o app e tente novamente."
+                    ) from exc
             else:
                 logger.info("[CDPPeopleFetcher] Página reutilizada. URL atual: %s", getattr(page, "url", "?"))
         else:
@@ -1042,7 +1155,14 @@ class CDPPeopleFetcher:
                 logger.info("[CDPPeopleFetcher] Página NÃO fechada (pertence ao browser embutido)")
 
     def _default_connect(self, endpoint: str) -> Any:
-        from playwright.sync_api import sync_playwright
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError as exc:
+            raise LinkedInAuthError(
+                "Playwright não está disponível no sidecar empacotado. "
+                "Reinstale a versão mais recente do app — esse build não inclui "
+                "o backend de scraping. (detalhe: {})".format(exc)
+            ) from exc
 
         # Note: we deliberately do NOT use ``with sync_playwright()`` here — the
         # caller is fetch_listing which is short-lived and we must not close

@@ -17,12 +17,24 @@ import {
   listTabs
 } from './chrome'
 import { embeddedManager, type EmbeddedBounds } from './embedded-browser'
+import { cleanCompetingProcesses } from './process-cleanup'
 
 // Expose Electron's Chromium as a CDP target on a dedicated port (9223).
 // This is loopback-only and lets the Python sidecar connect to the in-app
 // WebContentsView without spawning a separate Chrome window.
 app.commandLine.appendSwitch('remote-debugging-port', '9223')
 app.commandLine.appendSwitch('remote-debugging-address', '127.0.0.1')
+
+// O scrape do People roda com o WebContentsView do LinkedIn ESCONDIDO
+// (removeChildView), enquanto o sidecar Python conecta via CDP nessa porta.
+// Sem estas flags, o Chromium congela o renderer oculto/occluído: ele para de
+// responder a comandos CDP (Page.enable, Runtime.enable...). O Playwright faz
+// connect_over_cdp anexando a TODOS os targets de página e fica travado para
+// sempre nesse renderer congelado — era a causa do "timeout após 120s" na
+// busca de leads. Mantemos os renderers de fundo ativos para o CDP funcionar.
+app.commandLine.appendSwitch('disable-renderer-backgrounding')
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows')
+app.commandLine.appendSwitch('disable-background-timer-throttling')
 
 // LinkedIn aciona passkey/Windows Hello na tela de login. No Windows, o diálogo
 // nativo de WebAuthn pode nunca receber foco e travar a página indefinidamente
@@ -179,6 +191,31 @@ if (!gotSingleInstanceLock) {
     ipcMain.handle('chrome:check-linkedin', () => checkLinkedInLogin())
     ipcMain.handle('chrome:open-url', (_event, url: string) => openUrl(url))
     ipcMain.handle('chrome:list-tabs', () => listTabs())
+
+    ipcMain.handle('system:clean-run', async () => {
+      console.log('[IPC system:clean-run] iniciando limpeza de processos concorrentes')
+      const report = await cleanCompetingProcesses(process.pid, sidecar?.process.pid ?? null)
+      console.log('[IPC system:clean-run] relatório=', JSON.stringify(report))
+
+      // Encerra nossos próprios recursos antes de reiniciar para que a nova
+      // instância consiga fazer bind da porta 9223 e do cache de userData.
+      try {
+        embeddedManager.destroy()
+      } catch (error) {
+        console.warn('[clean-run] falha ao destruir browser embutido:', error)
+      }
+      try {
+        await sidecar?.shutdown()
+      } catch (error) {
+        console.warn('[clean-run] falha ao encerrar sidecar:', error)
+      }
+      sidecar = null
+
+      app.relaunch()
+      // Pequeno atraso para o IPC responder ao renderer antes de sairmos.
+      setTimeout(() => app.exit(0), 400)
+      return report
+    })
 
     registerEmbeddedBrowserHandlers()
 

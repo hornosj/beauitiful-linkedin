@@ -34,6 +34,7 @@ from beautiful_linkedin.storage.telegram_group_playwright_lookup import (
 )
 from beautiful_linkedin.storage.telegram_pipeline import (
     TelegramPhoneCandidate,
+    extract_address_from_text,
     extract_emails_from_text,
     extract_phones_from_text,
     run_phone_followup,
@@ -498,3 +499,150 @@ def test_phone_followup_replaces_document_like_existing_phone(
     assert counters["enriched"] == 1
     assert counters["skipped_existing_phone"] == 0
     assert persisted.phone == "+551239492060"
+
+
+# ---------------------------------------------------------------------------
+# Address: the SISREG-III ``/cpf`` report carries the residential address
+# (the name query does not). We parse it from both render variants and
+# persist it onto the lead alongside the phone — first write wins.
+# ---------------------------------------------------------------------------
+
+
+_SISREG_ADDRESS_MULTILINE = """
+Endereço
+TIPO DE LOGRADOURO
+QUADRA
+LOGRADOURO
+QR 406 CONJUNTO 14
+COMPLEMENTO
+CASA
+NÚMERO
+06
+BAIRRO
+SAMAMBAIA NORTE (SAMAMBAIA)
+MUNICÍPIO DE RESIDÊNCIA
+BRASILIA - DF
+CEP
+72318-215
+PAÍS
+BRASIL
+Informações adicionais
+"""
+
+_SISREG_ADDRESS_INLINE = (
+    "Endereço Tipo de logradouro RUA Logradouro GEORGE GUYNEMER "
+    "Complemento Sem informação Número 100 Bairro PARQUE EDU CHAVES "
+    "Município de residência SAO PAULO - SP CEP 02233-100 País BRASIL "
+    "Informações adicionais Info 1 Cartoes agregados do usuario."
+)
+
+
+def test_extract_address_from_text_multiline_sisreg_block() -> None:
+    assert extract_address_from_text(_SISREG_ADDRESS_MULTILINE) == (
+        "QR 406 CONJUNTO 14, Nº 06, CASA, "
+        "Bairro: SAMAMBAIA NORTE (SAMAMBAIA), BRASILIA - DF, CEP: 72318-215"
+    )
+
+
+def test_extract_address_from_text_inline_sisreg_block() -> None:
+    # "Complemento Sem informação" must be dropped, not stitched in.
+    assert extract_address_from_text(_SISREG_ADDRESS_INLINE) == (
+        "GEORGE GUYNEMER, Nº 100, Bairro: PARQUE EDU CHAVES, "
+        "SAO PAULO - SP, CEP: 02233-100"
+    )
+
+
+def test_extract_address_from_text_none_when_sem_informacao() -> None:
+    raw = "Endereço\nENDEREÇO\nSem informação\nInformações adicionais\nInfo 1\n"
+    assert extract_address_from_text(raw) is None
+
+
+def test_extract_address_from_text_none_without_section() -> None:
+    assert extract_address_from_text("Nome\nAna Silva\nCPF\n111.222.333-44") is None
+
+
+def test_run_phone_followup_carries_contact_address(tmp_path: Path) -> None:
+    lead = _lead()
+    store, table_id = _store_with_lead(tmp_path, lead)
+    _seed_cpf_candidate(store, table_id, lead, cpf="111.222.333-44", score=85)
+
+    def consult_fn(cpf: str) -> TelegramConsultResult:
+        return TelegramConsultResult(
+            provider="gon_cpf",
+            lead_name=lead.person_name,
+            query=f"/cpf {cpf}",
+            raw_text=(
+                f"Relatório de CPF (SISREG-III)\nCPF\n{cpf}\n"
+                "Contatos\nTELEFONE 1\n[RESIDENCIAL] ((11)) 99999-0000\n"
+                + _SISREG_ADDRESS_MULTILINE
+            ),
+            source_url=None,
+            downloaded_at=None,
+            error=None,
+        )
+
+    out = run_phone_followup(
+        lead=lead,
+        table_id=table_id,
+        store=store,
+        consult_fn=consult_fn,
+        target_titles=None,
+        run_id="run-address",
+    )
+
+    assert len(out) == 1
+    assert out[0].provenance["contact_address"] == (
+        "QR 406 CONJUNTO 14, Nº 06, CASA, "
+        "Bairro: SAMAMBAIA NORTE (SAMAMBAIA), BRASILIA - DF, CEP: 72318-215"
+    )
+
+
+def test_apply_contact_address_persists_and_never_overwrites(tmp_path: Path) -> None:
+    lead = _lead()
+    store, table_id = _store_with_lead(tmp_path, lead)
+
+    first = store.apply_contact_address_updates(
+        table_id, [(lead, "QR 406 CONJUNTO 14, Nº 06, BRASILIA - DF")]
+    )
+    assert first["enriched"] == 1
+    assert store.list_leads(table_id)[0].endereco == (
+        "QR 406 CONJUNTO 14, Nº 06, BRASILIA - DF"
+    )
+
+    # A second consult for the same lead must NOT clobber the address.
+    second = store.apply_contact_address_updates(
+        table_id, [(lead, "OUTRA RUA, Nº 99, SAO PAULO - SP")]
+    )
+    assert second["enriched"] == 0
+    assert second["skipped_existing_address"] == 1
+    assert store.list_leads(table_id)[0].endereco == (
+        "QR 406 CONJUNTO 14, Nº 06, BRASILIA - DF"
+    )
+
+
+def test_apply_telegram_contact_details_persists_address(tmp_path: Path) -> None:
+    from beautiful_linkedin.server.app import _apply_telegram_contact_details
+
+    lead = _lead()
+    store, table_id = _store_with_lead(tmp_path, lead)
+    candidate = TelegramPhoneCandidate(
+        phone_raw="(11) 99999-0000",
+        phone_digits="11999990000",
+        cpf="111.222.333-44",
+        confidence=85,
+        source_provider="gon_cpf",
+        run_id="run-details",
+        lead_ref=lead.linkedin_url,
+        nome=lead.person_name,
+        provenance={
+            "contact_address": "QR 406 CONJUNTO 14, Nº 06, BRASILIA - DF",
+            "contact_emails": ["ana.pessoal@gmail.com"],
+        },
+    )
+
+    _apply_telegram_contact_details(
+        store=store, table_id=table_id, lead=lead, candidates=[candidate]
+    )
+
+    persisted = store.list_leads(table_id)[0]
+    assert persisted.endereco == "QR 406 CONJUNTO 14, Nº 06, BRASILIA - DF"

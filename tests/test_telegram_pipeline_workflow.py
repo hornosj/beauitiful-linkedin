@@ -31,6 +31,7 @@ from beautiful_linkedin.storage.telegram_group_playwright_lookup import (
 from beautiful_linkedin.storage.telegram_pipeline import (
     TELEGRAM_FOLLOWUP_MIN_SCORE,
     TELEGRAM_RATE_LIMIT_COOLDOWN_MINUTES,
+    cpf_candidate_age_years,
     is_provider_in_cooldown,
     is_rate_limit_error,
     run_phone_followup,
@@ -73,6 +74,12 @@ def _create_table_with_leads(
     table = store.create_table(name="Telegram pipeline tests")
     store.add_leads(table.id, leads)
     return table.id
+
+
+def test_cpf_age_helper_requires_parseable_birth_date() -> None:
+    assert cpf_candidate_age_years("10/01/1985") is not None
+    assert cpf_candidate_age_years(None) is None
+    assert cpf_candidate_age_years("sem data") is None
 
 
 # ---------------------------------------------------------------------------

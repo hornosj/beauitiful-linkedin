@@ -48,6 +48,25 @@ def test_configure_logging_enables_info_logs_for_sidecar() -> None:
         root.setLevel(previous_level)
 
 
+def test_configure_stdio_forces_utf8_when_stream_supports_reconfigure(monkeypatch: pytest.MonkeyPatch):
+    class FakeStream:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, str]] = []
+
+        def reconfigure(self, **kwargs: str) -> None:
+            self.calls.append(kwargs)
+
+    stdout = FakeStream()
+    stderr = FakeStream()
+    monkeypatch.setattr(sidecar.sys, "stdout", stdout)
+    monkeypatch.setattr(sidecar.sys, "stderr", stderr)
+
+    sidecar.configure_stdio()
+
+    assert stdout.calls == [{"encoding": "utf-8", "errors": "replace"}]
+    assert stderr.calls == [{"encoding": "utf-8", "errors": "replace"}]
+
+
 def _free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))

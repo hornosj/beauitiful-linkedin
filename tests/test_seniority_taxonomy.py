@@ -1,6 +1,7 @@
 from beautiful_linkedin.processing.seniority_taxonomy import (
     Seniority,
     classify_seniority,
+    levels_at_or_above,
 )
 
 
@@ -44,3 +45,20 @@ def test_returns_none_when_no_match():
     assert classify_seniority(None) is None
     assert classify_seniority("") is None
     assert classify_seniority("Profissional liberal") is None
+
+
+def test_matches_tokens_glued_to_punctuation():
+    # Previously "vp," / "cmo," would not match the bare "vp"/"cmo" alias
+    # because of the trailing comma. Word-bounded matching fixes it.
+    assert classify_seniority("VP, Marketing") == Seniority.VP
+    assert classify_seniority("CMO, Head of Growth") == Seniority.C_LEVEL
+    assert classify_seniority("Sr. Product Designer") == Seniority.SENIOR
+
+
+def test_levels_at_or_above_is_descending_and_inclusive():
+    assert levels_at_or_above(Seniority.DIRECTOR) == [
+        Seniority.C_LEVEL,
+        Seniority.VP,
+        Seniority.DIRECTOR,
+    ]
+    assert levels_at_or_above(Seniority.C_LEVEL) == [Seniority.C_LEVEL]

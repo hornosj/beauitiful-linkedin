@@ -12,6 +12,8 @@ const baseForm: SearchFormState = {
   companyName: 'Nubank',
   companyDomain: 'nubank.com.br',
   linkedinUrl: 'https://www.linkedin.com/company/nubank/',
+  extraCompanies: [],
+  tableMode: 'single',
   rolePreset: 'custom',
   titles: 'marketing, growth',
   generalSearch: false,

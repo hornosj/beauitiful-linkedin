@@ -16,3 +16,5 @@ electron/release/
 output/*
 !output/.gitkeep
 data/cache.sqlite*
+# User-supplied Telegram API credentials (api_id/api_hash) — secret, never commit.
+data/telegram_credentials.json

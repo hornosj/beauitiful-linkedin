@@ -325,7 +325,7 @@ export function CpfReviewList({
 
 const SIGNAL_LABELS: Record<string, string> = {
   name: 'Nome',
-  location: 'Local',
+  location: 'Localização',
   career_age: 'Idade (carreira)',
   education_age: 'Idade (formação)',
   age: 'Idade',
@@ -514,5 +514,5 @@ export function cpfAllowedForReview(candidate: {
   data_nascimento?: string | null
 }): boolean {
   const age = ageFromBirthDate(candidate.data_nascimento ?? null)
-  return age === null || age <= 75
+  return age !== null && age <= 75
 }

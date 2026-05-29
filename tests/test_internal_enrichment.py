@@ -80,6 +80,45 @@ def test_generator_attaches_pattern_label_to_each_candidate() -> None:
     assert label_for["asilva"] == EnrichmentPattern.FIRST_INITIAL_LAST
 
 
+def test_generator_emits_expanded_permutations() -> None:
+    """Luciana Bosco → the wider range requested: last-first, concatenated,
+    and initial variants — beyond the canonical first/first.last/flast."""
+    locals_ = {
+        c.local_part
+        for c in EmailPatternGenerator().generate("Luciana Bosco", "empresa.com")
+    }
+    # canonical (still present)
+    assert "lbosco" in locals_  # flast
+    assert "luciana.b" in locals_  # first.l
+    assert "luciana.bosco" in locals_  # first.last
+    # expanded
+    assert "lucianabosco" in locals_  # firstlast
+    assert "lucianab" in locals_  # firstl
+    assert "bosco.l" in locals_  # last.f
+    assert "bosco.luciana" in locals_  # last.first
+    assert "l.bosco" in locals_  # f.last
+
+
+def test_generator_strips_particles_in_compound_surnames() -> None:
+    locals_ = {
+        c.local_part
+        for c in EmailPatternGenerator().generate("João de Souza", "empresa.com")
+    }
+    assert "joao.souza" in locals_
+    # particle "de" must not leak into the local-part
+    assert "joao.de.souza" not in locals_
+    assert "jde" not in locals_
+
+
+def test_generator_emits_penultimate_surname_branch() -> None:
+    locals_ = {
+        c.local_part
+        for c in EmailPatternGenerator().generate("Maria da Silva Santos", "empresa.com")
+    }
+    assert "maria.santos" in locals_  # first + last token
+    assert "maria.silva" in locals_  # first + family (penultimate) surname
+
+
 # ---- detect_company_pattern -----------------------------------------------
 
 

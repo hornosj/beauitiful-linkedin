@@ -1,20 +1,12 @@
 # Beautiful LinkedIn - Guia Para Agentes (AGENTS.md)
 
-Este arquivo e o ponto de entrada para qualquer agente automatizado (Claude
-Code, Codex CLI, Cursor, Gemini CLI, OpenClaw, etc.) que opera neste repo.
-Mantenha-o curto: e um mapa, nao um manual. Para o texto de produto e
-exemplos de uso final, leia `README.md`.
+Este arquivo e o ponto de entrada para qualquer agente automatizado (Claude Code, Codex CLI, Cursor, Gemini CLI, OpenClaw, etc.) que opera neste repo. Use-o como mapa inicial do projeto; leia o `README.md` apenas quando precisar de detalhes de uso, exemplos completos ou texto de produto.
 
-> O conteudo canonico vive em [`CLAUDE.md`](./CLAUDE.md). Este `AGENTS.md` e
-> uma copia vinculada para ferramentas que procuram pelo nome neutro.
-> Quando atualizar um, atualize o outro — eles devem ficar em sincronia.
+> O conteudo canonico vive em [`CLAUDE.md`](./CLAUDE.md). Este `AGENTS.md` e uma copia vinculada para ferramentas que procuram pelo nome neutro. Quando atualizar um, atualize o outro — eles devem ficar em sincronia.
 
 ## Contexto
 
-Beautiful LinkedIn e uma CLI Python (com sidecar FastAPI e UI Electron) para
-descoberta publica de leads B2B a partir de buscadores, APIs configuradas,
-paginas oficiais de empresas, diretorios publicos e captures publicos. A
-ferramenta deve manter postura conservadora sobre dados, termos de uso e LGPD.
+Beautiful LinkedIn e uma CLI Python (com sidecar FastAPI e UI Electron) para descoberta publica de leads B2B a partir de buscadores, APIs configuradas, paginas oficiais de empresas, diretorios publicos e captures publicos. A ferramenta deve manter postura conservadora sobre dados, termos de uso e LGPD.
 
 Stack principal:
 - Python 3.11+
@@ -23,199 +15,118 @@ Stack principal:
 - httpx, BeautifulSoup/lxml, duckduckgo-search e SearxNG para web
 - Pydantic para modelos
 - pandas/openpyxl para exportacao
-- pytest para testes (atualmente ~395 testes em ~49 arquivos)
+- pytest para testes (atualmente ~470 testes em ~55 arquivos)
 - Electron + React + TypeScript para o app desktop em `electron/`
 
 ## Comandos
 
+Instalacao local:
 ```bash
 pip install -e ".[dev]"
+```
+
+Rodar a CLI:
+```bash
 beautiful-linkedin
 beautiful-linkedin search --company-name "Nubank" --titles "marketing,growth" --output output/leads.csv
 python -m beautiful_linkedin.main
-pytest tests -q
-docker compose -f docker-compose.searxng.yml up -d   # SearxNG local opcional
 ```
 
-## Mapa de arquivos
+Testes:
+```bash
+pytest tests -q
+pytest tests/test_query_builder.py -q
+```
 
-- `src/beautiful_linkedin/cli.py`, `main.py`, `config.py`, `models.py`,
-  `runner.py`, `scrape_modes.py`: nucleo da CLI.
-- `src/beautiful_linkedin/providers/`: providers de leads.
-  - `apollo.py`, `people_data_labs.py`, `coresignal.py`, `lusha.py`,
-    `apify_linkedin.py`: APIs estruturadas.
-  - `linkedin_cookie.py`, `linkedin_sales_navigator.py`,
-    `linkedin_playwright.py`: caminhos com `li_at` (cookie).
-  - `linkedin_people_search.py`: scraper listing-only da aba `/people/`.
-    Fetchers em ordem: (1) **CDP** no Chrome aberto via
-    `--remote-debugging-port=9222` (recomendado, nao desloga), (2) Scrapling,
-    (3) Playwright + `li_at` (pode deslogar). Loop iterativo
-    `click -> extract -> validate -> click` que para ao atingir `max_results`
-    ou `max_scrolls_cap`. Tambem expoe `resolve_company_size_via_page()`.
-  - `linkedin_people_search_progress.py`: `PeopleScrapeProgress` +
-    `ProgressStore` (SQLite) com `accepted_urls`/`rejected_urls`/posicoes
-    chaveado por `(company_slug, titulos normalizados)`.
+SearxNG local opcional:
+```bash
+docker compose -f docker-compose.searxng.yml up -d
+```
+
+## Arquivos Que Importam
+
+- `src/beautiful_linkedin/cli.py`, `main.py`, `config.py`, `models.py`, `runner.py`, `scrape_modes.py`: nucleo da CLI e configuracoes.
+- `src/beautiful_linkedin/providers/`: providers de leads estruturados ou busca publica.
+  - `apollo.py`, `people_data_labs.py`, `coresignal.py`, `lusha.py`, `apify_linkedin.py`: APIs estruturadas.
+  - `linkedin_cookie.py`, `linkedin_sales_navigator.py`, `linkedin_playwright.py`: caminhos com `li_at` (cookie).
+  - `linkedin_people_search.py`: scraper listing-only da aba `/people/`. Fetchers em ordem: (1) **CDP** no Chrome aberto via `--remote-debugging-port=9222` (recomendado, nao desloga), (2) Scrapling, (3) Playwright + `li_at` (pode deslogar). Loop iterativo `click -> extract -> validate -> click` que para ao atingir `max_results` ou `max_scrolls_cap`. Expoe `resolve_company_size_via_page()`.
+  - `linkedin_people_search_progress.py`: `PeopleScrapeProgress` + `ProgressStore` (SQLite) com `accepted_urls`/`rejected_urls`/posicoes chaveado por `(company_slug, titulos normalizados)`.
   - `public_directories.py`, `common_crawl.py`, `public_search.py`.
   - `factory.py`: registra todos os providers a partir do nome.
-- `src/beautiful_linkedin/search/`: motores de busca (SearxNG, Serper, Google
-  CSE, Brave, DuckDuckGo, composite/smart).
-- `src/beautiful_linkedin/processing/`: extracao, normalizacao, scoring,
-  deduplicacao, taxonomias de cargo/seniority e
-  `title_validator.py` (gate estrito word-boundary + union dos alias maps,
-  usado pelo loop iterativo do people_search).
+- `src/beautiful_linkedin/search/`: motores de busca (SearxNG, Serper, Google CSE, Brave, DuckDuckGo, composite/smart).
+- `src/beautiful_linkedin/processing/`: extracao, normalizacao, scoring, deduplicacao, taxonomias de cargo/seniority e `title_validator.py` (gate estrito word-boundary + union dos alias maps, usado pelo loop iterativo do people_search).
 - `src/beautiful_linkedin/scraping/`: scraping de sites oficiais de empresas.
-- `src/beautiful_linkedin/storage/`: persistencia durava e enriquecimento.
-  - `saved_leads.py`: `SavedLeadsStore` (SQLite) com CRUD de tabelas, import,
-    export, merge, `apply_enrichment_updates` e
-    `apply_internal_enrichment_updates` — nunca sobrescrevem `email`
-    existente, sempre gravam metadado de enriquecimento.
-  - `internal_enrichment.py`: enriquecimento de e-mail **gratis**,
-    in-process. Gera padroes (`first`, `first.last`, `flast`, ...), detecta o
-    padrao da empresa via `detect_company_pattern` (pares nome+email da
-    tabela) e `infer_pattern_from_locals` (shape dos local-parts coletados),
-    valida formato + dominio (rejeita gmail/hotmail/...) + MX (resolver
-    injetavel), e devolve `EnrichmentStatus` +
-    `enrichment_confidence` (0-100).
-  - `company_email_harvester.py`: Hunter.io-lite. Fetch homepage + paths
-    comuns, extrai e-mails que terminam no dominio, devolve
-    `HarvestedEmail(email, source_url)`. HTTP client injetavel.
-  - `enrichment.py`: providers pagos
-    (`ApolloEnrichmentProvider`, `LushaEnrichmentProvider`,
-    `SnovioEnrichmentProvider`, `PdlEnrichmentProvider`) +
-    `estimate_enrichment_cost`. Apollo exige `apollo_webhook_url` para
-    telefone; Snovio so faz e-mail; Lusha faz 2 chamadas batch
-    (uma por `filterBy`).
-- `src/beautiful_linkedin/server/app.py`: FastAPI sidecar consumido pelo
-  Electron (loopback). Endpoints chave:
+- `src/beautiful_linkedin/storage/`: persistencia duravel e enriquecimento.
+  - `saved_leads.py`: `SavedLeadsStore` (SQLite) com CRUD de tabelas, import, export, merge, `apply_enrichment_updates` e `apply_internal_enrichment_updates` — nunca sobrescrevem `email` existente, gravam metadados.
+  - `internal_enrichment.py`: enriquecimento de e-mail **gratuito**, in-process. Gera padroes (`first`, `first.last`, ...), detecta o padrao da empresa via `detect_company_pattern` (pares salvos) e `infer_pattern_from_locals`, valida formato + dominio + MX, e devolve `EnrichmentStatus` + confidence.
+  - `company_email_harvester.py`: Hunter.io-lite. Fetch homepage + paths comuns, extrai e-mails que terminam no dominio.
+  - `domain_discovery.py`: descoberta de dominios irmaos grátis via crt.sh, SPF/DMARC e ccTLD variants.
+  - `internal_phone_enrichment.py`: Serviço e orquestrador (`InternalPhoneEnrichmentOrchestrator`) para enriquecimento de telefone gratuito em lote.
+  - `telegram_pipeline.py`: Pipeline principal de consultas do Telegram/Telethon. Orquestra a busca de CPFs via `/nome` (Findex/Gonzales/Unix), revisao de CPFs, e busca de telefones via `/cpf` (Gonzales SISREG-III), cruzando dados como localizacao, aniversário (DD/MM) e empresa.
+  - `telegram_telethon_auth.py` e `telegram_telethon_lookup.py`: Gerenciamento de sessao `.session` do Telethon (envio de codigo, login, 2FA) e requisicoes de busca MTProto no Telegram.
+  - `telegram_consult_matcher.py` e `telegram_consult_parser.py`: Parser regex das telas de consulta de CPF/Nome do Telegram, e algoritmo de scoring/cruzamento que compara os resultados com o lead.
+  - `telegram_group_phone_lookup.py` e `telegram_group_playwright_lookup.py`: Automacao de Telegram Web via Playwright para grupos de consulta (fallback sem Telethon).
+  - `linkedin_profile_validation.py`: Validação de experiência do LinkedIn para os leads salvos. Visita o perfil e captura dados autodeclarados (email, telefone, website, educação, aniversário DD/MM) via CDP (Chrome) ou Playwright com cookie `li_at`.
+  - `whatsapp_checker.py`: Verifica se os numeros de telefone encontrados possuem WhatsApp ativo.
+  - `phone_receita_cnpj.py`: Consulta telefones institucionais de empresas em bases publicas de CNPJ.
+  - `phone_validation.py`, `phone_harvester.py`, `phone_hlr.py`, `phone_serp_search.py`: Suporte de normalizacao, status HLR e pesquisa de vazamentos na web.
+  - `enrichment.py`: providers pagos (`ApolloEnrichmentProvider`, `LushaEnrichmentProvider`, `SnovioEnrichmentProvider`, `PdlEnrichmentProvider`) + `estimate_enrichment_cost`.
+- `src/beautiful_linkedin/server/app.py`: FastAPI sidecar consumido pelo Electron (loopback). Endpoints chave:
   - `POST /search` e `POST /search/start` + `GET /runs/{id}` (async).
   - `POST /people-search/probe/(start|state)` + `POST /people-search/probe`.
   - `GET/POST/DELETE /lead-tables/...` + `import` + `export` + `merge`.
-  - `POST /lead-tables/{id}/enrich` — paid; com `confirmed=false` devolve
-    so o `EnrichmentEstimate` em BRL.
-  - `POST /lead-tables/{id}/internal-enrich` — interno, gratis, so
-    `fields="email"`.
-  - `POST /lead-tables/{id}/experimental-search`.
-  - Modo `browser` exige `accept_risk=true`. Timeout do `people_search`
-    escalado por `_people_search_timeout(max_results, cards_per_cycle)`.
-- `src/beautiful_linkedin/export/`: CSV/XLSX.
-- `src/beautiful_linkedin/ui/`: banner, prompts, progresso, tabelas Rich.
-- `electron/`: app desktop. `src/renderer/src/components/SavedLeadsLibrary.tsx`
-  consome o enriquecimento; `src/shared/types.ts` espelha os payloads.
-- `tests/`: testes unitarios. Convenção: 1 arquivo por modulo testado
-  (`test_internal_enrichment.py`, `test_company_email_harvester.py`,
-  `test_internal_enrich_endpoint.py`, `test_linkedin_people_search.py`,
-  `test_linkedin_people_search_iterative.py`,
-  `test_people_scrape_progress.py`, `test_title_validator.py`,
-  `test_saved_leads_enrichment.py`, ...).
-- `linkedin-api-scrapper/apify-linkedin-profile/`: subprojeto Apify Actor
-  (TypeScript). Nao e o core da CLI.
-- `docker-compose.searxng.yml`, `searxng-config/settings.yml`: SearxNG opcional.
+  - `POST /lead-tables/{id}/enrich` — paid; com `confirmed=false` estima custo.
+  - `POST /lead-tables/{id}/internal-enrich` — e-mail gratis blocking.
+  - `POST /lead-tables/{id}/internal-enrich/stream` — e-mail gratis via SSE.
+  - `POST /lead-tables/{id}/telegram-consult/telethon-pipeline` — pipeline Telethon (Nome -> CPF -> Telefone).
+  - `POST /lead-tables/{id}/telegram-phone/telethon-cpf-stage` — resolve telefone para CPF ja extraido.
+  - `GET /telegram/telethon/auth/status`, `POST /telegram/telethon/auth/send-code`, `POST /telegram/telethon/auth/sign-in`, `POST /telegram/telethon/auth/logout` — fluxo de autenticacao Telethon (logout revoga a sessao e apaga o `.session` para trocar de conta).
+- `electron/`: app desktop (TypeScript + React).
+  - `src/renderer/src/components/SavedLeadsLibrary.tsx`: UI principal de visualizacao e enriquecimento de leads salvos.
+  - `src/renderer/src/components/TelethonAuthDialog.tsx`: Dialog de login no Telegram/Telethon.
+  - `src/renderer/src/components/CpfPickerTelethonDialog.tsx` e `CpfReviewList.tsx`: Interface para selecao de CPFs candidatos encontrados pelo Telethon.
+  - `src/renderer/src/styles.css`: Estilização vanilla global.
 
-Evite carregar `node_modules`, `.venv`, `.pytest_cache`, `output/`,
-`data/cache.sqlite*` e arquivos grandes de debug sem motivo explicito.
+## Pipeline de Enriquecimento
 
-## Fluxo mental
+O enriquecimento de leads salvos roda em duas camadas, ambas opt-in pelo cliente:
 
-Entrada CLI/interativo -> `scrape_modes.py` ajusta fonte e limites ->
-`runner.run_prospecting()` monta settings, cache, motores e providers ->
-providers retornam `Lead` -> processamento deduplica/rankeia/valida ->
-exportacao CSV/XLSX -> resumo Rich.
+1. **Interno (gratis)** — `POST /lead-tables/{id}/internal-enrich` (e-mail) ou `POST /lead-tables/{id}/telegram-consult/telethon-pipeline` (telefone).
+   - **Emails**: Inferencia via dominios (DomainDiscoveryService), coleta em sites (CompanyEmailHarvester) e validacao SMTP/MX (SmtpMailboxVerifier).
+   - **Telefones**: Pipeline Telethon realiza busca de CPF via nome, CPF Review na UI para selecao do operador, consulta de telefone via CPF (Gonzales), cruzamento de metadados de leads (data de nascimento, UF) e validacao de WhatsApp (WhatsappChecker).
+   - **LinkedIn Profile Validation**: Visita o perfil via CDP/Playwright para extrair cargo/empresa atuais, educacao, site, email, telefone e aniversario (DD/MM).
+   - Nunca sobrescreve dados de contato existentes.
+2. **Pagos (creditos)** — `POST /lead-tables/{id}/enrich`. Lusha, Apollo, Snovio, PDL.
 
-`auto` para providers de leads = APIs configuradas (`pdl`, `coresignal`,
-`apollo`, `lusha`) + `web`. `apify_linkedin`, `public_directories`,
-`common_crawl` e providers com cookie precisam ser pedidos explicitamente.
+## Loop Iterativo da Aba People
 
-`auto` para search engines prioriza SearxNG local (`SEARXNG_BASE_URL`),
-depois Serper, Google CSE, DuckDuckGo e fallbacks HTML.
+O `LinkedInPeopleSearchProvider` roda na aba `/people/` de empresas no LinkedIn. Ele usa loop iterativo `click -> extract -> validate -> click` gateado pelo `validate_lead_titles(strict=True)` a cada scroll, parando ao atingir `max_results` ou `max_scrolls_cap`.
 
-## Pipeline de enriquecimento (resumo)
+- **Dedup global (cross-tabela):** o provider recebe `exclude_lead_keys` (injetado pelo `runner` a partir de `SavedLeadsStore.global_dedupe_keys()`). Cards cuja `global_dedupe_key` (URL normalizada -> nome+empresa+cargo) já existe em qualquer tabela salva são ignorados sem contar para `max_results`, e o loop continua clicando (orçamento de scrolls é inflado quando há exclusões) até juntar `max_results` leads inéditos ou esgotar resultados. O mesmo `exclude_lead_keys` alimenta os helpers `_extract_*` do `runner`, então todos os providers respeitam a dedup global.
+- **Feedback progressivo:** o provider chama `on_lead_found(lead)` a cada lead aceito durante o scroll. O sidecar acumula esses leads em `RunRecord.found_leads` (deduplicado) e os expõe em `GET /runs/{id}` (`found_leads`/`found_count`); o renderer faz polling via `waitForRun({ onState })` e renderiza `LiveFoundLeads`.
 
-Duas camadas opt-in pelo cliente:
+## Responsividade e Interface
 
-1. **Interno (gratis)** — `POST /lead-tables/{id}/internal-enrich`. So
-   e-mail. Resolve dominio -> gera padroes -> detecta padrao da empresa
-   pelos pares ja salvos OU pelo shape de local-parts do harvester ->
-   valida formato + dominio + MX -> escolhe melhor candidato. Nao
-   sobrescreve `email` existente. Nunca chama API paga.
-2. **Pagos (creditos)** — `POST /lead-tables/{id}/enrich`. Providers
-   `lusha|apollo|snovio|pdl`, `fields=email|phone|both`. `confirmed=false`
-   so devolve o `EnrichmentEstimate` (creditos x `credit_costs_brl`);
-   `confirmed=true` dispara as APIs. Apollo+telefone exige
-   `apollo_webhook_url` HTTPS; Snovio so faz e-mail.
+Para evitar quebras de layout e sobreposicoes na tabela de leads salvos:
+- A tabela `.saved-leads-table` possui largura minima de `1080px` e as colunas estao distribuidas de forma proporcional (Pessoa: 16%, Cargo: 22%, Contato: 18%, Consulta: 16%, Empresa: 12%, Score: 7%, LinkedIn: 9%).
+- O scroll horizontal da tabela e orquestrado de forma sincronizada via componente `DualScrollTable` (com scrollbars no topo e base da tabela).
+- Botoes longos na coluna "Consulta" (ex: `.api-consult-btn`) possuem truncamento via CSS (`text-overflow: ellipsis`, `overflow: hidden`, `white-space: nowrap`) limitados a `max-width: 100%`.
+- O nome da consulta completo e exibido via tooltip HTML (`title`) na passagem do mouse do usuario.
+- A tabela de leads salvos rola internamente: `.table-bottom-scroll` tem `max-height: min(68vh, 760px)` com `thead` sticky, e tabelas inline em linhas expandidas (candidatos/evidencias) tem `max-height` + scroll proprio, para a tabela nunca estourar vertical/horizontalmente.
 
-Ambos atualizam `Lead.enrichment_source/status/confidence/email_type/
-email_validation_status/enriched_at` via
-`SavedLeadsStore.apply_*_enrichment_updates`. O `enrichment_status` da
-tabela vira `enriched` quando ao menos um lead recebeu valor novo.
+## Privacidade de Fontes na UI
 
-## Loop iterativo da aba People
+A UI nunca expoe nomes de providers/fontes internas (GON/Gonzales, Findex/Finder, Unix, SISREG, Void, Telethon) ao usuario final. Rotulos sao genericos: linhas de evidencia viram "Consulta por nome"/"Consulta por CPF", a trilha vira "Trilha da consulta", e mensagens de erro do Telegram sao humanizadas em `humanizeBlockedReason`. Codigo/identificadores internos podem manter os nomes; apenas strings renderizadas/`title`/`aria-label` devem ser genericas.
 
-`LinkedInPeopleSearchProvider` nao roda "fetch -> extrai tudo -> filtra".
-O fluxo e:
+## Padroes de Mudanca
 
-1. Abre `/company/<slug>/people/?keywords=<termos>` no fetcher escolhido.
-2. A cada "Exibir mais resultados" o fetcher chama `on_step(clicks, html)`.
-3. O provider extrai cards, ignora URLs ja em `accepted_urls`/`rejected_urls`,
-   e roda `validate_lead_titles(strict=True)` por card.
-4. Aceitos viram lead com `consultation_note = "Extraido apos N cliques,
-   posicao P."`. Rejeitados sao salvos em `progress.rejected_urls`.
-5. Retorna `False` no callback quando atinge `max_results` — o fetcher para
-   e fecha o navegador.
-
-`ProgressStore` persiste estado entre execucoes. `include_uncertain=True`
-desabilita o validador estrito (provider emite warning).
-
-## Padroes de mudanca
-
-- Novo provider de leads: implementar `LeadProvider`, registrar em
-  `providers/factory.py`, adicionar var em `config.py`/`.env.example` se
-  houver chave, registrar aliases em `cli.parse_lead_providers`, mapear
-  source em `runner.py` se necessario, atualizar prompts, cobrir com testes
-  mockados.
-- Novo provider de enriquecimento pago: mesma interface dos existentes em
-  `storage/enrichment.py` (`name`, `enrich(leads, options)`, atributo
-  `errors: list[str]` deduplicado). Adicionar ao
-  `_build_enrichment_providers` em `server/app.py`, ao
-  `_normalized_providers` em `enrichment.py`, expor vars em
-  `Settings`/`ApiKeyOverrides`, testar com `respx`/`httpx.MockTransport`.
-- Mudancas no enriquecimento interno: novos `EnrichmentPattern` exigem
-  atualizar `_classify_local_shape`; manter `PERSONAL_EMAIL_DOMAINS` em
-  sincronia; **sempre** injetar `mx_resolver` fake nos testes.
-- Novo motor de busca: implementar `SearchEngine`, registrar em
-  `search/factory.py` e `cli.parse_search_engines`, atualizar prompts e
-  testar fallback sem depender de rede real.
-- Mudancas de CLI: atualizar `cli.py`, README se mudar UX publica, e testes
-  de CLI.
-- Mudancas de extracao/dedupe/scoring: mexer em `processing/` e adicionar
-  casos pequenos e deterministas em `tests/`.
-- Dependencias novas entram em `pyproject.toml`; mantenha `requirements.txt`
-  coerente enquanto existir.
-- Toda chamada HTTP externa deve usar os helpers de `api_logging.py`:
-  `log_http_error`, `log_transport_error`, `log_unexpected_error`, sempre
-  com `provider=...` e contexto util.
-- Use `httpx.Client(timeout=..., transport=..., headers=...)`; nao
-  introduza cliente async.
-- Cache opcional segue `SqliteJsonCache` com payload versionado:
-  `{"cache_version": N, "request": ...}`.
+- Novo provider de leads/enriquecimento: implementar interface, registrar no factory, adicionar chaves ao `.env.example`, testar offline com mocks (ex: `respx`, `httpx.MockTransport`).
+- Mudancas em Telethon/Telegram/Enriquecimento Interno: injetar resolvers e resolvers de DNS/MX falsificados nos testes, nao bater em rede ou API Telegram real nos testes.
+- Alteracoes de banco de dados/schema: migrar schema em `saved_leads.py` usando `_ensure_column` de forma retrocompativel.
 
 ## Cuidados
 
-- Nao leia nem exponha `.env`; use `.env.example` para nomes de variaveis.
-- Nao commite cache local, arquivos em `output/` ou segredos.
-- Prefira testes offline com mocks/fakes para APIs externas e buscadores.
-- Preserve mensagens de CLI em pt-BR quando voltadas ao usuario;
-  identificadores em ingles.
-- Ao alterar comportamento de rede, mantenha timeouts, limites e fallbacks
-  claros.
-- Common Crawl e diretorios publicos sao fallbacks lentos/opcionais; nao
-  inclua em `auto` sem decisao explicita.
-- Enriquecimento interno **nunca** sobrescreve `lead.email`; sempre persista
-  metadado mesmo em falha (a UI mostra "tentou, sem dominio").
-- Enriquecimento pago **sempre** roda primeiro com `confirmed=false` para o
-  cliente ver custo em BRL antes de gastar credito.
-- Apollo+telefone sem `apollo_webhook_url` HTTPS e bloqueado no
-  `model_validator` da request.
-- `linkedin_people_search` em CDP (`needs_li_at=False`) e o caminho seguro
-  — nao toca no cookie e nao desloga. Fallback Playwright avisa via warning.
-- Modo `browser` (Playwright logado fora do CDP) e ARRISCADO: exige
-  `accept_risk=true` no endpoint e pode bloquear a conta do LinkedIn.
+- **Nao ler nem expor `.env`**; use `.env.example` para documentar variaveis de configuracao.
+- Nunca commite sessoes do Telegram (`.session`), caches locais (`.sqlite`), segredos ou pastas grandes.
+- Sempre preserve mensagens voltadas ao usuario em Portugues (pt-BR); codigo e identificadores em ingles.
+- O EHLO do `SmtpMailboxVerifier` exige FQDN ou `local_hostname` configurado para evitar bloqueio por servidores de e-mail estritos.

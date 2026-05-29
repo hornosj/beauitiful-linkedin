@@ -127,9 +127,10 @@ def parse_telegram_text(raw_text: str | None, *, provider: str) -> TelegramExtra
         return TelegramExtraction()
 
     normalized = _normalize_for_parse(raw_text)
-    candidates = _extract_candidates(normalized)
+    candidates = _extract_candidates(normalized, provider=provider)
 
-    primary_nome = candidates[0].nome if candidates else _first_match(_NAME_RE, normalized)
+    fallback_nome, fallback_nome_source = _first_name_match(normalized)
+    primary_nome = candidates[0].nome if candidates else fallback_nome
     primary_birth = (
         candidates[0].data_nascimento
         if candidates
@@ -141,10 +142,11 @@ def parse_telegram_text(raw_text: str | None, *, provider: str) -> TelegramExtra
     primary_cpf = candidates[0].cpf if candidates else None
 
     logger.debug(
-        "Telegram parse (%s): %s candidate(s); primary_cpf=%s",
+        "Telegram parse (%s): %s candidate(s); primary_cpf=%s primary_name_source=%s",
         provider,
         len(candidates),
         primary_cpf,
+        "candidate" if candidates and candidates[0].nome else fallback_nome_source,
     )
 
     return TelegramExtraction(
@@ -174,7 +176,7 @@ def _normalize_for_parse(text: str) -> str:
     return cleaned
 
 
-def _extract_candidates(text: str) -> list[TelegramCandidate]:
+def _extract_candidates(text: str, *, provider: str) -> list[TelegramCandidate]:
     """Locate every CPF in the text and attribute its surrounding
     Nome/Nascimento/Endereço from the SAME record block.
 
@@ -189,11 +191,11 @@ def _extract_candidates(text: str) -> list[TelegramCandidate]:
     blocks = _split_into_record_blocks(text)
     candidates: list[TelegramCandidate] = []
     seen_cpfs: set[str] = set()
-    for block in blocks:
+    for block_index, block in enumerate(blocks):
         block_cpfs = _find_cpf_positions(block)
         if not block_cpfs:
             continue
-        nome = _first_match(_NAME_RE, block)
+        nome, nome_source = _first_name_match(block)
         birth = _canonicalize_date(_first_match(_BIRTH_RE, block))
         endereco = _first_match(_ADDRESS_RE, block)
         for raw_cpf, _pos in block_cpfs:
@@ -201,6 +203,16 @@ def _extract_candidates(text: str) -> list[TelegramCandidate]:
             if canonical in seen_cpfs:
                 continue
             seen_cpfs.add(canonical)
+            logger.debug(
+                "Telegram parse candidate provider=%s block=%d name_source=%s "
+                "has_birth=%s has_address=%s raw_block_chars=%d",
+                provider,
+                block_index,
+                nome_source,
+                bool(birth),
+                bool(endereco),
+                len(block),
+            )
             candidates.append(
                 TelegramCandidate(
                     cpf=_format_cpf(canonical),
@@ -314,6 +326,20 @@ def _first_match(pattern: re.Pattern[str], text: str) -> str | None:
     if not m:
         return None
     return _clean_label_value(m.group(1))
+
+
+_NAME_METADATA_VALUE_RE = re.compile(
+    r"(?i)^(?:consultad[oa]|pesquisad[oa]|buscad[oa]|informad[oa])\b"
+)
+
+
+def _first_name_match(text: str) -> tuple[str | None, str]:
+    value = _first_match(_NAME_RE, text)
+    if not value:
+        return None, "missing"
+    if _NAME_METADATA_VALUE_RE.match(value):
+        return None, "metadata_ignored"
+    return value, "label"
 
 
 def _clean_label_value(value: str) -> str:

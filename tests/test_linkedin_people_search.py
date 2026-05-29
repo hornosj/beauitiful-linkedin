@@ -693,20 +693,39 @@ def test_default_fetcher_prefers_cdp_when_endpoint_alive(monkeypatch):
     assert isinstance(fetcher, mod.CDPPeopleFetcher)
 
 
-def test_default_fetcher_skips_cdp_when_disabled(monkeypatch):
+def test_default_fetcher_raises_when_cdp_disabled(monkeypatch):
+    """Playwright/CDP is the only supported backend; disabling CDP must fail
+    hard so the caller surfaces a clear error instead of silently falling back
+    to a li_at-carrying Playwright (which logs the user out)."""
+    import pytest
+
     from beautiful_linkedin.providers import linkedin_people_search as mod
 
-    # Even if the endpoint is alive, disabled flag wins.
     monkeypatch.setattr(mod, "probe_cdp_endpoint", lambda endpoint: True)
-    monkeypatch.setattr(mod, "_try_build_scrapling_fetcher", lambda options: "scrap")
-    monkeypatch.setattr(mod, "_try_build_playwright_fetcher", lambda options: "pw")
 
     options = PeopleSearchOptions()
     options.cdp_enabled = False
     options.cdp_endpoint = "http://127.0.0.1:9222"
 
-    fetcher = mod._default_fetcher(options)
-    assert fetcher == "scrap"
+    with pytest.raises(mod.LinkedInAuthError):
+        mod._default_fetcher(options)
+
+
+def test_default_fetcher_raises_when_cdp_unreachable(monkeypatch):
+    """If the configured CDP endpoint does not answer, surface a clear error
+    instead of attempting Scrapling or a fresh Playwright with li_at."""
+    import pytest
+
+    from beautiful_linkedin.providers import linkedin_people_search as mod
+
+    monkeypatch.setattr(mod, "probe_cdp_endpoint", lambda endpoint: False)
+
+    options = PeopleSearchOptions()
+    options.cdp_enabled = True
+    options.cdp_endpoint = "http://127.0.0.1:9223"
+
+    with pytest.raises(mod.LinkedInAuthError):
+        mod._default_fetcher(options)
 
 
 def test_provider_with_cdp_fetcher_skips_li_at_resolution(monkeypatch):

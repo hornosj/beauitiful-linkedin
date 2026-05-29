@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ApiClient, ApiError } from '../../shared/api'
 import {
   applyRolePresetToForm,
+  buildSearchRequestForCompany,
   buildSearchRequestFromForm,
+  collectCompanies,
   emptyFormState,
   isRiskyScrapeMode,
   validateSearchForm,
@@ -28,6 +30,7 @@ import SavedLeadsLibrary from './components/SavedLeadsLibrary'
 import SmallCompanyDialog from './components/SmallCompanyDialog'
 import ProbeProgress from './components/ProbeProgress'
 import LiveFoundLeads from './components/LiveFoundLeads'
+import CompanySearchRuns from './components/CompanySearchRuns'
 import InternalEnrichProgress from './components/InternalEnrichProgress'
 import TelethonAuthDialog from './components/TelethonAuthDialog'
 import TelegramConfigDialog from './components/TelegramConfigDialog'
@@ -45,6 +48,17 @@ import type {
 interface RunResult {
   leads: Lead[]
   summary: ProspectingSummary
+}
+
+/** Per-company state for a multi-company search run. Tracked so the UI can
+ *  show isolated loading/errors and so "tabelas separadas" can save each
+ *  company's leads into its own table. */
+interface CompanyRun {
+  id: string
+  name: string
+  status: 'pending' | 'running' | 'done' | 'error'
+  leads: Lead[]
+  error?: string
 }
 
 type ThemeMode = 'light' | 'dark'
@@ -84,6 +98,7 @@ export default function App() {
     'idle' | 'running' | 'completed' | 'failed'
   >('idle')
   const [result, setResult] = useState<RunResult | null>(null)
+  const [companyRuns, setCompanyRuns] = useState<CompanyRun[]>([])
   const [feedback, setFeedback] = useState<{ kind: 'error' | 'success'; message: string } | null>(
     null
   )
@@ -549,6 +564,7 @@ export default function App() {
     setRevealing(false)
     setVisibleLeadCount(0)
     setResult(null)
+    setCompanyRuns([])
     setFoundLeads([])
     lastSearchActivityRef.current = null
     try {
@@ -606,6 +622,116 @@ export default function App() {
     }
   }
 
+  // Multi-company search. Each company runs its own /search/start +
+  // poll, sequentially — people_search drives a single embedded Chrome
+  // via CDP, so parallel runs would fight over the browser. Errors are
+  // isolated per company (one failure never aborts the others), and the
+  // aggregate results table fills in progressively as companies finish.
+  const runMultiSearch = async (
+    companies: { name: string; domain?: string; linkedinUrl?: string }[],
+    requestOverrides?: { cdp_endpoint?: string }
+  ) => {
+    if (!client) {
+      setFeedback({ kind: 'error', message: 'Sidecar offline. A busca precisa de uma API local ativa.' })
+      return
+    }
+    setErrors({})
+    setFeedback(null)
+    setRunning(true)
+    setRevealing(false)
+    setVisibleLeadCount(0)
+    setResult(null)
+    setFoundLeads([])
+    lastSearchActivityRef.current = null
+    setCompanyRuns(
+      companies.map((company, index) => ({
+        id: `${index}:${company.linkedinUrl ?? company.name}`,
+        name: company.name,
+        status: 'pending' as const,
+        leads: []
+      }))
+    )
+
+    const aggregated: Lead[] = []
+    let totalRaw = 0
+    let okCount = 0
+    let errorCount = 0
+
+    for (let i = 0; i < companies.length; i += 1) {
+      const company = companies[i]
+      setCompanyRuns((prev) =>
+        prev.map((run, idx) => (idx === i ? { ...run, status: 'running' } : run))
+      )
+      setFoundLeads([])
+      try {
+        const baseRequest = buildSearchRequestForCompany(form, company, apiKeys)
+        const finalRequest = requestOverrides ? { ...baseRequest, ...requestOverrides } : baseRequest
+        const started = await client.startRun(finalRequest)
+        const finalState = await client.waitForRun(started.run_id, {
+          intervalMs: 600,
+          timeoutMs: 16 * 60_000,
+          onState: (state) => {
+            if (state.found_leads && state.found_leads.length > 0) {
+              setFoundLeads(state.found_leads)
+            }
+          }
+        })
+        if (finalState.status === 'failed') {
+          throw new ApiError(500, finalState.error ?? 'A busca falhou no servidor.')
+        }
+        if (finalState.status === 'cancelled' || !finalState.result) {
+          throw new ApiError(499, 'Busca cancelada.')
+        }
+        const companyLeads = finalState.result.leads
+        aggregated.push(...companyLeads)
+        totalRaw += finalState.result.summary.total_raw_leads
+        okCount += 1
+        setCompanyRuns((prev) =>
+          prev.map((run, idx) =>
+            idx === i ? { ...run, status: 'done', leads: companyLeads } : run
+          )
+        )
+        // Render the merged table progressively; show every lead at once
+        // (no per-lead reveal animation across companies — it would drag).
+        setResult({
+          leads: [...aggregated],
+          summary: makeAggregateSummary(aggregated.length, totalRaw, companies.length)
+        })
+        setVisibleLeadCount(aggregated.length)
+        setRevealing(false)
+      } catch (error) {
+        errorCount += 1
+        const message =
+          error instanceof ApiError
+            ? `${error.status}: ${error.message}`
+            : error instanceof Error
+              ? error.message
+              : 'Erro desconhecido.'
+        setCompanyRuns((prev) =>
+          prev.map((run, idx) => (idx === i ? { ...run, status: 'error', error: message } : run))
+        )
+      }
+    }
+
+    setFoundLeads([])
+    setRunning(false)
+    if (aggregated.length === 0) {
+      setFeedback({
+        kind: 'error',
+        message: errorCount
+          ? `Nenhum lead encontrado · ${errorCount} empresa(s) com erro. Veja a lista de empresas.`
+          : 'Busca concluída sem leads nas empresas informadas.'
+      })
+    } else {
+      setFeedback({
+        kind: 'success',
+        message: `Busca finalizada · ${aggregated.length} leads de ${okCount} empresa(s)${
+          errorCount ? ` · ${errorCount} com erro` : ''
+        }.`
+      })
+    }
+  }
+
   const saveCurrentSearch = async (name: string) => {
     if (!client) {
       setFeedback({
@@ -614,6 +740,45 @@ export default function App() {
       })
       return
     }
+
+    // "Tabelas separadas": one saved table per company, named after the
+    // company. The typed name is ignored here (each table is auto-named).
+    if (form.tableMode === 'separate' && companyRuns.length > 1) {
+      const runsWithLeads = companyRuns.filter((run) => run.leads.length > 0)
+      if (runsWithLeads.length === 0) {
+        setFeedback({ kind: 'error', message: 'Nenhum lead para salvar.' })
+        return
+      }
+      let created = 0
+      for (const run of runsWithLeads) {
+        try {
+          await client.createLeadTable({
+            name: run.name,
+            leads: run.leads,
+            keywords: parseKeywords(form.titles),
+            search_request: { ...buildPersistedSearchRequest(form), company_name: run.name },
+            generate_queries: true
+          })
+          created += 1
+        } catch (error) {
+          const message =
+            error instanceof ApiError
+              ? `${error.status}: ${error.message}`
+              : error instanceof Error
+                ? error.message
+                : 'Erro desconhecido.'
+          setFeedback({ kind: 'error', message: `Falha ao salvar "${run.name}": ${message}` })
+        }
+      }
+      if (created > 0) {
+        setFeedback({
+          kind: 'success',
+          message: `${created} tabela(s) salvas — uma por empresa.`
+        })
+      }
+      return
+    }
+
     const leads = result?.leads ?? []
     if (leads.length === 0) {
       setFeedback({ kind: 'error', message: 'Nenhum lead na busca atual para salvar.' })
@@ -658,6 +823,8 @@ export default function App() {
       setErrors(validation.errors)
       return
     }
+    const companies = collectCompanies(form)
+    const multi = companies.length > 1
     if (form.scrapeMode === 'people_search') {
       setErrors({})
       setFeedback(null)
@@ -676,12 +843,15 @@ export default function App() {
         }
         await embedded.hide()
         setLinkedInPanelVisible(false)
-        void runSearch(undefined, { cdp_endpoint: 'http://127.0.0.1:9223' })
+        const overrides = { cdp_endpoint: 'http://127.0.0.1:9223' }
+        if (multi) void runMultiSearch(companies, overrides)
+        else void runSearch(undefined, overrides)
         return
       }
 
     }
-    void runSearch()
+    if (multi) void runMultiSearch(companies)
+    else void runSearch()
   }
 
   const sidecarOk = baseUrl !== null
@@ -846,27 +1016,17 @@ export default function App() {
             </button>
           </nav>
 
-          <nav className="mb-4.5" aria-label="Modos de coleta">
-            <div className="text-[11px] font-semibold text-ink-3 px-2 pb-1.5 tracking-wide select-none">Modos de coleta</div>
-            {(['people_search', 'api'] as ScrapeMode[]).map((m) => (
-              <button
-                key={m}
-                type="button"
-                className={`sidebar-nav-btn ${form.scrapeMode === m ? 'bg-surface border border-line shadow-sm text-ink font-medium' : 'text-ink-2 hover:bg-surface-3'}`}
-                aria-pressed={form.scrapeMode === m}
-                onClick={() => handleScrapeModeChange(m)}
-                title={
-                  m === 'people_search'
-                    ? 'Usa funcionários visíveis na aba People do LinkedIn, sem visitar perfis.'
-                    : 'Usa as APIs estruturadas configuradas (Apollo, PDL, Coresignal etc.).'
-                }
-              >
-                <span className="w-4 h-4 grid place-items-center shrink-0">
-                  <span className="w-2 h-2 rounded-full bg-success"></span>
-                </span>
-                {m === 'people_search' ? 'People Search' : 'API'}
-              </button>
-            ))}
+          <nav className="mb-4.5" aria-label="Modo de coleta">
+            <div className="text-[11px] font-semibold text-ink-3 px-2 pb-1.5 tracking-wide select-none">Modo de coleta</div>
+            <div
+              className="sidebar-nav-btn bg-surface border border-line shadow-sm text-ink font-medium cursor-default"
+              title="Busca os funcionários visíveis na aba People do LinkedIn via Chromium embutido. É o único backend suportado."
+            >
+              <span className="w-4 h-4 grid place-items-center shrink-0">
+                <span className="w-2 h-2 rounded-full bg-success"></span>
+              </span>
+              People Search
+            </div>
           </nav>
 
           <div className="sidebar-bottom">
@@ -892,8 +1052,14 @@ export default function App() {
         </aside>
 
         {/* Main */}
-        <main className="flex-1 min-w-0 overflow-y-auto overflow-x-hidden bg-bg relative">
-          <div className="sticky top-0 z-40 bg-bg/70 backdrop-blur-[14px] border-b border-line px-5 py-2.5 flex items-center gap-3 flex-wrap">
+        <main
+          className={
+            view === 'leads'
+              ? 'flex-1 min-w-0 overflow-hidden bg-bg relative flex flex-col'
+              : 'flex-1 min-w-0 overflow-y-auto overflow-x-hidden bg-bg relative'
+          }
+        >
+          <div className="sticky top-0 z-40 bg-bg/70 backdrop-blur-[14px] border-b border-line px-5 py-2.5 flex items-center gap-3 flex-wrap shrink-0">
             <span className="text-[13px] text-ink-2 font-medium">
               Workspace <span className="text-ink-4 mx-1.5">›</span>{' '}
               <strong className="font-semibold text-ink">
@@ -910,7 +1076,7 @@ export default function App() {
                 background: sidecarOk ? 'var(--success)' : 'var(--ink-4)'
               }}
             />
-            v0.1.2
+            v0.1.5
           </button>
           <button className="pill-btn max-sm:hidden" onClick={() => setShowSettings(true)}>
             ⚙ Preferências{configuredApiKeyCount ? ` · ${configuredApiKeyCount}` : ''}
@@ -923,7 +1089,7 @@ export default function App() {
           <div
             className={
               view === 'leads'
-                ? 'px-5 pt-6 pb-16 max-w-[1760px] mx-auto max-sm:px-3'
+                ? 'px-5 pt-4 pb-4 max-w-[1760px] mx-auto max-sm:px-3 w-full flex-1 min-h-0 flex flex-col'
                 : 'px-5 pt-6 pb-16 max-w-[1240px] mx-auto max-sm:px-3'
             }
           >
@@ -973,7 +1139,12 @@ export default function App() {
             />
           )}
 
-          <div key={view} className="animate-fade-in-up duration-300">
+          <div
+            key={view}
+            className={`animate-fade-in-up duration-300 ${
+              view === 'leads' ? 'flex-1 min-h-0 flex flex-col' : ''
+            }`}
+          >
             {view === 'leads' ? (
               <SavedLeadsLibrary
                 client={client}
@@ -1007,6 +1178,18 @@ export default function App() {
                 </div>
 
                 <div className="search-results-stack">
+                  {companyRuns.length > 1 && (
+                    <CompanySearchRuns
+                      runs={companyRuns.map((run) => ({
+                        id: run.id,
+                        name: run.name,
+                        status: run.status,
+                        leadCount: run.leads.length,
+                        error: run.error
+                      }))}
+                    />
+                  )}
+
                   <LiveFoundLeads leads={foundLeads} running={running} />
 
                   <ResultsTable
@@ -1021,7 +1204,18 @@ export default function App() {
                     onFilterChange={setTableFilter}
                     onSaveCurrent={saveCurrentSearch}
                     saveCurrentDisabled={!client || !result?.leads.length}
-                    suggestedSaveName={form.companyName || 'Leads salvos'}
+                    suggestedSaveName={
+                      companyRuns.length > 1
+                        ? `${companyRuns[0]?.name ?? 'Busca'} +${companyRuns.length - 1}`
+                        : form.companyName || 'Leads salvos'
+                    }
+                    saveHint={
+                      form.tableMode === 'separate' && companyRuns.length > 1
+                        ? `Serão criadas ${
+                            companyRuns.filter((run) => run.leads.length > 0).length
+                          } tabelas — uma por empresa, nomeadas automaticamente.`
+                        : undefined
+                    }
                   />
                 </div>
               </div>
@@ -1207,13 +1401,10 @@ function loadTheme(): ThemeMode {
 
 function explainEmptyResult(
   diagnostics: ProviderDiagnostic[],
-  apiKeys: ApiKeyOverrides
+  _apiKeys: ApiKeyOverrides
 ): string {
   if (diagnostics.length === 0) {
-    const hasAnyKey = countConfiguredApiKeys(apiKeys) > 0
-    return hasAnyKey
-      ? 'Busca concluída sem leads e sem diagnóstico do sidecar — atualize o app e rode novamente.'
-      : 'Busca concluída sem leads. Configure chaves em Preferências ou suba o SearxNG local (docker compose -f docker-compose.searxng.yml up -d).'
+    return 'Busca concluída sem leads e sem diagnóstico do sidecar — confirme se o LinkedIn está logado na aba embutida e rode novamente.'
   }
   const errored = diagnostics.filter((d) => d.last_error)
   const droppedAll = diagnostics.filter(
@@ -1333,6 +1524,25 @@ function parseKeywords(titles: string): string[] {
     .split(',')
     .map((value) => value.trim())
     .filter(Boolean)
+}
+
+/** Synthesize a combined summary for a multi-company run so the results
+ *  table header can show aggregate totals. Per-company stats stay visible
+ *  in the CompanySearchRuns panel. */
+function makeAggregateSummary(
+  dedupCount: number,
+  rawCount: number,
+  companyCount: number
+): ProspectingSummary {
+  return {
+    total_companies_processed: companyCount,
+    total_raw_leads: rawCount,
+    total_deduplicated_leads: dedupCount,
+    total_previously_consulted_leads: 0,
+    total_maybe_incorrect_leads: 0,
+    output_file: `${companyCount} empresas`,
+    top_sources: {}
+  }
 }
 
 function buildPersistedSearchRequest(form: SearchFormState): Record<string, unknown> {
