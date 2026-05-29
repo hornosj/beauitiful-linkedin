@@ -787,7 +787,7 @@ def test_unified_workflow_skips_cpf_when_no_eligible(tmp_path: Path) -> None:
     lead = Lead(
         company_name="Empresa",
         company_domain="empresa.com",
-        person_name="Ana Silva",
+        person_name="Ana Beatriz Silva",
         title="Marketing Manager",
         linkedin_url="https://linkedin.com/in/ana-silva",
         source_url="https://linkedin.com/in/ana-silva",
@@ -795,8 +795,10 @@ def test_unified_workflow_skips_cpf_when_no_eligible(tmp_path: Path) -> None:
         snippet="",
         confidence_score=80,
         # Lead com âncora de localização (passa o signals gate), mas o
-        # candidato devolvido pelo bot está em outra cidade e o nome
-        # bate o suficiente pra evitar reject — só score baixo.
+        # candidato devolvido pelo bot está em outra cidade e o nome bate
+        # só PARCIALMENTE (falta o "Beatriz") — passa o gate (primeiro +
+        # último token presentes) mas a cobertura por pedaço fica em 2/3,
+        # mantendo o score abaixo do min_score=65.
         linkedin_location="São Paulo, Brazil",
     )
     store = _store(tmp_path)
@@ -805,8 +807,9 @@ def test_unified_workflow_skips_cpf_when_no_eligible(tmp_path: Path) -> None:
     cpf_calls: list[str] = []
 
     def name_fn(lead_name: str) -> TelegramConsultResult:
-        # Mesmo nome do lead (passa o gate) mas localização divergente
-        # e sem data de nascimento → score abaixo do min_score=65.
+        # Nome com cobertura parcial dos pedaços do lead ("Ana ... Silva",
+        # sem "Beatriz"), localização divergente e sem data de nascimento
+        # → score abaixo do min_score=65.
         return _name_result(
             lead_name,
             "Nome: Ana Silva\nCPF: 999.888.777-66\n"

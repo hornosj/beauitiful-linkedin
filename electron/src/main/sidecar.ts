@@ -85,7 +85,9 @@ export function buildSidecarEnv(projectRoot: string | undefined, env: NodeJS.Pro
     ...env,
     ...(pythonPath ? { PYTHONPATH: pythonPath } : {}),
     ...(existingSearxng ? {} : { SEARXNG_BASE_URL: DEFAULT_LOCAL_SEARXNG_URL }),
-    PYTHONUNBUFFERED: '1'
+    PYTHONUNBUFFERED: '1',
+    PYTHONIOENCODING: 'utf-8',
+    PYTHONUTF8: '1'
   }
 }
 

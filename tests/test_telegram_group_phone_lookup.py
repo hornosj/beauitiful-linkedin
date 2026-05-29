@@ -6,6 +6,7 @@ import beautiful_linkedin.storage.telegram_group_phone_lookup as group_module
 from beautiful_linkedin.storage.phone_lookup import LookupQuery
 from beautiful_linkedin.storage.telegram_group_phone_lookup import (
     TelegramGroupPhoneLookupProvider,
+    TelegramVoidPhoneLookupProvider,
     _normalize_group_username,
 )
 
@@ -45,6 +46,35 @@ def test_group_provider_sends_nome_and_parses_phones_from_multiple_replies() -> 
     assert all(c.context == "telegram_group_name_match" for c in candidates)
     assert candidates[0].extra["group"] == "@CONSULTASGRATIS4NV"
     assert candidates[0].source_url == "https://t.me/CONSULTASGRATIS4NV"
+
+
+def test_void_provider_sends_telefone_and_parses_phones_from_replies() -> None:
+    _reset_throttle()
+    seen_messages: list[str] = []
+
+    def requester(message: str) -> list[str]:
+        seen_messages.append(message)
+        return [
+            "VOID SEARCH - TELEFONE",
+            "Telefone encontrado: +55 11 98888-7777",
+        ]
+
+    provider = TelegramVoidPhoneLookupProvider(
+        group_username="@CONSULTASGRATIS4NV",
+        throttle_seconds=0,
+        requester=requester,
+    )
+
+    candidates = provider.lookup(
+        LookupQuery(full_name="Ana Silva", company_name="Marlabs")
+    )
+
+    assert seen_messages == ["/telefone Ana Silva"]
+    assert [c.raw for c in candidates] == ["+55 11 98888-7777"]
+    assert candidates[0].source == "void_phone_consultasgratis"
+    assert candidates[0].context == "telegram_bot_name_match"
+    assert candidates[0].extra["group"] == "@CONSULTASGRATIS4NV"
+    assert candidates[0].extra["query"] == "/telefone Ana Silva"
 
 
 def test_group_provider_dedups_same_phone_across_replies() -> None:

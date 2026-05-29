@@ -86,6 +86,19 @@ const API_FIELDS: ApiField[] = [
     secret: true
   },
   {
+    key: 'snovio_client_id',
+    name: 'Snov.io Client ID',
+    env: 'SNOVIO_CLIENT_ID',
+    desc: 'Enriquecimento de e-mail via OAuth. Use junto com o Client Secret abaixo.'
+  },
+  {
+    key: 'snovio_client_secret',
+    name: 'Snov.io Client Secret',
+    env: 'SNOVIO_CLIENT_SECRET',
+    desc: 'Segredo OAuth do Snov.io. Obrigatório junto com o Client ID.',
+    secret: true
+  },
+  {
     key: 'apify_api_key',
     name: 'Apify Actor',
     env: 'APIFY_API_KEY',
@@ -651,7 +664,7 @@ export default function SettingsPanel(props: Props) {
                     <div className="t">Versão</div>
                   </div>
                   <div style={{ fontFamily: 'var(--mono)', fontSize: 12, color: 'var(--ink-3)' }}>
-                    0.1.0
+                    0.1.3
                   </div>
                 </div>
                 <div className="row">

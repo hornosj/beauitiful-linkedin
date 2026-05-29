@@ -50,13 +50,14 @@ describe('ageFromBirthDate', () => {
     expect(ageFromBirthDate('15/03/1800')).toBeNull()
   })
 
-  it('does not allow CPF candidates older than 75 in the review list', () => {
+  it('only allows CPF candidates with a parseable age up to 75 in the review list', () => {
     vi.useFakeTimers()
     try {
       vi.setSystemTime(new Date('2026-05-22T12:00:00Z'))
       expect(cpfAllowedForReview({ data_nascimento: '10/01/1950' })).toBe(false)
       expect(cpfAllowedForReview({ data_nascimento: '10/01/1951' })).toBe(true)
-      expect(cpfAllowedForReview({ data_nascimento: null })).toBe(true)
+      expect(cpfAllowedForReview({ data_nascimento: null })).toBe(false)
+      expect(cpfAllowedForReview({ data_nascimento: 'sem data' })).toBe(false)
     } finally {
       vi.useRealTimers()
     }

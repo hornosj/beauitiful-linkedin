@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from enum import Enum
 
 from beautiful_linkedin.processing.normalizer import normalize_text
@@ -80,8 +81,44 @@ SENIORITY_ALIASES: dict[str, list[str]] = {
     ],
 }
 
-_SENIORITY_PATTERNS: dict[Seniority, list[str]] = {
-    Seniority(level): [normalize_text(alias) for alias in aliases if alias.strip()]
+# Rank by descending seniority (0 = most senior). Used both for "this
+# level or above" filtering and to keep the highest match when several
+# levels would otherwise apply.
+SENIORITY_RANK: dict[Seniority, int] = {
+    level: index for index, level in enumerate(SENIORITY_ORDER)
+}
+
+
+# Any run of non-alphanumeric characters becomes a single space, so a token
+# glued to punctuation ("VP," / "Sr." / "co-fundador") still matches as a
+# whole word. The previous space-padding approach silently missed those.
+_TOKENIZE_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _tokenized(value: str | None) -> str:
+    normalized = normalize_text(value)
+    if not normalized:
+        return ""
+    return _TOKENIZE_RE.sub(" ", normalized).strip()
+
+
+def _alias_pattern(alias: str) -> re.Pattern[str] | None:
+    """Compile a word-boundary regex for an alias after the same
+    punctuation→space normalization applied to titles, so both sides use
+    the same token shape (``\\b`` is safe because no edge punctuation
+    survives)."""
+    token = _TOKENIZE_RE.sub(" ", normalize_text(alias)).strip()
+    if not token:
+        return None
+    return re.compile(rf"\b{re.escape(token)}\b")
+
+
+_SENIORITY_PATTERNS: dict[Seniority, list[re.Pattern[str]]] = {
+    Seniority(level): [
+        pattern
+        for alias in aliases
+        if (pattern := _alias_pattern(alias)) is not None
+    ]
     for level, aliases in SENIORITY_ALIASES.items()
 }
 
@@ -91,24 +128,25 @@ def classify_seniority(title: str | None) -> Seniority | None:
 
     Matches are evaluated in order from most senior to least senior so that a
     string like "VP of Engineering and former Senior Manager" is classified as
-    VP, not Manager.
+    VP, not Manager. Matching is word-bounded over a punctuation-normalized
+    form of the title, so "VP, Marketing" and "CMO, Head of Growth" classify
+    correctly (vs. the old substring/space-padding approach).
     """
-    normalized = _padded(normalize_text(title))
-    if not normalized.strip():
+    text = _tokenized(title)
+    if not text:
         return None
     for level in SENIORITY_ORDER:
         for pattern in _SENIORITY_PATTERNS[level]:
-            if not pattern:
-                continue
-            needle = _padded(pattern)
-            if needle in normalized:
+            if pattern.search(text):
                 return level
     return None
 
 
+def levels_at_or_above(level: Seniority) -> list[Seniority]:
+    """Return ``level`` and every more-senior level, most senior first."""
+    cutoff = SENIORITY_RANK[level]
+    return [lvl for lvl in SENIORITY_ORDER if SENIORITY_RANK[lvl] <= cutoff]
+
+
 def aliases_for(level: Seniority) -> list[str]:
     return list(SENIORITY_ALIASES.get(level.value, []))
-
-
-def _padded(value: str) -> str:
-    return f" {value} "

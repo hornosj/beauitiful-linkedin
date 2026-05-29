@@ -30,12 +30,19 @@ declare global {
       error: string | null
     }>
     openLogin(): Promise<{ ready: boolean; url: string | null; error: string | null }>
+    reloadLogin(): Promise<{ ready: boolean; url: string | null; error: string | null }>
     show(bounds?: { x: number; y: number; width: number; height: number }): Promise<void>
     hide(): Promise<void>
     status(): Promise<{ url: string | null; onAuthwall: boolean; visible: boolean }>
     getCdpEndpoint(): Promise<{ endpoint: string; port: number }>
     checkSession(): Promise<{ hasLiAt: boolean; hasJsessionid: boolean }>
     awaitLogin(timeoutMs?: number): Promise<boolean>
+  }
+
+  interface CleanRunReport {
+    killedPids: number[]
+    ports: { port: number; pid: number | null; killed: boolean }[]
+    errors: string[]
   }
 
   interface BeautifulLinkedInBridge {
@@ -46,6 +53,7 @@ declare global {
       port: number | null
       error: string | null
     }>
+    cleanRun(): Promise<CleanRunReport>
     chrome: ChromeBridge
     embeddedBrowser?: EmbeddedBrowserBridge
   }

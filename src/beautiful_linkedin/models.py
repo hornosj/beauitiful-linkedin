@@ -137,6 +137,11 @@ class Lead(BaseModel):
     # against a CPF candidate's ``data_nascimento`` is a near-decisive
     # disambiguator between homonyms.
     linkedin_birthday: Optional[str] = None
+    # Residential address recovered from a Telegram CPF (SISREG-III)
+    # consult. Informational only — it never affects confidence or
+    # enrichment status, and is never overwritten once set. Populated by
+    # the Telegram phone stage alongside ``phone``.
+    endereco: Optional[str] = None
 
 
 class ProspectingSummary(BaseModel):

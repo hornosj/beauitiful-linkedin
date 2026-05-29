@@ -95,7 +95,9 @@ TELEGRAM_FOLLOWUP_MAX_CANDIDATES: int = 3
 
 # CPFs com idade acima deste limite não devem ir para revisão humana nem
 # para follow-up automático. Datas ausentes ou inválidas continuam sendo
-# revisáveis porque não há sinal confiável para remover o candidato.
+# revisáveis no pipeline porque podem vir de linhas legadas já persistidas;
+# a UI do picker aplica a regra estrita de só renderizar candidatos com
+# idade calculável.
 TELEGRAM_CPF_REVIEW_MAX_AGE: int = 75
 
 # Findex e-mail fallback does not have a CPF match score to inherit. Keep
@@ -554,10 +556,31 @@ def parse_and_rank(
     place is what makes the confidence audit-able.
     """
     if not result.raw_text:
+        logger.debug(
+            "[pipeline/nome] parse skipped provider=%s source_url=%s reason=no_raw_text",
+            result.provider,
+            result.source_url,
+        )
         return TelegramExtraction(), [], None
 
+    logger.debug(
+        "[pipeline/nome] parse input provider=%s source_url=%s raw_chars=%d "
+        "has_artifact_block=%s",
+        result.provider,
+        result.source_url,
+        len(result.raw_text),
+        "telegram_artifact" in result.raw_text,
+    )
     extraction = parse_telegram_text(result.raw_text, provider=result.provider)
     if not extraction.candidates:
+        logger.debug(
+            "[pipeline/nome] parse output provider=%s candidates=0 "
+            "primary_name=%s primary_birth=%s primary_address=%s",
+            result.provider,
+            bool(extraction.primary_nome),
+            bool(extraction.primary_birth_date),
+            bool(extraction.primary_address),
+        )
         return extraction, [], None
 
     ranked: list[tuple[MatchScore, TelegramCandidate]] = []
@@ -585,6 +608,16 @@ def parse_and_rank(
                 "breakdown": score.breakdown,
             }
         )
+    logger.debug(
+        "[pipeline/nome] parse output provider=%s candidates=%d with_name=%d "
+        "with_birth=%d with_address=%d top_score=%s",
+        result.provider,
+        len(candidate_dicts),
+        sum(1 for item in candidate_dicts if item.get("nome")),
+        sum(1 for item in candidate_dicts if item.get("data_nascimento")),
+        sum(1 for item in candidate_dicts if item.get("endereco")),
+        ranked[0][0].score if ranked else None,
+    )
     return extraction, candidate_dicts, ranked[0][0]
 
 
@@ -935,6 +968,7 @@ CpfConsultFn = Callable[[str], TelegramConsultResult]
 
 
 import re
+import unicodedata
 
 # Telegram consult payloads always carry the CPF in ``XXX.XXX.XXX-XX``
 # format. The shared ``_PHONE_REGEX`` is permissive and gladly matches
@@ -1012,6 +1046,115 @@ def extract_emails_from_text(text: str | None) -> list[str]:
         seen.add(email)
         out.append(email)
     return out
+
+
+# SISREG-III ``/cpf`` reports carry the residential address as a labeled
+# block under an ``Endereço`` header. Two render variants exist in the
+# wild: a multi-line layout (each label and value on its own line) and an
+# inline layout (everything space-separated on one line). Both are parsed
+# by splitting the section on the known sub-labels, so layout doesn't
+# matter. Labels are listed longest-first in the split regex so
+# ``logradouro`` never splits ``tipo de logradouro``.
+_ADDR_HEADER_RE = re.compile(r"(?i)endere[çc]o")
+_ADDR_SECTION_END_RE = re.compile(
+    r"(?i)(informa[cç][õo]es adicionais|informa[cç][õo]es|contatos|"
+    r"documentos|[óo]bito|afilia[cç][ãa]o)"
+)
+_ADDR_LABEL_SPLIT_RE = re.compile(
+    r"(?i)(tipo de logradouro|munic[íi]pio de resid[êe]ncia|"
+    r"logradouro|complemento|n[úu]mero|bairro|cep|pa[íi]s)"
+)
+# Normalized sub-label -> canonical slot. Labels without a slot
+# (``tipo de logradouro``, ``país``) are parsed but discarded.
+_ADDR_LABEL_SLOTS = {
+    "logradouro": "logradouro",
+    "numero": "numero",
+    "complemento": "complemento",
+    "bairro": "bairro",
+    "municipio de residencia": "municipio",
+    "cep": "cep",
+}
+_ADDR_EMPTY_VALUES = ("sem informacao", "nao informado", "n/a", "---", "")
+
+
+def _normalize_label(value: str) -> str:
+    """Lowercase, strip accents/whitespace and trailing punctuation so
+    SISREG labels compare reliably regardless of casing or stray
+    colons."""
+    decomposed = unicodedata.normalize("NFKD", value)
+    no_accents = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+    collapsed = re.sub(r"\s+", " ", no_accents).strip()
+    return collapsed.strip(" :.").lower()
+
+
+def extract_address_from_text(text: str | None) -> str | None:
+    """Assemble a single readable address from a SISREG-III ``/cpf`` report.
+
+    The report renders the residential address as a labeled block, either
+    multi-line::
+
+        Endereço
+        LOGRADOURO
+        QR 406 CONJUNTO 14
+        NÚMERO
+        06
+        ...
+
+    or inline (``Endereço Logradouro QR 406 CONJUNTO 14 Número 06 ...``).
+    We isolate the ``Endereço`` section, split it on the known sub-labels,
+    and join the populated parts into one string (e.g. ``QR 406 CONJUNTO
+    14, Nº 06, Bairro: SAMAMBAIA NORTE, BRASILIA - DF, CEP: 72318-215``).
+    ``Sem informação`` placeholders and the ``TIPO DE LOGRADOURO``/``PAÍS``
+    noise labels are skipped. Returns ``None`` when no address fields can
+    be recovered (e.g. the whole block is ``Sem informação``).
+    """
+    if not text:
+        return None
+    header = _ADDR_HEADER_RE.search(text)
+    if header is None:
+        return None
+    rest = text[header.end() :]
+    end = _ADDR_SECTION_END_RE.search(rest)
+    # Cap the section so a missing terminator can't swallow the report.
+    section = rest[: end.start()] if end else rest[:600]
+    return _format_address(_parse_address_fields(section))
+
+
+def _parse_address_fields(section: str) -> dict[str, str]:
+    parts = _ADDR_LABEL_SPLIT_RE.split(section)
+    # ``re.split`` with a capturing group yields ``[pre, label, value,
+    # label, value, ...]`` — walk the (label, value) pairs.
+    fields: dict[str, str] = {}
+    for index in range(1, len(parts) - 1, 2):
+        slot = _ADDR_LABEL_SLOTS.get(_normalize_label(parts[index]))
+        if not slot or slot in fields:
+            continue
+        raw = parts[index + 1].strip()
+        value = raw.splitlines()[0].strip() if raw else ""
+        if not value or _normalize_label(value) in _ADDR_EMPTY_VALUES:
+            continue
+        if not re.search(r"[0-9A-Za-zÀ-ÿ]", value):  # all-dashes placeholder
+            continue
+        fields[slot] = value
+    return fields
+
+
+def _format_address(fields: dict[str, str]) -> str | None:
+    parts: list[str] = []
+    if fields.get("logradouro"):
+        parts.append(fields["logradouro"])
+    if fields.get("numero"):
+        parts.append(f"Nº {fields['numero']}")
+    if fields.get("complemento"):
+        parts.append(fields["complemento"])
+    if fields.get("bairro"):
+        parts.append(f"Bairro: {fields['bairro']}")
+    if fields.get("municipio"):
+        parts.append(fields["municipio"])
+    if fields.get("cep"):
+        parts.append(f"CEP: {fields['cep']}")
+    joined = ", ".join(part for part in parts if part)
+    return joined or None
 
 
 def _normalize_telegram_phone_text(text: str) -> str:
@@ -1362,6 +1505,7 @@ def run_phone_followup(
             )
             continue
         phones = extract_phones_from_text(result.raw_text)
+        address = extract_address_from_text(result.raw_text)
         if phones:
             logger.info(
                 "[pipeline/cpf] CPF %s lead=%r → %d telefone(s) encontrado(s): %s",
@@ -1395,6 +1539,7 @@ def run_phone_followup(
                         "name_stage_provider": candidate.source_provider,
                         "cpf_stage_provider": result.provider,
                         "raw_source_url": result.source_url,
+                        "contact_address": address,
                     },
                 )
             )
@@ -1670,6 +1815,7 @@ def _run_cpf_stage_for_candidates(
             else []
         )
         emails = extract_emails_from_text(cpf_result.raw_text)
+        address = extract_address_from_text(cpf_result.raw_text)
         _log_telegram_stage(
             "cpf_attempt_parsed",
             run_id=run_id,
@@ -1678,6 +1824,7 @@ def _run_cpf_stage_for_candidates(
             detail={
                 "phones": len(phones),
                 "contact_emails": len(emails),
+                "contact_address": bool(address),
                 "error": bool(cpf_result.error),
             },
         )
@@ -1702,6 +1849,7 @@ def _run_cpf_stage_for_candidates(
                         "cpf_stage_provider": cpf_result.provider,
                         "raw_source_url": cpf_result.source_url,
                         "contact_emails": emails,
+                        "contact_address": address,
                     },
                 )
             )
@@ -1782,6 +1930,7 @@ def _run_findex_email_fallback(
 
     phones = extract_phones_from_text(result.raw_text)
     emails = extract_emails_from_text(result.raw_text)
+    address = extract_address_from_text(result.raw_text)
     candidate_dicts = [
         {
             "phone_raw": raw,
@@ -1845,6 +1994,7 @@ def _run_findex_email_fallback(
                 "email_stage_provider": result.provider or email_provider_name,
                 "raw_source_url": result.source_url,
                 "contact_emails": emails,
+                "contact_address": address,
             },
         )
         for raw, digits in phones

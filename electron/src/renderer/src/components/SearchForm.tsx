@@ -1,6 +1,5 @@
 import type { ScrapeMode, SearchRequest, Seniority, TaxonomyItem } from '../../../shared/types'
 import type { SearchFormFilters, SearchFormState, ValidationErrors } from '../../../shared/validation'
-import { isRiskyScrapeMode } from '../../../shared/validation'
 
 interface Props {
   form: SearchFormState
@@ -15,14 +14,6 @@ interface Props {
   onSubmit(event: React.FormEvent): void
   running: boolean
 }
-
-const FALLBACK_MODES: TaxonomyItem[] = [
-  { value: 'serp', label: 'Busca pública (sem conta)' },
-  { value: 'api', label: 'APIs externas + busca pública' },
-  { value: 'cookie', label: 'LinkedIn com cookie (li_at)' },
-  { value: 'people_search', label: 'LinkedIn People (li_at, sem visitar perfis)' },
-  { value: 'browser', label: 'ARRISCADO — Playwright logado' }
-]
 
 const FALLBACK_ROLE_PRESETS: TaxonomyItem[] = [
   {
@@ -65,29 +56,54 @@ const SEARCH_DEPTH_OPTIONS: { value: SearchDepth; label: string; hint: string }[
   { value: 'deep', label: 'Profunda', hint: 'mais variações' }
 ]
 
-const MODE_HINTS: Record<ScrapeMode, string> = {
-  api: 'APIs externas + busca pública. Recomendado.',
-  serp: 'Apenas busca pública via SearxNG / Serper.',
-  cookie: 'LinkedIn com cookie li_at do seu Keychain.',
-  people_search:
-    'Busca via /company/<empresa>/people com li_at. Lê os cards do listing direto, sem abrir perfis.',
-  browser: 'Playwright logado. Arriscado — só sob demanda.'
-}
-
-const ALLOWED_MODES: ScrapeMode[] = ['people_search', 'api']
-
 export default function SearchForm(props: Props) {
-  const sourceModes = props.scrapeModes.length ? props.scrapeModes : FALLBACK_MODES
-  const modes = sourceModes.filter((m) => ALLOWED_MODES.includes(m.value as ScrapeMode))
   const rolePresets = props.rolePresets.length ? props.rolePresets : FALLBACK_ROLE_PRESETS
   const seniority = props.seniority.length ? props.seniority : FALLBACK_SENIORITY
   const isPeopleSearch = props.form.scrapeMode === 'people_search'
+
+  const extraCompanies = props.form.extraCompanies
+  const companyCount =
+    (props.form.companyName.trim() ? 1 : 0) +
+    extraCompanies.filter((value) => value.trim()).length
+  const isMultiCompany = companyCount >= 2
+
+  const setExtraCompanies = (next: string[]) => props.onChange({ extraCompanies: next })
+  const addCompany = () => setExtraCompanies([...extraCompanies, ''])
+  const updateCompany = (index: number, value: string) =>
+    setExtraCompanies(extraCompanies.map((entry, i) => (i === index ? value : entry)))
+  const removeCompany = (index: number) =>
+    setExtraCompanies(extraCompanies.filter((_, i) => i !== index))
 
   const toggleSeniority = (value: Seniority) => {
     const next = props.form.filters.seniority.includes(value)
       ? props.form.filters.seniority.filter((item) => item !== value)
       : [...props.form.filters.seniority, value]
     props.onFilterChange({ seniority: next })
+  }
+
+  // "A partir de" é açúcar de UI: marca o nível escolhido e todos acima
+  // dele (a lista vem ordenada do mais sênior para o menos). Popula os
+  // mesmos chips — não muda a semântica do filtro no backend.
+  const seniorityValues = seniority.map((item) => item.value as Seniority)
+  const fromLevelValue = (() => {
+    const active = props.form.filters.seniority
+    if (active.length === 0) return ''
+    const indices = active.map((value) => seniorityValues.indexOf(value))
+    if (indices.some((index) => index < 0)) return ''
+    const maxIndex = Math.max(...indices)
+    const prefix = seniorityValues.slice(0, maxIndex + 1)
+    const isExactPrefix =
+      prefix.length === active.length && prefix.every((value) => active.includes(value))
+    return isExactPrefix ? seniorityValues[maxIndex] : ''
+  })()
+  const applyFromLevel = (value: string) => {
+    if (!value) {
+      props.onFilterChange({ seniority: [] })
+      return
+    }
+    const index = seniorityValues.indexOf(value as Seniority)
+    if (index < 0) return
+    props.onFilterChange({ seniority: seniorityValues.slice(0, index + 1) })
   }
 
   return (
@@ -171,6 +187,72 @@ export default function SearchForm(props: Props) {
         </div>
 
         <div className="form-row">
+          <label className="form-label">Outras empresas</label>
+          {extraCompanies.length > 0 && (
+            <div style={{ display: 'grid', gap: 6, marginBottom: 8 }}>
+              {extraCompanies.map((value, index) => (
+                <div key={index} style={{ display: 'flex', gap: 6 }}>
+                  <input
+                    className="input"
+                    value={value}
+                    onChange={(e) => updateCompany(index, e.target.value)}
+                    placeholder="Nome da empresa ou URL do LinkedIn"
+                    aria-label={`Empresa adicional ${index + 1}`}
+                  />
+                  <button
+                    type="button"
+                    className="pill-btn"
+                    onClick={() => removeCompany(index)}
+                    aria-label="Remover empresa"
+                    title="Remover empresa"
+                    style={{ flexShrink: 0 }}
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          <button type="button" className="pill-btn" onClick={addCompany}>
+            + Adicionar empresa
+          </button>
+          <div className="field-hint">
+            Cada empresa dispara uma busca própria, em sequência. Uma falha não
+            interrompe as demais.
+          </div>
+        </div>
+
+        {isMultiCompany && (
+          <div className="form-row">
+            <label className="form-label">Organização dos resultados</label>
+            <div className="seg" style={{ gridTemplateColumns: 'repeat(2, 1fr)' }}>
+              <button
+                type="button"
+                className={`seg-item ${props.form.tableMode === 'single' ? 'on' : ''}`}
+                aria-pressed={props.form.tableMode === 'single'}
+                onClick={() => props.onChange({ tableMode: 'single' })}
+              >
+                <span style={{ display: 'block', fontWeight: 600 }}>Tabela única</span>
+                <span style={{ display: 'block', fontSize: 10, color: 'var(--ink-3)' }}>
+                  coluna identifica a empresa
+                </span>
+              </button>
+              <button
+                type="button"
+                className={`seg-item ${props.form.tableMode === 'separate' ? 'on' : ''}`}
+                aria-pressed={props.form.tableMode === 'separate'}
+                onClick={() => props.onChange({ tableMode: 'separate' })}
+              >
+                <span style={{ display: 'block', fontWeight: 600 }}>Tabelas separadas</span>
+                <span style={{ display: 'block', fontSize: 10, color: 'var(--ink-3)' }}>
+                  uma tabela por empresa
+                </span>
+              </button>
+            </div>
+          </div>
+        )}
+
+        <div className="form-row">
           <label className="form-label" htmlFor="role-preset">
             Perfil de cargo
           </label>
@@ -229,6 +311,20 @@ export default function SearchForm(props: Props) {
 
         <div className="form-row">
           <label className="form-label">Senioridade</label>
+          <select
+            className="input"
+            style={{ marginBottom: 8 }}
+            value={fromLevelValue}
+            onChange={(e) => applyFromLevel(e.target.value)}
+            aria-label="Selecionar senioridade a partir de um nível"
+          >
+            <option value="">A partir de… (atalho — marca este nível e acima)</option>
+            {seniority.map((item) => (
+              <option key={item.value} value={item.value}>
+                {item.label} e acima
+              </option>
+            ))}
+          </select>
           <div className="chips">
             {seniority.map((item) => {
               const value = item.value as Seniority
@@ -246,29 +342,6 @@ export default function SearchForm(props: Props) {
               )
             })}
           </div>
-        </div>
-
-        <div className="form-row">
-          <label className="form-label">Modo de coleta</label>
-          <div className="seg" style={{ gridTemplateColumns: `repeat(${modes.length}, 1fr)` }}>
-            {modes.map((mode) => {
-              const active = props.form.scrapeMode === mode.value
-              const risky = isRiskyScrapeMode(mode.value as ScrapeMode)
-              return (
-                <button
-                  key={mode.value}
-                  type="button"
-                  className={`seg-item ${active ? 'on' : ''} ${risky ? 'danger' : ''}`}
-                  aria-pressed={active}
-                  onClick={() => props.onScrapeModeChange(mode.value as ScrapeMode)}
-                >
-                  {mode.value.toUpperCase()}
-                </button>
-              )
-            })}
-          </div>
-          <div className="field-hint">{MODE_HINTS[props.form.scrapeMode]}</div>
-          {props.errors.acceptRisk && <p className="field-error">{props.errors.acceptRisk}</p>}
         </div>
 
         {!isPeopleSearch && (
@@ -337,7 +410,8 @@ export default function SearchForm(props: Props) {
             </>
           ) : (
             <>
-              Buscar leads <span style={{ opacity: 0.7, fontSize: 11 }}>Ctrl↵</span>
+              {isMultiCompany ? `Buscar leads · ${companyCount} empresas` : 'Buscar leads'}{' '}
+              <span style={{ opacity: 0.7, fontSize: 11 }}>Ctrl↵</span>
             </>
           )}
         </button>

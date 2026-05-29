@@ -154,6 +154,47 @@ def get_default_throttle() -> TelegramActionThrottle:
     return _default_throttle
 
 
+# ---------------------------------------------------------------------------
+# Per-provider lead-to-lead pacing. The action throttle above spaces every
+# individual Telegram action (send/click); this layer adds a stronger,
+# provider-specific floor BETWEEN consults (i.e. lead-to-lead). Gonzales is
+# the strictest base — it bans accounts that hammer it — so we never start
+# two Gonzales consults less than 90 seconds apart, regardless of how fast
+# the bot replied. The state is module-level so it survives across the
+# fresh consult instances the server builds per request.
+# ---------------------------------------------------------------------------
+_PROVIDER_MIN_LEAD_SPACING_SECONDS: dict[str, float] = {
+    "gon": 90.0,
+    "gon_cpf": 90.0,
+}
+_provider_last_consult_monotonic: dict[str, float] = {}
+
+
+def _enforce_provider_lead_spacing(provider: str) -> None:
+    """Block until ``provider``'s minimum lead-to-lead spacing has elapsed.
+
+    No-op for providers without a configured floor. Records the (post-wait)
+    start instant so consecutive consults for the same provider are spaced
+    by at least the configured minimum.
+    """
+    min_spacing = _PROVIDER_MIN_LEAD_SPACING_SECONDS.get(provider, 0.0)
+    if min_spacing <= 0:
+        return
+    last = _provider_last_consult_monotonic.get(provider)
+    if last is not None:
+        wait_for = min_spacing - (time.monotonic() - last)
+        if wait_for > 0:
+            logger.info(
+                "[telethon/%s] pacing: aguardando %.0fs antes da próxima "
+                "consulta (mínimo %.0fs lead-a-lead)",
+                provider,
+                wait_for,
+                min_spacing,
+            )
+            time.sleep(wait_for)
+    _provider_last_consult_monotonic[provider] = time.monotonic()
+
+
 URLFetcher = Callable[[str], str | None]
 
 
@@ -341,6 +382,8 @@ def _error_code(exc: Exception) -> str:
         "telethon_not_installed",
         "telethon_session_not_authorized",
         "telethon_result_timeout",
+        "telethon_serasa_result_button_missing",
+        "telethon_serasa_result_timeout",
         # Access-control remediation outcomes (see _classify_access_error):
         "telethon_not_in_group",
         "telethon_group_join_pending",
@@ -363,6 +406,44 @@ def _looks_like_loading(text: str | None) -> bool:
     if not lowered:
         return False
     return any(phrase in lowered for phrase in _LOADING_PHRASES)
+
+
+# The group @CONSULTASGRATIS4NV is shared by several bots, and more than one
+# answers a /nome with a menu that also exposes base buttons like SI-PNI /
+# RECEITA. To click the *right* one we require a Void-Search marker. The
+# decisive signal lives in the BUTTON LABELS: Void's menu carries its own
+# "VOID" button alongside the bases (real menu:
+# ['NACIONAL', 'SI-PNI', 'RECEITA', 'VOID', '🗑️']). The body text
+# ("- NOME: ...\n🔎 SELECIONE UMA BASE") has no marker, so a text-only check
+# misses it.
+_VOID_MENU_MARKERS: tuple[str, ...] = (
+    "void search",
+    "void",
+)
+
+
+def _looks_like_void_menu(text: str | None, buttons: list[str] | None = None) -> bool:
+    """True when the menu belongs to the Void Search bot.
+
+    Checks both the message text and the button labels for a Void marker.
+    The button labels are the reliable signal — Void's base menu always
+    carries a self-named ``VOID`` button — so we only click the SI-PNI base
+    on Void's own menu and never on another bot's identical-looking menu in
+    the shared group.
+    """
+    haystacks: list[str] = []
+    if text:
+        haystacks.append(text.lower())
+    for label in buttons or []:
+        if label:
+            haystacks.append(label.lower())
+    if not haystacks:
+        return False
+    return any(
+        marker in haystack
+        for haystack in haystacks
+        for marker in _VOID_MENU_MARKERS
+    )
 
 
 def _message_has_url_button(message: Any) -> bool:
@@ -517,6 +598,11 @@ class CdpResultFetcher:
         reasons: list[str] = []
         cdp_text, cdp_reason = self._fetch_via_cdp_with_reason(url)
         if cdp_text and len(cdp_text.strip()) >= MIN_USEFUL_CONTENT_CHARS:
+            logger.info(
+                "[telethon/fetch] CDP ok chars=%d endpoint=%s",
+                len(cdp_text.strip()),
+                self._endpoint,
+            )
             return cdp_text
         if cdp_reason:
             reasons.append(cdp_reason)
@@ -524,9 +610,16 @@ class CdpResultFetcher:
             reasons.append(
                 f"cdp_body_too_short:{len(cdp_text.strip())}chars"
             )
+        logger.info(
+            "[telethon/fetch] CDP miss reason=%s; falling back to httpx",
+            cdp_reason or "body_too_short",
+        )
 
         httpx_text, httpx_reason = _fetch_via_httpx_with_reason(url)
         if httpx_text and len(httpx_text.strip()) >= MIN_USEFUL_CONTENT_CHARS:
+            logger.info(
+                "[telethon/fetch] httpx ok chars=%d", len(httpx_text.strip())
+            )
             return httpx_text
         if httpx_reason:
             reasons.append(httpx_reason)
@@ -540,8 +633,15 @@ class CdpResultFetcher:
         # evidence entirely.
         for candidate in (cdp_text, httpx_text):
             if candidate and candidate.strip():
+                logger.warning(
+                    "[telethon/fetch] both transports below threshold; "
+                    "returning short body chars=%d reasons=%s",
+                    len(candidate.strip()),
+                    reasons,
+                )
                 return candidate
 
+        logger.warning("[telethon/fetch] fetch failed reasons=%s", reasons)
         return _format_fetch_failure(reasons or ["unknown_error"])
 
     def _fetch_via_cdp_with_reason(self, url: str) -> tuple[str | None, str | None]:
@@ -652,9 +752,78 @@ class CdpFindexJsonFetcher(CdpResultFetcher):
             return ""
 
 
+class CdpUnixTextFetcher(CdpResultFetcher):
+    """Unix (MK | UNIX) result page exposes a "Texto" download button.
+
+    Like Findex, the visible body of the MK UNIX SPA is awkward to scrape
+    (it lazy-renders the "PESSOAS ENCONTRADAS" cards), and the operator's
+    "Texto" button yields a clean text dump with NOME/CPF/DATA DE
+    NASCIMENTO/etc. We click it, capture the download, and return its
+    contents so the downstream parser can extract the CPF and the birth
+    date that drive the /cpf phone follow-up. Falls back to body text on
+    any failure so the evidence row is never empty.
+    """
+
+    export_button_timeout_ms: int = 20_000
+    download_timeout_ms: int = 30_000
+    # The MK UNIX SPA renders its cards a beat after domcontentloaded; give
+    # it a little longer than the default so "Texto" is present and the
+    # body fallback is populated.
+    post_load_wait_seconds: float = 8.0
+
+    _TEXT_BUTTON_SELECTOR = (
+        "button:has-text('Texto'),"
+        " a:has-text('Texto'),"
+        " [role='button']:has-text('Texto'),"
+        " button:has-text('Baixar texto'),"
+        " a:has-text('Baixar texto'),"
+        " button:has-text('Exportar texto'),"
+        " a:has-text('Exportar texto')"
+    )
+
+    def _extract_result(self, page: Any, *, context: Any) -> str:  # noqa: ARG002
+        button = page.locator(self._TEXT_BUTTON_SELECTOR).last
+        try:
+            button.wait_for(state="visible", timeout=self.export_button_timeout_ms)
+            try:
+                button.scroll_into_view_if_needed()
+            except Exception:
+                pass
+            with page.expect_download(timeout=self.download_timeout_ms) as dl_info:
+                button.click()
+            download = dl_info.value
+            path = download.path()
+            if path is not None:
+                with open(path, "rb") as handle:
+                    contents = handle.read().decode("utf-8", errors="replace")
+                if contents.strip():
+                    suggested = download.suggested_filename or "unix_resultado.txt"
+                    logger.info(
+                        "[telethon/fetch] Unix 'Texto' download captured "
+                        "chars=%d file=%s",
+                        len(contents),
+                        suggested,
+                    )
+                    header = f"=== unix_texto ({suggested}) ===\n"
+                    return header + contents
+        except Exception as exc:
+            logger.info(
+                "[telethon/fetch] Unix 'Texto' download failed (%s); "
+                "falling back to body text",
+                type(exc).__name__,
+            )
+        try:
+            return page.locator("body").inner_text(
+                timeout=self.inner_text_timeout_ms
+            )
+        except Exception:
+            return ""
+
+
 # Module-level singletons — same Chrome contexts reused across consults.
 _DEFAULT_BODY_TEXT_FETCHER: CdpResultFetcher | None = None
 _DEFAULT_FINDEX_FETCHER: CdpFindexJsonFetcher | None = None
+_DEFAULT_UNIX_FETCHER: CdpUnixTextFetcher | None = None
 
 
 def _default_body_text_fetcher() -> CdpResultFetcher:
@@ -662,6 +831,13 @@ def _default_body_text_fetcher() -> CdpResultFetcher:
     if _DEFAULT_BODY_TEXT_FETCHER is None:
         _DEFAULT_BODY_TEXT_FETCHER = CdpResultFetcher()
     return _DEFAULT_BODY_TEXT_FETCHER
+
+
+def _default_unix_fetcher() -> CdpUnixTextFetcher:
+    global _DEFAULT_UNIX_FETCHER
+    if _DEFAULT_UNIX_FETCHER is None:
+        _DEFAULT_UNIX_FETCHER = CdpUnixTextFetcher()
+    return _DEFAULT_UNIX_FETCHER
 
 
 def _default_findex_fetcher() -> CdpFindexJsonFetcher:
@@ -831,25 +1007,48 @@ class TelethonBotConsultBase:
     def consult(self, lead_name: str) -> TelegramConsultResult:
         query = self._build_query(lead_name)
         username = _normalize_username(self.bot_username)
+        started_at = time.monotonic()
+        logger.info(
+            "[telethon/%s] consult start command=%s bot=%s query=%r via=%s",
+            self.provider,
+            self.command,
+            username,
+            query,
+            "requester_stub" if self._requester is not None else "mtproto",
+        )
         try:
-            response = (
-                _response_from_value(self._requester(username, query))
-                if self._requester is not None
-                else self._request_via_telethon(username, query)
+            if self._requester is not None:
+                response = _response_from_value(self._requester(username, query))
+            else:
+                # Lead-to-lead pacing (e.g. Gonzales 90s) only matters for
+                # the real network path; test stubs bypass it.
+                _enforce_provider_lead_spacing(self.provider)
+                response = self._request_via_telethon(username, query)
+            raw_text = _format_raw_text(response)
+            logger.info(
+                "[telethon/%s] consult ok elapsed=%.1fs raw_chars=%d source_url=%s artifacts=%d",
+                self.provider,
+                time.monotonic() - started_at,
+                len(raw_text or ""),
+                response.source_url or self.source_url,
+                len(response.downloaded_paths),
             )
             return TelegramConsultResult(
                 provider=self.provider,
                 lead_name=lead_name,
                 query=query,
-                raw_text=_format_raw_text(response),
+                raw_text=raw_text,
                 source_url=response.source_url or self.source_url,
                 downloaded_at=response.downloaded_at or _utc_now(),
                 error=None,
             )
         except Exception as exc:
-            logger.debug(
-                "Telethon Telegram consult failed error_type=%s message=%s",
+            logger.warning(
+                "[telethon/%s] consult failed elapsed=%.1fs error_type=%s code=%s message=%s",
+                self.provider,
+                time.monotonic() - started_at,
                 type(exc).__name__,
+                _error_code(exc),
                 exc,
             )
             return TelegramConsultResult(
@@ -887,16 +1086,26 @@ class TelethonBotConsultBase:
         send_target = _normalize_username(self.send_username or username)
         read_target = _normalize_username(self.read_username or username)
         cross_chat = send_target != read_target
+        logger.info(
+            "[telethon/%s] connecting send=%s read=%s cross_chat=%s is_group=%s",
+            self.provider,
+            send_target,
+            read_target,
+            cross_chat,
+            self.send_is_group,
+        )
 
         client = TelegramClient(self._session_name, self._api_id, self._api_hash)
         await client.connect()
         try:
             if not await client.is_user_authorized():
+                logger.warning("[telethon/%s] session not authorized", self.provider)
                 raise RuntimeError("telethon_session_not_authorized")
             send_entity = await client.get_entity(send_target)
             read_entity = (
                 send_entity if not cross_chat else await client.get_entity(read_target)
             )
+            logger.debug("[telethon/%s] entities resolved", self.provider)
             await self._clear_private_chat_before_query(client, read_entity)
             if cross_chat:
                 # When send and read entities differ we cannot use
@@ -907,12 +1116,22 @@ class TelethonBotConsultBase:
                 recent = await client.get_messages(read_entity, limit=1)
                 baseline_id = recent[0].id if recent else 0
                 throttle = self._throttle or get_default_throttle()
+                logger.info(
+                    "[telethon/%s] sending query (cross-chat) baseline_id=%d",
+                    self.provider,
+                    baseline_id,
+                )
                 await _guarded_send_message(
                     client,
                     send_entity,
                     query,
                     throttle,
                     is_group=self.send_is_group,
+                )
+                logger.info(
+                    "[telethon/%s] query sent; awaiting result (timeout=%.0fs)",
+                    self.provider,
+                    self._result_wait_seconds,
                 )
                 message = await self._await_result_message_polling(
                     client, read_entity, baseline_id=baseline_id
@@ -925,13 +1144,22 @@ class TelethonBotConsultBase:
                 await _ensure_bot_conversation_started(client, read_entity, throttle)
             async with client.conversation(read_entity, timeout=self._timeout_seconds) as conv:
                 try:
+                    logger.info("[telethon/%s] sending query (same-chat)", self.provider)
                     async with throttle:
                         await conv.send_message(query)
                 except Exception as exc:
                     code = _classify_access_error(exc)
                     if code is not None:
+                        logger.warning(
+                            "[telethon/%s] send blocked code=%s", self.provider, code
+                        )
                         raise RuntimeError(code) from exc
                     raise
+                logger.info(
+                    "[telethon/%s] query sent; awaiting result (timeout=%.0fs)",
+                    self.provider,
+                    self._result_wait_seconds,
+                )
                 message = await self._await_result_message(client, conv, read_entity)
                 return await self._response_from_message(client, message)
         finally:
@@ -953,6 +1181,7 @@ class TelethonBotConsultBase:
         expires with nothing usable.
         """
         deadline = asyncio.get_event_loop().time() + self._result_wait_seconds
+        polls = 0
         while True:
             remaining = deadline - asyncio.get_event_loop().time()
             if remaining <= 0:
@@ -964,10 +1193,48 @@ class TelethonBotConsultBase:
             except Exception as exc:
                 logger.debug("Telethon poll failed entity=%s: %s", entity, exc)
                 messages = []
+            polls += 1
+            logger.debug(
+                "[telethon/%s] poll #%d new_messages=%d remaining=%.0fs",
+                self.provider,
+                polls,
+                len(messages or []),
+                remaining,
+            )
             for candidate in reversed(messages or []):
                 if _is_incoming_result(candidate):
+                    logger.info(
+                        "[telethon/%s] result message found after %d poll(s)",
+                        self.provider,
+                        polls,
+                    )
                     return candidate
+                # Diagnose why incoming bot replies are NOT accepted as a
+                # result (e.g. the bot answered with a callback menu or a
+                # plain-text "selecione no privado" instead of a URL/media).
+                if not _is_outgoing(candidate):
+                    text = (
+                        getattr(candidate, "raw_text", None)
+                        or getattr(candidate, "message", None)
+                        or ""
+                    )
+                    logger.info(
+                        "[telethon/%s] ignored reply poll=%d has_url=%s "
+                        "has_media=%s buttons=%s text=%r",
+                        self.provider,
+                        polls,
+                        bool(_first_button_url(candidate)),
+                        _message_has_media(candidate),
+                        _describe_buttons(candidate),
+                        text[:120],
+                    )
             await asyncio.sleep(self._result_poll_interval)
+        logger.warning(
+            "[telethon/%s] result timeout after %d poll(s) (waited %.0fs)",
+            self.provider,
+            polls,
+            self._result_wait_seconds,
+        )
         raise RuntimeError("telethon_result_timeout")
 
     async def _await_result_message(
@@ -991,6 +1258,7 @@ class TelethonBotConsultBase:
           the placeholder as the lead's evidence.
         """
         deadline = asyncio.get_event_loop().time() + self._result_wait_seconds
+        polls = 0
         while True:
             remaining = deadline - asyncio.get_event_loop().time()
             if remaining <= 0:
@@ -1003,19 +1271,43 @@ class TelethonBotConsultBase:
             except (asyncio.TimeoutError, Exception):
                 message = None
 
+            polls += 1
             if message is not None and _is_incoming_result(message):
+                logger.info(
+                    "[telethon/%s] result via get_response after %d poll(s)",
+                    self.provider,
+                    polls,
+                )
                 return message
 
             try:
                 recent = await client.get_messages(entity, limit=3)
             except Exception:
                 recent = []
+            logger.debug(
+                "[telethon/%s] poll #%d head_messages=%d remaining=%.0fs",
+                self.provider,
+                polls,
+                len(recent or []),
+                remaining,
+            )
             for candidate in recent or []:
                 if _is_incoming_result(candidate):
+                    logger.info(
+                        "[telethon/%s] result via chat-head after %d poll(s)",
+                        self.provider,
+                        polls,
+                    )
                     return candidate
 
             await asyncio.sleep(self._result_poll_interval)
 
+        logger.warning(
+            "[telethon/%s] result timeout after %d poll(s) (waited %.0fs)",
+            self.provider,
+            polls,
+            self._result_wait_seconds,
+        )
         raise RuntimeError("telethon_result_timeout")
 
     async def _response_from_message(
@@ -1027,6 +1319,13 @@ class TelethonBotConsultBase:
             or None
         )
         url = _first_button_url(message)
+        logger.info(
+            "[telethon/%s] processing result message has_url=%s has_media=%s bot_text_chars=%d",
+            self.provider,
+            bool(url),
+            _message_has_media(message),
+            len(bot_text or ""),
+        )
         downloaded_paths: list[str] = []
         if _message_has_media(message):
             self._artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -1035,14 +1334,18 @@ class TelethonBotConsultBase:
                     message, file=str(self._artifact_dir)
                 )
             except Exception as exc:
-                logger.debug(
-                    "Telethon media download failed error_type=%s message=%s",
+                logger.warning(
+                    "[telethon/%s] media download failed error_type=%s message=%s",
+                    self.provider,
                     type(exc).__name__,
                     exc,
                 )
                 downloaded = None
             if downloaded:
                 downloaded_paths.append(str(downloaded))
+                logger.info(
+                    "[telethon/%s] media downloaded path=%s", self.provider, downloaded
+                )
 
         page_text: str | None = None
         if url:
@@ -1052,7 +1355,13 @@ class TelethonBotConsultBase:
             # — fetching too soon yields a half-loaded SPA shell.
             if self._pre_fetch_settle_seconds > 0:
                 await asyncio.sleep(self._pre_fetch_settle_seconds)
+            logger.info("[telethon/%s] fetching result url=%s", self.provider, url)
             page_text = await asyncio.to_thread(self._url_fetcher, url)
+            logger.info(
+                "[telethon/%s] url fetch done page_chars=%d",
+                self.provider,
+                len(page_text or ""),
+            )
 
         raw_text = _compose_raw_text(bot_text, url, page_text)
         return TelethonBotResponse(
@@ -1130,6 +1439,14 @@ def _iter_message_buttons(message: Any) -> list[Any]:
     return flattened
 
 
+def _describe_buttons(message: Any) -> list[str]:
+    """Return the visible labels of a message's buttons, for debug logs."""
+    return [
+        (getattr(button, "text", None) or "").strip()
+        for button in _iter_message_buttons(message)
+    ]
+
+
 def _button_matches_text(button: Any, options: tuple[str, ...]) -> bool:
     label = (getattr(button, "text", None) or "").strip().lower()
     if not label:
@@ -1160,7 +1477,12 @@ _RESULT_BUTTON_OPTIONS: tuple[str, ...] = (
     "resultado aqui",
     "resultado (web)",
 )
-_VOID_RECEITA_BUTTON_OPTIONS: tuple[str, ...] = ("receita",)
+# Void's name→CPF base. We target the SI-PNI base (real menu:
+# ['NACIONAL', 'SI-PNI', 'RECEITA', 'VOID', '🗑️']) because its result TXT
+# carries the full "DADOS CADASTRAIS" block — CPF + NASC + ENDEREÇO — which
+# is exactly what the matcher's location-weighted score needs. The variants
+# cover Telegram's casing/spacing quirks for the same button.
+_VOID_SIPNI_BUTTON_OPTIONS: tuple[str, ...] = ("si-pni", "sipni", "si pni", "si-pini")
 
 
 class TelethonGonzalesCpfConsult(TelethonBotConsultBase):
@@ -1224,6 +1546,11 @@ class TelethonGonzalesCpfConsult(TelethonBotConsultBase):
             baseline_id = recent[0].id if recent else 0
 
             throttle = self._throttle or get_default_throttle()
+            logger.info(
+                "[telethon/%s] sending /cpf query; awaiting SISREG menu (timeout=%.0fs)",
+                self.provider,
+                self._sisreg_wait_seconds,
+            )
             await _guarded_send_message(
                 client, entity, query, throttle, is_group=self.send_is_group
             )
@@ -1236,13 +1563,21 @@ class TelethonGonzalesCpfConsult(TelethonBotConsultBase):
                 deadline_seconds=self._sisreg_wait_seconds,
                 fail_reason="telethon_sisreg_button_missing",
             )
+            sisreg_label = _pick_button_label(menu, _SISREG_BUTTON_OPTIONS)
+            logger.info(
+                "[telethon/%s] SISREG menu found; clicking button=%r; "
+                "awaiting result (timeout=%.0fs)",
+                self.provider,
+                sisreg_label,
+                self._result_wait_seconds,
+            )
 
             # Snapshot before the click so the next poll only sees the
             # bot's response to SISREG, not the menu message itself.
             post_click_baseline = menu.id
 
             async with throttle:
-                await menu.click(text=_pick_button_label(menu, _SISREG_BUTTON_OPTIONS))
+                await menu.click(text=sisreg_label)
 
             result = await self._await_button_message(
                 client,
@@ -1252,6 +1587,7 @@ class TelethonGonzalesCpfConsult(TelethonBotConsultBase):
                 deadline_seconds=self._result_wait_seconds,
                 fail_reason="telethon_post_sisreg_result_missing",
             )
+            logger.info("[telethon/%s] SISREG result button found", self.provider)
             return await self._response_from_message(client, result)
         finally:
             await client.disconnect()
@@ -1267,6 +1603,7 @@ class TelethonGonzalesCpfConsult(TelethonBotConsultBase):
         fail_reason: str,
     ) -> Any:
         deadline = asyncio.get_event_loop().time() + deadline_seconds
+        polls = 0
         while True:
             remaining = deadline - asyncio.get_event_loop().time()
             if remaining <= 0:
@@ -1278,10 +1615,27 @@ class TelethonGonzalesCpfConsult(TelethonBotConsultBase):
             except Exception as exc:
                 logger.debug("Telethon poll failed entity=%s: %s", entity, exc)
                 messages = []
+            polls += 1
+            logger.debug(
+                "[telethon/%s] button poll #%d new_messages=%d remaining=%.0fs "
+                "looking_for=%s",
+                self.provider,
+                polls,
+                len(messages or []),
+                remaining,
+                options,
+            )
             for candidate in reversed(messages or []):
                 if _first_button_matching(candidate, options) is not None:
                     return candidate
             await asyncio.sleep(self._result_poll_interval)
+        logger.warning(
+            "[telethon/%s] button timeout reason=%s after %d poll(s) (waited %.0fs)",
+            self.provider,
+            fail_reason,
+            polls,
+            deadline_seconds,
+        )
         raise RuntimeError(fail_reason)
 
 
@@ -1299,6 +1653,346 @@ def _pick_button_label(message: Any, options: tuple[str, ...]) -> str:
     # tries something deterministic. The caller will see the failure
     # surface through the next poll deadline.
     return options[0]
+
+
+# ---------------------------------------------------------------------------
+# SERASA — /cpf phone lookup via the @puxada2026 group + @OraculoPuxadaBot DM.
+# ---------------------------------------------------------------------------
+
+# Where we type ``/cpf`` and where the answer is published.
+SERASA_GROUP_USERNAME = "@puxada2026"
+SERASA_BOT_USERNAME = "@OraculoPuxadaBot"
+SERASA_GROUP_URL = "https://t.me/puxada2026"
+
+# The group card carries a "VER RESULTADO" button; lower-case substring
+# match tolerates Telegram's casing/emoji quirks.
+_SERASA_RESULT_BUTTON_OPTIONS: tuple[str, ...] = ("ver resultado",)
+
+# Markers that identify the bot's "CPF Encontrado" answer (inline text)
+# versus a welcome/loading message. Any one is enough.
+_SERASA_RESULT_MARKERS: tuple[str, ...] = (
+    "cpf encontrado",
+    "telefone",
+    "nascimento",
+    "naturalidade",
+    "encontrado",
+)
+
+
+def _telegram_query_param(url: str, name: str) -> str | None:
+    match = re.search(rf"[?&]{re.escape(name)}=([^&#\s]+)", url, re.IGNORECASE)
+    return match.group(1) if match else None
+
+
+def _parse_start_deeplink(url: str | None) -> tuple[str | None, str | None]:
+    """Parse a Telegram bot start deep link into ``(bot_username, payload)``.
+
+    Handles the two shapes Telegram uses for "open this bot and press
+    Start with this token":
+
+    - ``https://t.me/OraculoPuxadaBot?start=<token>`` (web/app link)
+    - ``tg://resolve?domain=OraculoPuxadaBot&start=<token>`` (internal)
+
+    Returns ``(None, None)`` when ``url`` carries neither a bot handle nor
+    a payload so the caller can fall back to the configured bot username.
+    """
+    if not url:
+        return None, None
+    start = _telegram_query_param(url, "start")
+    path_match = re.search(
+        r"t(?:elegram)?\.me/([A-Za-z0-9_]+)", url, re.IGNORECASE
+    )
+    if path_match:
+        return path_match.group(1), start
+    domain = _telegram_query_param(url, "domain")
+    if domain:
+        return domain, start
+    return None, start
+
+
+def _url_targets_serasa_bot(url: str | None) -> bool:
+    if not url:
+        return False
+    handle = SERASA_BOT_USERNAME.lstrip("@").lower()
+    return handle in url.lower()
+
+
+def _looks_like_serasa_result(text: str | None) -> bool:
+    if not text:
+        return False
+    lowered = text.lower()
+    return any(marker in lowered for marker in _SERASA_RESULT_MARKERS)
+
+
+class TelethonSerasaCpfConsult(TelethonBotConsultBase):
+    """SERASA — the preferred ``/cpf`` phone lookup.
+
+    Flow observed in Telegram:
+
+    1. Send ``/cpf <cpf>`` in the public group ``@puxada2026``.
+    2. The group bot replies with a "CONSULTA CPF" card carrying a
+       ``VER RESULTADO`` URL button. That button is a Telegram deep link
+       (``t.me/OraculoPuxadaBot?start=<token>``) — clicking it in the app
+       opens a private chat with ``@OraculoPuxadaBot`` and fires
+       ``/start <token>``.
+    3. We replicate the click by parsing the deep link and issuing the
+       same ``/start <token>`` to the bot over MTProto (``StartBotRequest``
+       with a plain ``/start`` text fallback).
+    4. ``@OraculoPuxadaBot`` answers privately with a "CPF Encontrado"
+       message whose inline text carries NOME/CPF/NASCIMENTO and the
+       ``TELEFONES`` block. That text becomes ``raw_text`` so the existing
+       phone harvester picks the numbers out — no URL to scrape.
+
+    Every Telegram-side action (group send, bot start) goes through the
+    shared throttle so back-to-back queries respect the global spacing.
+    """
+
+    provider = "serasa_cpf"
+    bot_username = SERASA_BOT_USERNAME
+    send_username = SERASA_GROUP_USERNAME
+    read_username = SERASA_BOT_USERNAME
+    send_is_group = True
+    source_url = SERASA_GROUP_URL
+    command = "/cpf"
+
+    def __init__(
+        self,
+        *,
+        group_wait_seconds: float = 45.0,
+        result_wait_seconds: float = 60.0,
+        **base_kwargs: Any,
+    ) -> None:
+        super().__init__(result_wait_seconds=result_wait_seconds, **base_kwargs)
+        self._group_wait_seconds = max(5.0, float(group_wait_seconds))
+
+    async def _request_via_telethon_async(
+        self, username: str, query: str
+    ) -> TelethonBotResponse:
+        try:
+            from telethon import TelegramClient  # type: ignore[import-not-found]
+        except Exception as exc:  # pragma: no cover - optional dependency
+            raise RuntimeError("telethon_not_installed") from exc
+
+        group_target = _normalize_username(self.send_username or username)
+        bot_target = _normalize_username(self.read_username or self.bot_username)
+        client = TelegramClient(self._session_name, self._api_id, self._api_hash)
+        await client.connect()
+        try:
+            if not await client.is_user_authorized():
+                raise RuntimeError("telethon_session_not_authorized")
+            group_entity = await client.get_entity(group_target)
+            bot_entity = await client.get_entity(bot_target)
+            group_recent = await client.get_messages(group_entity, limit=1)
+            group_baseline = group_recent[0].id if group_recent else 0
+            return await self._run_serasa_flow(
+                client,
+                group_entity=group_entity,
+                bot_entity=bot_entity,
+                bot_target=bot_target,
+                query=query,
+                group_baseline=group_baseline,
+            )
+        finally:
+            await client.disconnect()
+
+    async def _run_serasa_flow(
+        self,
+        client: Any,
+        *,
+        group_entity: Any,
+        bot_entity: Any,
+        bot_target: str,
+        query: str,
+        group_baseline: int,
+    ) -> TelethonBotResponse:
+        throttle = self._throttle or get_default_throttle()
+        logger.info(
+            "[telethon/%s] sending /cpf to group; awaiting VER RESULTADO "
+            "(timeout=%.0fs)",
+            self.provider,
+            self._group_wait_seconds,
+        )
+        await _guarded_send_message(
+            client, group_entity, query, throttle, is_group=True
+        )
+
+        result_button_msg = await self._await_result_button_message(
+            client,
+            group_entity,
+            baseline_id=group_baseline,
+            deadline_seconds=self._group_wait_seconds,
+        )
+        url = _first_button_url(result_button_msg)
+        bot_name, start_param = _parse_start_deeplink(url)
+        logger.info(
+            "[telethon/%s] VER RESULTADO found url=%s deeplink_bot=%s "
+            "has_payload=%s",
+            self.provider,
+            url,
+            bot_name,
+            bool(start_param),
+        )
+        # Trust the deep link's bot handle when it differs from the
+        # configured default (the group may rotate result bots).
+        if bot_name and bot_name.lower() != bot_target.lstrip("@").lower():
+            bot_entity = await client.get_entity(_normalize_username(bot_name))
+
+        bot_recent = await client.get_messages(bot_entity, limit=1)
+        bot_baseline = bot_recent[0].id if bot_recent else 0
+
+        await self._trigger_bot_start(client, bot_entity, start_param, throttle)
+
+        logger.info(
+            "[telethon/%s] /start fired; awaiting CPF result (timeout=%.0fs)",
+            self.provider,
+            self._result_wait_seconds,
+        )
+        result_message = await self._await_text_result_message(
+            client,
+            bot_entity,
+            baseline_id=bot_baseline,
+            deadline_seconds=self._result_wait_seconds,
+        )
+        logger.info("[telethon/%s] CPF result message found", self.provider)
+        return await self._response_from_message(client, result_message)
+
+    async def _trigger_bot_start(
+        self, client: Any, bot_entity: Any, start_param: str | None, throttle: Any
+    ) -> None:
+        """Open the bot with the deep-link token, replicating the button tap.
+
+        ``StartBotRequest`` is the exact MTProto call a Telegram client
+        issues when the user taps a ``?start=`` deep link. We fall back to
+        sending ``/start <token>`` as plain text when Telethon's helper is
+        unavailable or rejects the call — most bots parse that identically.
+        """
+        try:
+            from telethon.tl.functions.messages import (  # type: ignore[import-not-found]
+                StartBotRequest,
+            )
+        except Exception:
+            StartBotRequest = None  # type: ignore[assignment]
+        async with throttle:
+            if StartBotRequest is not None and start_param:
+                try:
+                    await client(
+                        StartBotRequest(
+                            bot=bot_entity,
+                            peer=bot_entity,
+                            start_param=start_param,
+                        )
+                    )
+                    return
+                except Exception as exc:
+                    logger.info(
+                        "[telethon/%s] StartBotRequest failed (%s); "
+                        "falling back to /start text",
+                        self.provider,
+                        type(exc).__name__,
+                    )
+            message = f"/start {start_param}".strip() if start_param else "/start"
+            await client.send_message(bot_entity, message)
+
+    async def _await_result_button_message(
+        self, client: Any, entity: Any, *, baseline_id: int, deadline_seconds: float
+    ) -> Any:
+        """Poll the group for the incoming card carrying VER RESULTADO.
+
+        The group is shared, so we only accept an incoming message whose
+        button is labeled VER RESULTADO *or* whose URL points at the
+        SERASA result bot — never our own ``/cpf`` echo or another bot's
+        unrelated card.
+        """
+        deadline = asyncio.get_event_loop().time() + deadline_seconds
+        polls = 0
+        while True:
+            if deadline - asyncio.get_event_loop().time() <= 0:
+                break
+            try:
+                messages = await client.get_messages(
+                    entity, limit=8, min_id=baseline_id
+                )
+            except Exception as exc:
+                logger.debug("[telethon/%s] group poll failed: %s", self.provider, exc)
+                messages = []
+            polls += 1
+            for candidate in reversed(messages or []):
+                if _is_outgoing(candidate):
+                    continue
+                url = _first_button_url(candidate)
+                if not url:
+                    continue
+                label_match = (
+                    _first_button_matching(candidate, _SERASA_RESULT_BUTTON_OPTIONS)
+                    is not None
+                )
+                if label_match or _url_targets_serasa_bot(url):
+                    return candidate
+            await asyncio.sleep(self._result_poll_interval)
+        logger.warning(
+            "[telethon/%s] VER RESULTADO timeout after %d poll(s) (waited %.0fs)",
+            self.provider,
+            polls,
+            deadline_seconds,
+        )
+        raise RuntimeError("telethon_serasa_result_button_missing")
+
+    async def _await_text_result_message(
+        self, client: Any, entity: Any, *, baseline_id: int, deadline_seconds: float
+    ) -> Any:
+        """Poll the bot DM for the "CPF Encontrado" inline-text result.
+
+        Accepts the first incoming message that matches a result marker
+        (TELEFONE/NASCIMENTO/…) or carries media. Welcome/loading messages
+        are skipped. If the deadline passes without a marker hit we return
+        the last non-loading incoming message so a format change never
+        silently drops a real answer.
+        """
+        deadline = asyncio.get_event_loop().time() + deadline_seconds
+        polls = 0
+        last_incoming: Any | None = None
+        while True:
+            if deadline - asyncio.get_event_loop().time() <= 0:
+                break
+            try:
+                messages = await client.get_messages(
+                    entity, limit=5, min_id=baseline_id
+                )
+            except Exception as exc:
+                logger.debug("[telethon/%s] bot poll failed: %s", self.provider, exc)
+                messages = []
+            polls += 1
+            for candidate in reversed(messages or []):
+                if _is_outgoing(candidate):
+                    continue
+                if _message_has_media(candidate):
+                    return candidate
+                text = (
+                    getattr(candidate, "raw_text", None)
+                    or getattr(candidate, "message", None)
+                    or ""
+                )
+                if not text.strip() or _looks_like_loading(text):
+                    continue
+                last_incoming = candidate
+                if _looks_like_serasa_result(text):
+                    return candidate
+            await asyncio.sleep(self._result_poll_interval)
+        if last_incoming is not None:
+            logger.info(
+                "[telethon/%s] no marker-matched result after %d poll(s); "
+                "returning last incoming message",
+                self.provider,
+                polls,
+            )
+            return last_incoming
+        logger.warning(
+            "[telethon/%s] CPF result timeout after %d poll(s) (waited %.0fs)",
+            self.provider,
+            polls,
+            deadline_seconds,
+        )
+        raise RuntimeError("telethon_serasa_result_timeout")
 
 
 class TelethonUnixNameConsult(TelethonBotConsultBase):
@@ -1319,6 +2013,12 @@ class TelethonUnixNameConsult(TelethonBotConsultBase):
     source_url = TELEGRAM_UNIX_ROBOT_URL
     command = "/nome"
 
+    def _build_default_url_fetcher(self) -> URLFetcher:
+        # The MK UNIX result page exposes a "Texto" download button with a
+        # clean NOME/CPF/DATA DE NASCIMENTO dump — capture that instead of
+        # scraping the SPA body, so the CPF/birth date feed the phone stage.
+        return _default_unix_fetcher()
+
 
 class TelethonVoidNameConsult(TelethonBotConsultBase):
     """Void Search consult via the public ``@CONSULTASGRATIS4NV`` group.
@@ -1326,9 +2026,13 @@ class TelethonVoidNameConsult(TelethonBotConsultBase):
     Flow observed in Telegram Web:
 
     1. Send ``/nome <lead>`` in the group.
-    2. Wait for the ``Void Search`` menu message with database buttons.
-    3. Click ``RECEITA``.
+    2. Wait for the ``Void Search`` menu message with database buttons
+       (``NACIONAL | SI-PNI | RECEITA | VOID``).
+    3. Click ``SI-PNI``.
     4. Wait for the bot to publish a ``.txt`` media result and download it.
+       The SI-PNI base returns the full ``DADOS CADASTRAIS`` block — NOME,
+       CPF, NASC and ENDEREÇO — so the parser harvests the CPF plus the
+       address the location-weighted matcher relies on.
 
     The downloaded TXT contents become ``raw_text`` so the existing
     parser/scorer/storage path can treat Void like any other name-stage
@@ -1346,12 +2050,12 @@ class TelethonVoidNameConsult(TelethonBotConsultBase):
     def __init__(
         self,
         *,
-        receita_wait_seconds: float = 45.0,
+        menu_wait_seconds: float = 45.0,
         txt_wait_seconds: float = 45.0,
         **base_kwargs: Any,
     ) -> None:
         super().__init__(**base_kwargs)
-        self._receita_wait_seconds = max(5.0, float(receita_wait_seconds))
+        self._menu_wait_seconds = max(5.0, float(menu_wait_seconds))
         self._txt_wait_seconds = max(5.0, float(txt_wait_seconds))
 
     async def _request_via_telethon_async(
@@ -1397,6 +2101,12 @@ class TelethonVoidNameConsult(TelethonBotConsultBase):
         baseline_id: int,
     ) -> TelethonBotResponse:
         throttle = self._throttle or get_default_throttle()
+        logger.info(
+            "[telethon/%s] sending /nome to group; awaiting SI-PNI menu "
+            "(timeout=%.0fs)",
+            self.provider,
+            self._menu_wait_seconds,
+        )
         await _guarded_send_message(
             client, send_entity, query, throttle, is_group=self.send_is_group
         )
@@ -1405,20 +2115,29 @@ class TelethonVoidNameConsult(TelethonBotConsultBase):
             client,
             read_entity,
             baseline_id=baseline_id,
-            options=_VOID_RECEITA_BUTTON_OPTIONS,
-            deadline_seconds=self._receita_wait_seconds,
-            fail_reason="telethon_void_receita_button_missing",
+            options=_VOID_SIPNI_BUTTON_OPTIONS,
+            deadline_seconds=self._menu_wait_seconds,
+            fail_reason="telethon_void_sipni_button_missing",
         )
         post_click_baseline = getattr(menu, "id", baseline_id) or baseline_id
+        base_label = _pick_button_label(menu, _VOID_SIPNI_BUTTON_OPTIONS)
+        logger.info(
+            "[telethon/%s] SI-PNI menu found; clicking %r; awaiting TXT "
+            "(timeout=%.0fs)",
+            self.provider,
+            base_label,
+            self._txt_wait_seconds,
+        )
 
         async with throttle:
-            await menu.click(text=_pick_button_label(menu, _VOID_RECEITA_BUTTON_OPTIONS))
+            await menu.click(text=base_label)
 
         txt_message = await self._await_txt_media_message(
             client,
             read_entity,
             baseline_id=post_click_baseline,
         )
+        logger.info("[telethon/%s] TXT media message found", self.provider)
         return await self._response_from_txt_message(client, txt_message)
 
     async def _await_button_message(
@@ -1431,7 +2150,15 @@ class TelethonVoidNameConsult(TelethonBotConsultBase):
         deadline_seconds: float,
         fail_reason: str,
     ) -> Any:
+        # The public group @CONSULTASGRATIS4NV is shared by several bots and
+        # MANY of them answer the same /nome with a menu that also has a
+        # base button (SI-PNI/RECEITA). Clicking the wrong bot's button is
+        # exactly why "o Void não está clicando" — we must pick the message
+        # that belongs to Void Search. We disambiguate by requiring a Void
+        # marker in the menu text/buttons and refuse to click another bot's.
         deadline = asyncio.get_event_loop().time() + deadline_seconds
+        polls = 0
+        seen_non_void = False
         while True:
             if deadline - asyncio.get_event_loop().time() <= 0:
                 break
@@ -1442,12 +2169,44 @@ class TelethonVoidNameConsult(TelethonBotConsultBase):
             except Exception as exc:
                 logger.debug("Telethon Void button poll failed entity=%s: %s", entity, exc)
                 messages = []
+            polls += 1
             for candidate in reversed(messages or []):
                 if _is_outgoing(candidate):
                     continue
-                if _first_button_matching(candidate, options) is not None:
+                if _first_button_matching(candidate, options) is None:
+                    continue
+                text = (
+                    getattr(candidate, "raw_text", None)
+                    or getattr(candidate, "message", None)
+                    or ""
+                )
+                button_labels = _describe_buttons(candidate)
+                is_void = _looks_like_void_menu(text, button_labels)
+                logger.info(
+                    "[telethon/void] menu candidate poll=%d is_void=%s "
+                    "buttons=%s text=%r",
+                    polls,
+                    is_void,
+                    button_labels,
+                    text[:120],
+                )
+                if is_void:
                     return candidate
+                seen_non_void = True
             await asyncio.sleep(self._result_poll_interval)
+        if seen_non_void:
+            logger.warning(
+                "[telethon/void] saw a base menu but none carried a Void "
+                "marker — refusing to click another bot's button (reason=%s)",
+                fail_reason,
+            )
+        logger.warning(
+            "[telethon/%s] Void button timeout reason=%s after %d poll(s) (waited %.0fs)",
+            self.provider,
+            fail_reason,
+            polls,
+            deadline_seconds,
+        )
         raise RuntimeError(fail_reason)
 
     async def _await_txt_media_message(
@@ -1458,6 +2217,7 @@ class TelethonVoidNameConsult(TelethonBotConsultBase):
         baseline_id: int,
     ) -> Any:
         deadline = asyncio.get_event_loop().time() + self._txt_wait_seconds
+        polls = 0
         while True:
             if deadline - asyncio.get_event_loop().time() <= 0:
                 break
@@ -1468,12 +2228,36 @@ class TelethonVoidNameConsult(TelethonBotConsultBase):
             except Exception as exc:
                 logger.debug("Telethon Void txt poll failed entity=%s: %s", entity, exc)
                 messages = []
+            polls += 1
             for candidate in reversed(messages or []):
                 if _is_outgoing(candidate):
                     continue
+                # Log every bot reply after the SI-PNI click so we can tell
+                # whether the click registered and what shape the answer took
+                # (TXT media vs. a URL button vs. another menu).
+                text = (
+                    getattr(candidate, "raw_text", None)
+                    or getattr(candidate, "message", None)
+                    or ""
+                )
+                logger.info(
+                    "[telethon/void] post-click reply poll=%d has_media=%s "
+                    "has_url=%s buttons=%s text=%r",
+                    polls,
+                    _message_has_media(candidate),
+                    bool(_first_button_url(candidate)),
+                    _describe_buttons(candidate),
+                    text[:120],
+                )
                 if _message_has_media(candidate):
                     return candidate
             await asyncio.sleep(self._result_poll_interval)
+        logger.warning(
+            "[telethon/%s] Void TXT media timeout after %d poll(s) (waited %.0fs)",
+            self.provider,
+            polls,
+            self._txt_wait_seconds,
+        )
         raise RuntimeError("telethon_void_txt_missing")
 
     async def _response_from_txt_message(self, client: Any, message: Any) -> TelethonBotResponse:
@@ -1490,7 +2274,7 @@ class TelethonVoidNameConsult(TelethonBotConsultBase):
             ready = await self._wait_for_downloaded_txt_ready(downloaded_path)
             if ready:
                 txt_text = downloaded_path.read_text(encoding="utf-8", errors="replace")
-        filename = downloaded_path.name if downloaded_path else "void_receita.txt"
+        filename = downloaded_path.name if downloaded_path else "void_sipni.txt"
         chunks: list[str] = []
         if bot_text and bot_text.strip():
             chunks.append("=== telegram_bot_message ===\n" + bot_text.strip())
@@ -1581,6 +2365,7 @@ class TelethonTelegramConsultOrchestrator:
     def consult_provider(self, provider: str, lead_name: str) -> TelegramConsultResult:
         target = self._by_name.get(provider)
         if target is None:
+            logger.warning("[telethon/orchestrator] unknown provider=%s", provider)
             return TelegramConsultResult(
                 provider=provider,
                 lead_name=lead_name,

@@ -34,6 +34,38 @@ def test_extracts_single_candidate() -> None:
     assert e.primary_cpf == "123.456.789-09"
 
 
+def test_extracts_void_sipni_dados_cadastrais() -> None:
+    """Void's SI-PNI base TXT uses ``- LABEL:`` lines with ``NASC`` and a
+    composite ``ENDEREÇO`` carrying the UF. The parser must pull CPF, birth
+    date and the address so the location-weighted matcher can use them.
+    """
+    text = (
+        "🔎 CONSULTA NOME SI-PNI 🕵🏻‍♂️\n\n"
+        "「📄」 RESULTADOS (1):\n\n"
+        "RESULTADO (1):\n\n"
+        "「👤」 DADOS CADASTRAIS\n\n"
+        "- NOME: PIETRA DIOVANA BARBOSA\n"
+        "- CPF: 06594291106\n"
+        "- NASC: 11/01/2002\n"
+        "- SEXO: F\n"
+        "- CNS: 704101897518850\n\n"
+        "- MÃE: SANDRA PERETO BARBOSA\n"
+        "- PAI: NÃO INFORMADO\n\n"
+        "- ENDEREÇO: BOSCO, MARACANÃ, 520110/GO - 75040280\n"
+    )
+    e = parse_telegram_text(text, provider="void")
+    assert len(e.candidates) == 1
+    c = e.candidates[0]
+    assert c.cpf == "065.942.911-06"
+    assert c.nome == "PIETRA DIOVANA BARBOSA"
+    assert c.data_nascimento == "11/01/2002"
+    assert "MARACANÃ" in (c.endereco or "")
+    assert "GO" in (c.endereco or "")
+    # The 15-digit CNS must NOT be mistaken for a CPF.
+    assert e.primary_cpf == "065.942.911-06"
+    assert len(e.candidates) == 1
+
+
 def test_separates_two_records_correctly() -> None:
     """Two records in the same text must carry their own data — the
     bug we fixed is the second CPF inheriting the first record's name.
@@ -64,6 +96,19 @@ def test_accepts_digits_only_cpf() -> None:
     e = parse_telegram_text(text, provider="unix")
     assert len(e.candidates) == 1
     assert e.candidates[0].cpf == "123.456.789-09"
+
+
+def test_does_not_use_nome_consultado_as_candidate_name() -> None:
+    """Query metadata must not become the CPF candidate's person name."""
+    text = (
+        "Nome consultado Felipe Barbosa Silva\n"
+        "CPF: 014.463.255-12\n"
+        "Nascimento: 10/01/1985"
+    )
+    e = parse_telegram_text(text, provider="finder")
+    assert len(e.candidates) == 1
+    assert e.candidates[0].nome is None
+    assert e.candidates[0].data_nascimento == "10/01/1985"
 
 
 def test_rejects_repeated_digit_cpf() -> None:

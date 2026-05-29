@@ -25,7 +25,12 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 
 from beautiful_linkedin.cli import build_lead_filter
-from beautiful_linkedin.config import Settings, load_settings
+from beautiful_linkedin.config import (
+    Settings,
+    clear_telegram_credentials,
+    load_settings,
+    save_telegram_credentials,
+)
 from beautiful_linkedin.cookie_resolver import (
     diagnose_li_at_cookie,
     resolve_linkedin_li_at_cookie,
@@ -107,6 +112,7 @@ from beautiful_linkedin.storage.phone_receita_cnpj import ReceitaCnpjLookupProvi
 from beautiful_linkedin.storage.phone_serp_search import SerpPhoneSearchProvider
 from beautiful_linkedin.storage.telegram_group_phone_lookup import (
     TelegramGroupPhoneLookupProvider,
+    TelegramVoidPhoneLookupProvider,
 )
 from beautiful_linkedin.storage.telegram_consult_matcher import (
     MatchScore,
@@ -152,6 +158,7 @@ from beautiful_linkedin.storage.telegram_phone_lookup import (
 )
 from beautiful_linkedin.storage.telegram_telethon_lookup import (
     TelethonGonzalesCpfConsult,
+    TelethonSerasaCpfConsult,
     TelethonTelegramConsultOrchestrator,
 )
 from beautiful_linkedin.storage import telegram_telethon_auth
@@ -176,7 +183,7 @@ from beautiful_linkedin.storage.saved_leads import (
     SOURCE_TYPE_SEARCH,
 )
 
-VERSION = "0.1.0"
+VERSION = "0.1.5"
 
 logger = logging.getLogger(__name__)
 
@@ -325,6 +332,32 @@ class CookieDiagnosticResponse(BaseModel):
 class CookieDiagnosticRequest(BaseModel):
     cookie: str | None = None
     browser: str = "auto"
+
+
+class PlaywrightDiagnosticStep(BaseModel):
+    name: str
+    ok: bool
+    elapsed_ms: int
+    detail: str | None = None
+
+
+class PlaywrightDiagnosticRequest(BaseModel):
+    cdp_endpoint: str | None = None
+
+
+class PlaywrightDiagnosticResponse(BaseModel):
+    """Auto-teste de Playwright/CDP usado pelo botão Diagnosticar.
+
+    Cada etapa devolve ok/elapsed_ms para identificar exatamente onde o
+    fluxo trava no PC do usuário (CDP probe, sync_playwright start,
+    connect_over_cdp, listagem de páginas).
+    """
+    overall_ok: bool
+    cdp_endpoint: str
+    sidecar_version: str
+    playwright_version: str | None = None
+    log_path: str | None = None
+    steps: list[PlaywrightDiagnosticStep] = Field(default_factory=list)
 
 
 class StartRunResponse(BaseModel):
@@ -640,6 +673,18 @@ class TelethonAuthSignInResponse(BaseModel):
 class TelethonAuthLogoutResponse(BaseModel):
     authorized: bool = False
     logged_out: bool = False
+
+
+class TelethonConfigRequest(BaseModel):
+    """Body for ``POST /telegram/telethon/config``.
+
+    These are the *application* credentials (api_id/api_hash) the end user
+    registers once at my.telegram.org. They are persisted so the operator
+    never has to hand-edit a ``.env`` in the packaged app.
+    """
+
+    api_id: str = Field(..., min_length=1)
+    api_hash: str = Field(..., min_length=1)
 
 
 class TelegramFollowupPhoneRequest(BaseModel):
@@ -1299,6 +1344,22 @@ def build_app(*, saved_leads_path: str | None = None) -> FastAPI:
     @app.get("/diagnostics", response_model=DiagnosticsResponse)
     def diagnostics_get() -> DiagnosticsResponse:
         return _build_diagnostics(None)
+
+    @app.post(
+        "/diagnostics/playwright",
+        response_model=PlaywrightDiagnosticResponse,
+    )
+    def playwright_diagnostic(
+        payload: PlaywrightDiagnosticRequest | None = None,
+    ) -> PlaywrightDiagnosticResponse:
+        request = payload or PlaywrightDiagnosticRequest()
+        settings = load_settings()
+        endpoint = (
+            request.cdp_endpoint
+            or settings.linkedin_cdp_endpoint
+            or "http://127.0.0.1:9223"
+        )
+        return _run_playwright_diagnostic(endpoint)
 
     @app.post(
         "/diagnostics/cookie",
@@ -2010,7 +2071,7 @@ def build_app(*, saved_leads_path: str | None = None) -> FastAPI:
 
         try:
             name_lookup = _default_telegram_telethon_multi_experimental_lookup(settings)
-            cpf_driver = _default_telethon_gonzales_cpf_consult(settings)
+            cpf_driver = _default_telethon_serasa_cpf_consult(settings)
         except RuntimeError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
@@ -2051,7 +2112,7 @@ def build_app(*, saved_leads_path: str | None = None) -> FastAPI:
                 consult_fn=cpf_driver.consult,
                 target_titles=payload.target_titles,
                 run_id=None,
-                provider_name="gon_cpf",
+                provider_name="serasa_cpf",
                 min_score=payload.min_score,
                 max_candidates=1,
             )
@@ -2080,7 +2141,7 @@ def build_app(*, saved_leads_path: str | None = None) -> FastAPI:
                         table_id,
                         [(lead, _telegram_phone_candidate_to_update(extra))],
                     )
-                _apply_telegram_contact_email_candidates(
+                _apply_telegram_contact_details(
                     store=store,
                     table_id=table_id,
                     lead=lead,
@@ -2169,7 +2230,7 @@ def build_app(*, saved_leads_path: str | None = None) -> FastAPI:
 
         settings = load_settings()
         try:
-            cpf_driver = _default_telethon_gonzales_cpf_consult(settings)
+            cpf_driver = _default_telethon_serasa_cpf_consult(settings)
         except RuntimeError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
@@ -2180,6 +2241,7 @@ def build_app(*, saved_leads_path: str | None = None) -> FastAPI:
             cpf_consult_fn=cpf_driver.consult,
             selected_cpfs=[payload.cpf],
             run_id=f"telethon-cpf-{uuid.uuid4().hex}",
+            cpf_provider_name="serasa_cpf",
         )
 
         phones_persisted = 0
@@ -2204,7 +2266,7 @@ def build_app(*, saved_leads_path: str | None = None) -> FastAPI:
                     [(lead, _telegram_phone_candidate_to_update(extra))],
                 )
                 phones_persisted += extra_counters.get("enriched", 0)
-            _apply_telegram_contact_email_candidates(
+            _apply_telegram_contact_details(
                 store=store,
                 table_id=table_id,
                 lead=lead,
@@ -2236,6 +2298,60 @@ def build_app(*, saved_leads_path: str | None = None) -> FastAPI:
                     ],
                 )
             ],
+        )
+
+    @app.post(
+        "/telegram/telethon/config",
+        response_model=TelethonAuthStatusResponse,
+    )
+    def telegram_telethon_config(
+        payload: TelethonConfigRequest,
+    ) -> TelethonAuthStatusResponse:
+        """Persist the Telegram API credentials supplied through the UI.
+
+        The end user gets ``api_id``/``api_hash`` once at my.telegram.org and
+        pastes them here instead of editing a ``.env``. We validate the
+        shape (api_id must be the numeric app id; api_hash a non-empty token)
+        and store them durably. ``load_settings()`` re-reads on every request,
+        so the very next status/send-code call sees them — no sidecar restart.
+        """
+        api_id = payload.api_id.strip()
+        api_hash = payload.api_hash.strip()
+        if not api_id.isdigit():
+            raise HTTPException(
+                status_code=400,
+                detail="O API ID deve conter apenas números (ex: 1234567).",
+            )
+        if not api_hash:
+            raise HTTPException(status_code=400, detail="Informe o API Hash.")
+        save_telegram_credentials(api_id, api_hash)
+        settings = load_settings()
+        return TelethonAuthStatusResponse(
+            authorized=False,
+            configured=bool(
+                settings.telegram_api_id and settings.telegram_api_hash
+            ),
+            session_name=settings.telegram_session_name,
+        )
+
+    @app.delete(
+        "/telegram/telethon/config",
+        response_model=TelethonAuthStatusResponse,
+    )
+    def telegram_telethon_config_clear() -> TelethonAuthStatusResponse:
+        """Forget the UI-persisted credentials so the operator can re-enter them.
+
+        Used when the saved api_id/api_hash were wrong (login keeps failing).
+        Does not touch the ``.session`` — call logout for that.
+        """
+        clear_telegram_credentials()
+        settings = load_settings()
+        return TelethonAuthStatusResponse(
+            authorized=False,
+            configured=bool(
+                settings.telegram_api_id and settings.telegram_api_hash
+            ),
+            session_name=settings.telegram_session_name,
         )
 
     @app.get(
@@ -2450,7 +2566,7 @@ def build_app(*, saved_leads_path: str | None = None) -> FastAPI:
                             table_id,
                             [(lead, _telegram_phone_candidate_to_update(extra))],
                         )
-                _apply_telegram_contact_email_candidates(
+                _apply_telegram_contact_details(
                     store=store,
                     table_id=table_id,
                     lead=lead,
@@ -3292,7 +3408,7 @@ def build_app(*, saved_leads_path: str | None = None) -> FastAPI:
                     counters["skipped_existing_phone"] += extras_counter.get(
                         "skipped_existing_phone", 0
                     )
-                _apply_telegram_contact_email_candidates(
+                _apply_telegram_contact_details(
                     store=store,
                     table_id=table_id,
                     lead=lead,
@@ -3732,6 +3848,213 @@ def build_app(*, saved_leads_path: str | None = None) -> FastAPI:
         )
 
     return app
+
+
+def _run_playwright_diagnostic(endpoint: str) -> PlaywrightDiagnosticResponse:
+    """Stepwise self-test that reproduces the people_search startup path.
+
+    The runtime cost is bounded (~5s worst case) because each step has its own
+    timeout. We never navigate to LinkedIn here — the goal is to localize a
+    Playwright/CDP setup failure, not to scrape anything. The result feeds the
+    "Diagnosticar Playwright" button so the operator sees exactly which step
+    times out on their machine.
+    """
+    import time
+
+    steps: list[PlaywrightDiagnosticStep] = []
+    overall_ok = True
+    playwright_version: str | None = None
+    log_path: str | None = None
+
+    def record(name: str, ok: bool, elapsed_ms: int, detail: str | None) -> None:
+        nonlocal overall_ok
+        if not ok:
+            overall_ok = False
+        steps.append(
+            PlaywrightDiagnosticStep(
+                name=name, ok=ok, elapsed_ms=elapsed_ms, detail=detail
+            )
+        )
+
+    try:
+        from beautiful_linkedin.server.sidecar import _default_log_path
+
+        log_path = str(_default_log_path())
+    except Exception as exc:  # pragma: no cover - defensive
+        log_path = f"erro ao resolver caminho do log: {exc}"
+
+    # Step 1: CDP probe
+    start = time.perf_counter()
+    try:
+        alive = probe_cdp_endpoint(endpoint, timeout=2.0)
+        elapsed = int((time.perf_counter() - start) * 1000)
+        record(
+            "cdp_probe",
+            alive,
+            elapsed,
+            f"{endpoint}/json/version respondeu" if alive
+            else f"{endpoint}/json/version não respondeu — Chromium embutido pode estar fechado",
+        )
+        if not alive:
+            return PlaywrightDiagnosticResponse(
+                overall_ok=False,
+                cdp_endpoint=endpoint,
+                sidecar_version=VERSION,
+                playwright_version=playwright_version,
+                log_path=log_path,
+                steps=steps,
+            )
+    except Exception as exc:
+        elapsed = int((time.perf_counter() - start) * 1000)
+        record("cdp_probe", False, elapsed, f"exceção: {exc}")
+        return PlaywrightDiagnosticResponse(
+            overall_ok=False,
+            cdp_endpoint=endpoint,
+            sidecar_version=VERSION,
+            playwright_version=playwright_version,
+            log_path=log_path,
+            steps=steps,
+        )
+
+    # Step 2: import playwright
+    start = time.perf_counter()
+    try:
+        import playwright  # noqa: F401
+        from playwright.sync_api import sync_playwright
+        try:
+            playwright_version = getattr(playwright, "__version__", None) or "desconhecida"
+        except Exception:
+            playwright_version = "desconhecida"
+        elapsed = int((time.perf_counter() - start) * 1000)
+        record(
+            "import_playwright",
+            True,
+            elapsed,
+            f"playwright {playwright_version} importado",
+        )
+    except Exception as exc:
+        elapsed = int((time.perf_counter() - start) * 1000)
+        record(
+            "import_playwright",
+            False,
+            elapsed,
+            f"falha: {exc} (sidecar empacotado sem playwright?)",
+        )
+        return PlaywrightDiagnosticResponse(
+            overall_ok=False,
+            cdp_endpoint=endpoint,
+            sidecar_version=VERSION,
+            playwright_version=playwright_version,
+            log_path=log_path,
+            steps=steps,
+        )
+
+    # Step 3: sync_playwright().start() — spawns the bundled node driver
+    runtime = None
+    start = time.perf_counter()
+    try:
+        runtime = sync_playwright().start()
+        elapsed = int((time.perf_counter() - start) * 1000)
+        record(
+            "playwright_start",
+            True,
+            elapsed,
+            "driver Node.js inicializado",
+        )
+    except Exception as exc:
+        elapsed = int((time.perf_counter() - start) * 1000)
+        record(
+            "playwright_start",
+            False,
+            elapsed,
+            f"falha ao iniciar driver: {exc}",
+        )
+        return PlaywrightDiagnosticResponse(
+            overall_ok=False,
+            cdp_endpoint=endpoint,
+            sidecar_version=VERSION,
+            playwright_version=playwright_version,
+            log_path=log_path,
+            steps=steps,
+        )
+
+    browser = None
+    try:
+        # Step 4: connect_over_cdp
+        start = time.perf_counter()
+        try:
+            browser = runtime.chromium.connect_over_cdp(endpoint, timeout=8000)
+            elapsed = int((time.perf_counter() - start) * 1000)
+            record(
+                "connect_over_cdp",
+                True,
+                elapsed,
+                f"conectado ao Chromium em {endpoint}",
+            )
+        except Exception as exc:
+            elapsed = int((time.perf_counter() - start) * 1000)
+            record(
+                "connect_over_cdp",
+                False,
+                elapsed,
+                f"falha: {exc}",
+            )
+            return PlaywrightDiagnosticResponse(
+                overall_ok=False,
+                cdp_endpoint=endpoint,
+                sidecar_version=VERSION,
+                playwright_version=playwright_version,
+                log_path=log_path,
+                steps=steps,
+            )
+
+        # Step 5: contexts/pages enumeration
+        start = time.perf_counter()
+        try:
+            contexts = list(getattr(browser, "contexts", []) or [])
+            total_pages = 0
+            linkedin_pages = 0
+            for ctx in contexts:
+                for page in getattr(ctx, "pages", []) or []:
+                    total_pages += 1
+                    url = getattr(page, "url", "") or ""
+                    if "linkedin.com" in url.lower():
+                        linkedin_pages += 1
+            elapsed = int((time.perf_counter() - start) * 1000)
+            record(
+                "list_pages",
+                True,
+                elapsed,
+                f"{len(contexts)} contexto(s), {total_pages} página(s), "
+                f"{linkedin_pages} no linkedin.com",
+            )
+        except Exception as exc:
+            elapsed = int((time.perf_counter() - start) * 1000)
+            record(
+                "list_pages",
+                False,
+                elapsed,
+                f"falha: {exc}",
+            )
+    finally:
+        try:
+            if browser is not None:
+                browser.close()
+        except Exception:  # pragma: no cover - best effort
+            pass
+        try:
+            runtime.stop()
+        except Exception:  # pragma: no cover - best effort
+            pass
+
+    return PlaywrightDiagnosticResponse(
+        overall_ok=overall_ok,
+        cdp_endpoint=endpoint,
+        sidecar_version=VERSION,
+        playwright_version=playwright_version,
+        log_path=log_path,
+        steps=steps,
+    )
 
 
 def _global_dedupe_keys_for_search(app: FastAPI) -> set[str]:
@@ -4194,6 +4517,16 @@ def _default_phone_lookup_providers(settings: Settings) -> list[PhoneLookupProvi
                     throttle_seconds=settings.telegram_group_throttle_seconds,
                 )
             )
+            providers.append(
+                TelegramVoidPhoneLookupProvider(
+                    api_id=settings.telegram_api_id,
+                    api_hash=settings.telegram_api_hash,
+                    session_name=settings.telegram_group_session_name,
+                    group_username=settings.telegram_group_username,
+                    capture_seconds=settings.telegram_group_capture_seconds,
+                    throttle_seconds=settings.telegram_group_throttle_seconds,
+                )
+            )
     return providers
 
 
@@ -4216,9 +4549,13 @@ def _default_hlr_probe() -> HlrProbeProvider:
 # Short UI-facing aliases → underlying provider.name. Keeping a mapping
 # means the front can send "telegram_group" without hard-coding the full
 # internal label; new providers can be exposed the same way later.
-_PHONE_SOURCE_ALIASES: dict[str, str] = {
-    "telegram_group": "telegram_group_consultasgratis",
+_PHONE_SOURCE_ALIASES: dict[str, str | tuple[str, ...]] = {
+    "telegram_group": (
+        "telegram_group_consultasgratis",
+        "void_phone_consultasgratis",
+    ),
     "telegram_bot": "consultoria_gonzales_bot",
+    "void_phone": "void_phone_consultasgratis",
     "receita_cnpj": "receita_cnpj",
     "pdf": "pdf_serp",
 }
@@ -4235,7 +4572,11 @@ def _resolve_phone_source_names(sources: list[str] | None) -> set[str] | None:
         key = source.strip().lower()
         if not key:
             continue
-        resolved.add(_PHONE_SOURCE_ALIASES.get(key, key))
+        mapped = _PHONE_SOURCE_ALIASES.get(key, key)
+        if isinstance(mapped, tuple):
+            resolved.update(mapped)
+        else:
+            resolved.add(mapped)
     return resolved or None
 
 
@@ -4359,7 +4700,11 @@ def _default_telegram_multi_experimental_lookup(
 def _default_telegram_telethon_multi_experimental_lookup(
     settings: Settings | None = None,
 ) -> TelethonTelegramConsultOrchestrator:
-    """Experimental driver: Finder + Gon + Unix via Telethon.
+    """Experimental driver: Finder + Gon + Unix + Void via Telethon.
+
+    The orchestrator instantiates all four name providers by default, so
+    the "extrair CPF via Telegram" flow dispatches each one per lead
+    (respecting per-provider cooldown). Void runs its SI-PNI base.
 
     Kept separate from the CDP multi-provider lookup so the operator can
     compare the native Telegram path without changing the existing
@@ -4396,6 +4741,30 @@ def _default_telethon_gonzales_cpf_consult(
             "BEAUTIFUL_LINKEDIN_TELEGRAM_API_HASH."
         )
     return TelethonGonzalesCpfConsult(
+        api_id=settings.telegram_api_id,
+        api_hash=settings.telegram_api_hash,
+        session_name=settings.telegram_session_name,
+    )
+
+
+def _default_telethon_serasa_cpf_consult(
+    settings: Settings | None = None,
+) -> TelethonSerasaCpfConsult:
+    """Production driver for SERASA — the preferred Telethon ``/cpf`` flow.
+
+    Sends ``/cpf`` to the ``@puxada2026`` group, follows the VER RESULTADO
+    deep link into ``@OraculoPuxadaBot``, and harvests phones from the
+    bot's inline answer. Shares the global Telethon throttle/session so the
+    name→cpf hand-off keeps respecting the spacing across phases.
+    """
+    settings = settings or load_settings()
+    if not settings.telegram_api_id or not settings.telegram_api_hash:
+        raise RuntimeError(
+            "Telegram Telethon nao configurado: defina "
+            "BEAUTIFUL_LINKEDIN_TELEGRAM_API_ID e "
+            "BEAUTIFUL_LINKEDIN_TELEGRAM_API_HASH."
+        )
+    return TelethonSerasaCpfConsult(
         api_id=settings.telegram_api_id,
         api_hash=settings.telegram_api_hash,
         session_name=settings.telegram_session_name,
@@ -4720,16 +5089,30 @@ class _TelegramContactEmailUpdate:
     email_validation_status: str = "unknown"
 
 
-def _apply_telegram_contact_email_candidates(
+def _apply_telegram_contact_details(
     *,
     store: Any,
     table_id: str,
     lead: Lead,
     candidates: list[TelegramPhoneCandidate],
 ) -> None:
+    """Persist the contact details a CPF/SISREG report carries alongside
+    the phone: personal e-mails and the residential address.
+
+    Both ride on ``candidate.provenance`` (``contact_emails`` /
+    ``contact_address``). E-mails are merged into the lead's contact trail;
+    the address is written once (the store declines to overwrite an
+    existing one). Candidates arrive best-score-first, so the first
+    non-empty address wins.
+    """
     updates: list[tuple[Lead, _TelegramContactEmailUpdate]] = []
     seen: set[str] = set()
+    address: str | None = None
     for candidate in candidates:
+        if address is None:
+            candidate_address = candidate.provenance.get("contact_address")
+            if isinstance(candidate_address, str) and candidate_address.strip():
+                address = candidate_address.strip()
         emails = candidate.provenance.get("contact_emails") or []
         if not isinstance(emails, list):
             continue
@@ -4756,6 +5139,8 @@ def _apply_telegram_contact_email_candidates(
             )
     if updates:
         store.apply_contact_email_updates(table_id, updates)
+    if address:
+        store.apply_contact_address_updates(table_id, [(lead, address)])
 
 
 def _telegram_phone_candidate_to_payload(
@@ -4905,7 +5290,7 @@ def _process_one_telegram_phone_lead(
             counters["skipped_existing_phone"] += extras_counter.get(
                 "skipped_existing_phone", 0
             )
-        _apply_telegram_contact_email_candidates(
+        _apply_telegram_contact_details(
             store=store,
             table_id=table_id,
             lead=lead,

@@ -174,6 +174,28 @@ async function ensureChromeReady(
 
 type AsyncStatus = 'idle' | 'loading'
 
+// Auto-confirm de CPF no picker manual: quando o melhor candidato elegível
+// tem score alto E é dominante (folga sobre o 2º), pulamos a revisão e
+// buscamos o telefone direto. Acima do follow-up min (65) com margem — só
+// "casos óbvios" são automatizados; ambíguos continuam indo para revisão.
+const CPF_AUTO_CONFIRM_SCORE = 85
+const CPF_AUTO_CONFIRM_MARGIN = 15
+
+/**
+ * Decide se um conjunto de CPFs elegíveis (ordenado por match_score desc)
+ * pode ser auto-confirmado, retornando o CPF a buscar ou null quando o
+ * caso é ambíguo (deve ir para revisão manual). Pure → testável.
+ */
+export function shouldAutoConfirmCpf(
+  eligible: { cpf: string; match_score: number }[]
+): string | null {
+  const top = eligible[0]
+  if (!top || top.match_score < CPF_AUTO_CONFIRM_SCORE) return null
+  const second = eligible[1]
+  if (second && top.match_score - second.match_score < CPF_AUTO_CONFIRM_MARGIN) return null
+  return top.cpf
+}
+
 interface EnrichmentNotice {
   id: string
   kind: 'success' | 'warning' | 'error'
@@ -249,6 +271,10 @@ export default function SavedLeadsLibrary(props: Props) {
   const telethonAuthPendingFlowRef =
     useRef<'experimental' | 'pipeline' | 'phone-pipeline' | 'cpf' | null>(null)
   const telethonAuthPendingCpfRef = useRef<{ leadRef: string; cpf: string } | null>(null)
+  // Espelha o lead do `cpfPicker` ativo. Como o modal pode ser fechado e
+  // a consulta seguir em segundo plano, o callback de auth-required pode
+  // chegar quando `cpfPicker` já é null — a ref preserva o lead alvo.
+  const cpfPickerLeadRef = useRef<string | null>(null)
   // Map keyed by ``leadRef(lead)`` → list of consult rows (one per
   // provider — default "gon" + "unix"; experimental also adds Finder).
   // Loaded once per active table
@@ -303,6 +329,12 @@ export default function SavedLeadsLibrary(props: Props) {
     ? enricher.run?.meta.fields ?? 'email'
     : null
   const [enrichmentNotices, setEnrichmentNotices] = useState<EnrichmentNotice[]>([])
+  // Auto-dismiss bookkeeping for the enrichment notices. Without a timer
+  // these banners stayed on screen indefinitely (só sumiam ao trocar de
+  // tabela ou iniciar outra run), o que dava a impressão de "alerta que
+  // não some". Guardamos os timers num ref para limpá-los no unmount e
+  // evitar setState em componente desmontado.
+  const noticeTimersRef = useRef<number[]>([])
   const [inspectedApiLead, setInspectedApiLead] = useState<Lead | null>(null)
   const [dialog, setDialog] = useState<LibraryDialogState | null>(null)
   const dialogActiveRef = useRef(false)
@@ -329,6 +361,16 @@ export default function SavedLeadsLibrary(props: Props) {
       }
     },
     [client, activeId, onFeedback]
+  )
+
+  // Limpa os timers de auto-dismiss das notices ao desmontar para não
+  // chamar setState depois que o componente saiu da árvore.
+  useEffect(
+    () => () => {
+      noticeTimersRef.current.forEach((timer) => window.clearTimeout(timer))
+      noticeTimersRef.current = []
+    },
+    []
   )
 
   const askText = (
@@ -778,7 +820,22 @@ export default function SavedLeadsLibrary(props: Props) {
       )
       return
     }
-    const eligibleCpfs = candidates.filter((c) => c.eligible).map((c) => c.cpf)
+    // Auto-confirm: melhor elegível com score alto e dominante sobre o
+    // segundo → busca telefone direto, sem abrir a revisão manual.
+    const eligible = candidates.filter((c) => c.eligible)
+    const autoCpf = shouldAutoConfirmCpf(eligible)
+    if (autoCpf) {
+      const top = eligible[0]
+      onFeedback(
+        'success',
+        `CPF de alta confiança (score ${top.match_score}) — buscando telefone automaticamente.`
+      )
+      void handleTelegramPhoneDirectExtract(ref, autoCpf)
+      return
+    }
+
+    const eligibleCpfs = eligible.map((c) => c.cpf)
+    cpfPickerLeadRef.current = ref
     setCpfPicker({
       leadRef: ref,
       leadName: lead.person_name ?? null,
@@ -810,17 +867,25 @@ export default function SavedLeadsLibrary(props: Props) {
       'success',
       `Busca concluída: ${response.summary.leads_with_phone}/${response.summary.requested_leads} lead(s) com telefone.`
     )
-    setCpfPicker(null)
+    // A consulta pode ter rodado em segundo plano (modal fechado pelo ✕)
+    // e o operador já ter aberto o picker de outro lead — só fecha se o
+    // modal ainda mostra o mesmo lead deste resultado.
+    setCpfPicker((prev) =>
+      prev && leadResult && prev.leadRef !== leadResult.lead_ref ? prev : null
+    )
   }
 
   const handleCpfPickerAuthRequired = (cpfs: string[]): void => {
-    if (!cpfPicker) return
-    const fallbackCpf = cpfs[0] ?? cpfPicker.candidates[0]?.cpf
+    // Pode chegar com o modal já fechado (consulta em segundo plano): usa
+    // a ref do lead alvo como fallback quando `cpfPicker` é null.
+    const targetLeadRef = cpfPicker?.leadRef ?? cpfPickerLeadRef.current
+    if (!targetLeadRef) return
+    const fallbackCpf = cpfs[0] ?? cpfPicker?.candidates[0]?.cpf
     if (!fallbackCpf) {
       setCpfPicker(null)
       return
     }
-    telethonAuthPendingCpfRef.current = { leadRef: cpfPicker.leadRef, cpf: fallbackCpf }
+    telethonAuthPendingCpfRef.current = { leadRef: targetLeadRef, cpf: fallbackCpf }
     telethonAuthPendingFlowRef.current = 'cpf'
     setCpfPicker(null)
     setTelethonAuthOpen(true)
@@ -977,7 +1042,7 @@ export default function SavedLeadsLibrary(props: Props) {
         if (!status.configured) {
           onFeedback(
             'error',
-            'Telegram não configurado: defina BEAUTIFUL_LINKEDIN_TELEGRAM_API_ID e BEAUTIFUL_LINKEDIN_TELEGRAM_API_HASH no .env.'
+            'Telegram não configurado. Clique no botão "Telegram" no topo da janela para configurar suas credenciais e conectar.'
           )
           return
         }
@@ -1182,7 +1247,7 @@ export default function SavedLeadsLibrary(props: Props) {
         if (!status.configured) {
           onFeedback(
             'error',
-            'Telegram não configurado: defina BEAUTIFUL_LINKEDIN_TELEGRAM_API_ID e BEAUTIFUL_LINKEDIN_TELEGRAM_API_HASH no .env.'
+            'Telegram não configurado. Clique no botão "Telegram" no topo da janela para configurar suas credenciais e conectar.'
           )
           return
         }
@@ -1232,7 +1297,7 @@ export default function SavedLeadsLibrary(props: Props) {
         if (!status.configured) {
           onFeedback(
             'error',
-            'Telegram não configurado: defina BEAUTIFUL_LINKEDIN_TELEGRAM_API_ID e BEAUTIFUL_LINKEDIN_TELEGRAM_API_HASH no .env.'
+            'Telegram não configurado. Clique no botão "Telegram" no topo da janela para configurar suas credenciais e conectar.'
           )
           return
         }
@@ -1474,6 +1539,12 @@ export default function SavedLeadsLibrary(props: Props) {
     setEnrichmentEstimate(null)
   }
 
+  // Remove a single notice (manual ✕ ou expiração do timer). Idempotente:
+  // se o id já saiu por slice/dismiss, o filter é um no-op.
+  const dismissNotice = (id: string) => {
+    setEnrichmentNotices((prev) => prev.filter((notice) => notice.id !== id))
+  }
+
   const pushProviderNotices = (logs: EnrichmentProviderRunLog[]) => {
     if (logs.length === 0) return
     const nextNotices: EnrichmentNotice[] = logs.map((log) => {
@@ -1491,15 +1562,20 @@ export default function SavedLeadsLibrary(props: Props) {
         provider: log.provider
       }
     })
-    setEnrichmentNotices((prev) => [
-      ...nextNotices,
-      ...prev
-    ].slice(0, 6))
+    setEnrichmentNotices((prev) => [...nextNotices, ...prev].slice(0, 6))
+    // Auto-dismiss: erros ficam mais tempo (info técnica), sucesso some
+    // antes. Mesma filosofia do toast global. O timer apenas remove o
+    // próprio id, então é seguro mesmo após slice/dismiss manual.
+    for (const notice of nextNotices) {
+      const ttl = notice.kind === 'error' ? 9000 : notice.kind === 'warning' ? 7000 : 5000
+      const timer = window.setTimeout(() => dismissNotice(notice.id), ttl)
+      noticeTimersRef.current.push(timer)
+    }
   }
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-[320px_minmax(0,1fr)] gap-6 min-w-0">
-      <aside className="rounded-xl border border-line bg-surface p-3 min-h-[360px] flex flex-col min-w-0">
+    <div className="saved-library grid grid-cols-1 lg:grid-cols-[320px_minmax(0,1fr)] gap-6 min-w-0">
+      <aside className="saved-library-sidebar rounded-xl border border-line bg-surface p-3 min-h-[360px] flex flex-col min-w-0">
         <div className="flex gap-1.5 flex-wrap mb-3">
           <button className="pill-btn primary" onClick={handleSaveCurrent} disabled={!client}>
             + Salvar busca atual
@@ -1580,7 +1656,7 @@ export default function SavedLeadsLibrary(props: Props) {
         </ul>
       </aside>
 
-      <section className="rounded-xl border border-line bg-surface p-4 min-h-[360px] flex flex-col relative min-w-0">
+      <section className="saved-library-panel rounded-xl border border-line bg-surface p-4 min-h-[360px] flex flex-col relative min-w-0">
         {!activeDetail ? (
           <div className="library-empty" role="status" aria-live="polite">
             <div className="library-empty-art" aria-hidden="true">
@@ -1613,7 +1689,7 @@ export default function SavedLeadsLibrary(props: Props) {
             )}
           </div>
         ) : (
-          <div key={activeDetail.table.id} className="animate-fade-in-up flex flex-col h-full duration-300">
+          <div key={activeDetail.table.id} className="saved-library-detail animate-fade-in-up flex flex-col h-full duration-300">
             <header className="flex flex-col gap-3 mb-4 min-w-0">
               <div className="max-w-full min-w-0">
                 <h2 className="m-0 text-[20px] font-semibold text-ink tracking-tight break-words">{activeDetail.table.name}</h2>
@@ -1743,7 +1819,14 @@ export default function SavedLeadsLibrary(props: Props) {
                   🗑 Excluir
                 </button>
               </div>
-              <TelethonRunLogPanel entries={telethonRunLogs} />
+              <TelethonRunLogPanel
+                entries={telethonRunLogs}
+                running={
+                  telegramTelethonPipelineRunning ||
+                  telegramPhonePipelineRunning ||
+                  telegramPhoneRunning
+                }
+              />
             </header>
 
             {enrichmentOpen && (
@@ -1790,15 +1873,8 @@ export default function SavedLeadsLibrary(props: Props) {
                       }}
                     >
                       <option value="email">Somente e-mail</option>
-                      {/*
-                        Pipeline de telefone ocultado da UI a pedido.
-                        Backend continua wired (Receita CNPJ + PDF +
-                        site harvester + WhatsApp + Telegram quando
-                        configurado). Para reabrir, basta descomentar
-                        as duas linhas abaixo.
-                      */}
-                      {/* <option value="phone">Somente telefone</option> */}
-                      {/* <option value="both">E-mail + telefone</option> */}
+                      <option value="phone">Somente telefone</option>
+                      <option value="both">E-mail + telefone</option>
                     </select>
                   </label>
 
@@ -1967,6 +2043,14 @@ export default function SavedLeadsLibrary(props: Props) {
                           <span style={{ marginLeft: 'auto', fontVariantNumeric: 'tabular-nums' }}>
                             {formatCurrency(notice.cost)}
                           </span>
+                          <button
+                            type="button"
+                            className="notice-close"
+                            aria-label="Fechar aviso"
+                            onClick={() => dismissNotice(notice.id)}
+                          >
+                            ✕
+                          </button>
                         </div>
                         <div style={{ color: 'var(--ink-3)', marginTop: 2 }}>
                           {notice.message}
@@ -2200,13 +2284,14 @@ export default function SavedLeadsLibrary(props: Props) {
                           <td style={td}><span className="saved-cell-strong">{lead.person_name ?? '—'}</span></td>
                           <td style={td}><LeadTitleCell lead={lead} /></td>
                           <td style={td}>
-                            {(!lead.email && !lead.phone && !lead.linkedin_contact_email && !lead.linkedin_contact_website && !lead.linkedin_contact_phone && parseArrayField<any>(lead.email_alternatives).filter(a => a?.email).length === 0 && parseArrayField<any>(lead.phone_alternatives).filter(a => a?.phone).length === 0) ? (
+                            {(!lead.email && !lead.phone && !lead.endereco && !lead.linkedin_contact_email && !lead.linkedin_contact_website && !lead.linkedin_contact_phone && parseArrayField<any>(lead.email_alternatives).filter(a => a?.email).length === 0 && parseArrayField<any>(lead.phone_alternatives).filter(a => a?.phone).length === 0) ? (
                               '—'
                             ) : (
                               <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                                 <LeadEmailCell lead={lead} hideFallback={true} />
                                 <LinkedInContactCell lead={lead} />
                                 <LeadPhoneCell lead={lead} hideFallback={true} />
+                                <LeadAddressCell lead={lead} />
                               </div>
                             )}
                           </td>
@@ -2366,7 +2451,13 @@ function isTelethonAuthError(error: ApiError): boolean {
   return error.message.includes('telethon_session_not_authorized')
 }
 
-function TelethonRunLogPanel({ entries }: { entries: TelethonRunLogEntry[] }) {
+function TelethonRunLogPanel({
+  entries,
+  running
+}: {
+  entries: TelethonRunLogEntry[]
+  running?: boolean
+}) {
   if (entries.length === 0) return null
   return (
     <div
@@ -2388,6 +2479,14 @@ function TelethonRunLogPanel({ entries }: { entries: TelethonRunLogEntry[] }) {
           Sem nomes de fontes internas
         </span>
       </div>
+      {/* Barra indeterminada enquanto a consulta roda — o backend processa
+          o lote num único request, então não há progresso real por lead;
+          mostramos atividade (reusa o primitivo .enrich-progress). */}
+      {running && (
+        <div className="enrich-progress-track" data-indeterminate="true" aria-hidden="true">
+          <div className="enrich-progress-fill" />
+        </div>
+      )}
       <ol
         style={{
           listStyle: 'none',
@@ -2569,12 +2668,50 @@ function LinkedInContactCell({ lead }: { lead: Lead }) {
   )
 }
 
+type ConfidenceTone = 'green' | 'yellow' | 'red'
+
+/**
+ * Snov.io-style traffic light for an enriched e-mail, derived objectively
+ * from the validation status + confidence score we already compute:
+ *  🟢 verde  — mailbox confirmado (SMTP valid), publicado, ou score ≥ 85
+ *  🟡 amarelo — provável (MX ok, padrão da empresa/catch-all), score 55–84
+ *  🔴 vermelho — improvável (sem MX, domínio pessoal, RCPT rejeitado), < 55
+ * Retorna null quando não há sinal de enriquecimento (nada a mostrar).
+ */
+function emailConfidenceBand(
+  lead: Lead
+): { tone: ConfidenceTone; color: string; label: string; title: string } | null {
+  const status = lead.email_validation_status
+  const score = lead.enrichment_confidence
+  if (status == null && typeof score !== 'number') return null
+
+  const why: string[] = []
+  if (typeof score === 'number') why.push(`confiança ${score}/100`)
+  if (status) why.push(`validação: ${status}`)
+  if (lead.email_type && lead.email_type !== 'unknown') why.push(lead.email_type)
+
+  let tone: ConfidenceTone
+  if (status === 'risky') tone = 'red'
+  else if (status === 'valid' || (typeof score === 'number' && score >= 85)) tone = 'green'
+  else if (status === 'probable' || (typeof score === 'number' && score >= 55)) tone = 'yellow'
+  else tone = 'red'
+
+  const meta: Record<ConfidenceTone, { color: string; label: string }> = {
+    green: { color: 'var(--success)', label: '~90% de confiança' },
+    yellow: { color: 'var(--warn)', label: 'talvez' },
+    red: { color: 'var(--risky)', label: 'improvável' }
+  }
+  const { color, label } = meta[tone]
+  return { tone, color, label, title: why.length ? `${label} — ${why.join(' · ')}` : label }
+}
+
 function LeadEmailCell({ lead, hideFallback }: { lead: Lead; hideFallback?: boolean }) {
   const [expanded, setExpanded] = useState(false)
   const verifiedBy = parseArrayField<string>(lead.email_verified_by).filter(Boolean)
   const alternatives = parseArrayField<any>(lead.email_alternatives).filter((alt) => alt && alt.email)
   const hasBadge = verifiedBy.length >= 2
   const hasAlternatives = alternatives.length > 0
+  const band = emailConfidenceBand(lead)
 
   if (!lead.email) {
     if (hasAlternatives) {
@@ -2604,6 +2741,15 @@ function LeadEmailCell({ lead, hideFallback }: { lead: Lead; hideFallback?: bool
   return (
     <div className="email-cell">
       <div className="email-cell-primary">
+        {band && (
+          <span
+            className="confidence-dot"
+            data-tone={band.tone}
+            style={{ background: band.color }}
+            title={band.title}
+            aria-label={`Confiança do e-mail: ${band.label}`}
+          />
+        )}
         <span className="email-cell-text">{lead.email}</span>
         <span className="email-pill" title="Tipo de e-mail">
           {emailTypeLabel(lead.email_type, lead.email)}
@@ -2690,6 +2836,7 @@ function AlternativesToggle({
 function LeadPhoneCell({ lead, hideFallback }: { lead: Lead; hideFallback?: boolean }) {
   const [expanded, setExpanded] = useState(false)
   const verifiedBy = parseArrayField<string>(lead.phone_verified_by).filter(Boolean)
+  const verifiedByLabels = verifiedBy.map(formatPhoneSourceLabel)
   const alternatives = parseArrayField<any>(lead.phone_alternatives).filter(
     (alt) => alt && alt.phone
   )
@@ -2708,9 +2855,9 @@ function LeadPhoneCell({ lead, hideFallback }: { lead: Lead; hideFallback?: bool
             </a>
             <span
               className="email-pill suggested"
-              title={`Sugerido por ${primary.source}`}
+              title={`Sugerido por ${formatPhoneSourceLabel(primary.source)}`}
             >
-              sugestão · {primary.source}
+              sugestão · {formatPhoneSourceLabel(primary.source)}
             </span>
           </div>
           {rest.length > 0 && (
@@ -2749,8 +2896,8 @@ function LeadPhoneCell({ lead, hideFallback }: { lead: Lead; hideFallback?: bool
         {hasBadge && (
           <span
             className="email-pill verified"
-            title={`Verificado por: ${verifiedBy.join(', ')}`}
-            aria-label={`Verificado por ${verifiedBy.join(', ')}`}
+            title={`Verificado por: ${verifiedByLabels.join(', ')}`}
+            aria-label={`Verificado por ${verifiedByLabels.join(', ')}`}
           >
             <svg width="9" height="9" viewBox="0 0 12 12" fill="none" aria-hidden="true">
               <path
@@ -2772,7 +2919,7 @@ function LeadPhoneCell({ lead, hideFallback }: { lead: Lead; hideFallback?: bool
       </div>
       {lead.phone_source && (
         <div style={{ fontSize: 11, color: 'var(--ink-3)' }}>
-          via {lead.phone_source}
+          via {formatPhoneSourceLabel(lead.phone_source)}
           {lead.phone_carrier ? ` · ${lead.phone_carrier}` : ''}
           {lead.phone_region ? ` · ${lead.phone_region}` : ''}
         </div>
@@ -2786,6 +2933,69 @@ function LeadPhoneCell({ lead, hideFallback }: { lead: Lead; hideFallback?: bool
       )}
     </div>
   )
+}
+
+/**
+ * Endereço residencial trazido pela consulta de CPF (mesma consulta que
+ * acha o telefone). Linha discreta no card de contato, com tooltip para
+ * o endereço completo. Não expomos a fonte interna — só o 📍.
+ */
+function LeadAddressCell({ lead }: { lead: Lead }): JSX.Element | null {
+  const address = (lead.endereco ?? '').trim()
+  if (!address) return null
+  return (
+    <div
+      className="email-cell"
+      style={{ marginTop: 6 }}
+      title={`Endereço da consulta: ${address}`}
+    >
+      <div
+        className="email-cell-primary"
+        style={{
+          color: 'var(--ink-2)',
+          fontSize: 12,
+          display: 'flex',
+          alignItems: 'flex-start',
+          gap: 4
+        }}
+      >
+        <span aria-hidden="true">📍</span>
+        <span
+          style={{
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            display: '-webkit-box',
+            WebkitLineClamp: 2,
+            WebkitBoxOrient: 'vertical'
+          }}
+        >
+          {address}
+        </span>
+      </div>
+    </div>
+  )
+}
+
+function formatPhoneSourceLabel(source?: string | null): string {
+  const normalized = (source || '').trim().toLowerCase()
+  if (!normalized) return 'Consulta por telefone'
+  if (
+    normalized.includes('telegram') ||
+    normalized.includes('void') ||
+    normalized.includes('gon') ||
+    normalized.includes('gonzales') ||
+    normalized.includes('findex') ||
+    normalized.includes('finder') ||
+    normalized.includes('unix') ||
+    normalized.includes('sisreg')
+  ) {
+    return 'Consulta por telefone'
+  }
+  if (normalized.includes('linkedin')) return 'Contato informado no perfil'
+  if (normalized.includes('receita') || normalized.includes('cnpj')) return 'Base pública'
+  if (normalized.includes('pdf') || normalized.includes('serp')) return 'Fonte pública'
+  if (normalized.includes('internal')) return 'Enriquecimento interno'
+  return 'Consulta por telefone'
 }
 
 function PhoneAlternativesToggle({
@@ -2816,8 +3026,8 @@ function PhoneAlternativesToggle({
           ▸
         </span>
         {count === 1
-          ? `outro provider sugeriu 1 telefone`
-          : `outros providers sugeriram ${count} telefones`}
+          ? `outra consulta sugeriu 1 telefone`
+          : `outras consultas sugeriram ${count} telefones`}
       </button>
       {expanded && (
         <ul className="email-alt-list">
@@ -2826,7 +3036,7 @@ function PhoneAlternativesToggle({
               key={`${alt.phone}-${alt.source}-${index}`}
               className="email-alt-row"
             >
-              <span className="email-alt-source">{alt.source}</span>
+              <span className="email-alt-source">{formatPhoneSourceLabel(alt.source)}</span>
               <span className="email-alt-email">{alt.phone}</span>
             </li>
           ))}

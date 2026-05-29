@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type {
   ApiKeyOverrides,
   DiagnosticsResponse,
+  PlaywrightDiagnosticResponse,
   ProviderDiagnostic
 } from '../../../shared/types'
 import { ApiClient } from '../../../shared/api'
@@ -29,6 +30,50 @@ export default function DiagnosticPanel({ client, apiKeys, searchDiagnostics, on
   const [config, setConfig] = useState<DiagnosticsResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [pwResult, setPwResult] = useState<PlaywrightDiagnosticResponse | null>(null)
+  const [pwLoading, setPwLoading] = useState(false)
+  const [pwError, setPwError] = useState<string | null>(null)
+  const [cleaning, setCleaning] = useState(false)
+  const [cleanError, setCleanError] = useState<string | null>(null)
+
+  const runCleanRun = async (): Promise<void> => {
+    const confirmed = window.confirm(
+      'Execução limpa\n\n' +
+        'Isto vai encerrar processos travados do Beautiful LinkedIn (browser embutido, ' +
+        'Chrome de scraping e backend) que estejam disputando as portas de debug e ' +
+        'reiniciar o app do zero.\n\n' +
+        'Use isto quando a busca parar de funcionar / travar em 0 leads. Continuar?'
+    )
+    if (!confirmed) return
+    setCleaning(true)
+    setCleanError(null)
+    try {
+      await window.beautifulLinkedIn?.cleanRun()
+      // O app reinicia logo em seguida; mantemos o estado "limpando" até lá.
+    } catch (err) {
+      setCleanError(err instanceof Error ? err.message : String(err))
+      setCleaning(false)
+    }
+  }
+
+  const runPlaywrightDiagnostic = async (): Promise<void> => {
+    if (!client) return
+    setPwLoading(true)
+    setPwError(null)
+    setPwResult(null)
+    try {
+      const endpoint = await window.beautifulLinkedIn?.embeddedBrowser
+        ?.getCdpEndpoint()
+        .catch(() => null)
+      const payload = endpoint?.endpoint ? { cdp_endpoint: endpoint.endpoint } : undefined
+      const response = await client.diagnosePlaywright(payload)
+      setPwResult(response)
+    } catch (err) {
+      setPwError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setPwLoading(false)
+    }
+  }
 
   useEffect(() => {
     if (!client) return
@@ -85,7 +130,112 @@ export default function DiagnosticPanel({ client, apiKeys, searchDiagnostics, on
         </aside>
 
         <div className="sheet-body">
-          <h3>Última busca — por provider</h3>
+          <h3>Playwright / Chromium embutido</h3>
+          <p className="dek">
+            Auto-teste cronometrado do backend de busca. Mostra exatamente onde travou: probe do CDP,
+            import do Playwright, start do driver, conexão e listagem de páginas.
+          </p>
+          <div className="sheet-section" style={{ padding: 12 }}>
+            <button
+              type="button"
+              className="pill-btn primary"
+              onClick={() => void runPlaywrightDiagnostic()}
+              disabled={!client || pwLoading}
+            >
+              {pwLoading ? 'Testando…' : 'Diagnosticar Playwright'}
+            </button>
+            {pwError && (
+              <p style={{ marginTop: 8, color: 'var(--danger, #ff3b30)', fontSize: 12 }}>{pwError}</p>
+            )}
+            {pwResult && (
+              <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div style={{ fontSize: 12, color: 'var(--ink-2)' }}>
+                  <span>
+                    sidecar: <strong>v{pwResult.sidecar_version}</strong>
+                  </span>
+                  {pwResult.playwright_version && (
+                    <span style={{ marginLeft: 12 }}>
+                      playwright: <strong>{pwResult.playwright_version}</strong>
+                    </span>
+                  )}
+                  <span style={{ marginLeft: 12 }}>
+                    CDP: <code>{pwResult.cdp_endpoint}</code>
+                  </span>
+                  <span
+                    className={`api-status ${pwResult.overall_ok ? '' : 'off'}`}
+                    style={{ marginLeft: 12 }}
+                  >
+                    <span className="d" /> {pwResult.overall_ok ? 'tudo OK' : 'falhou'}
+                  </span>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  {pwResult.steps.map((step) => (
+                    <div
+                      key={step.name}
+                      style={{
+                        display: 'flex',
+                        gap: 10,
+                        alignItems: 'baseline',
+                        padding: '6px 8px',
+                        background: step.ok ? 'var(--surface-3)' : 'rgba(255,59,48,0.12)',
+                        borderRadius: 4,
+                        fontSize: 12
+                      }}
+                    >
+                      <span style={{ minWidth: 130, fontFamily: 'var(--mono)' }}>{step.name}</span>
+                      <span
+                        style={{
+                          color: step.ok ? 'var(--success, #34c759)' : 'var(--danger, #ff3b30)',
+                          fontWeight: 600
+                        }}
+                      >
+                        {step.ok ? 'OK' : 'falhou'}
+                      </span>
+                      <span style={{ color: 'var(--ink-3)' }}>
+                        {step.elapsed_ms} ms
+                      </span>
+                      {step.detail && (
+                        <span style={{ color: 'var(--ink-3)', fontSize: 11 }}>· {step.detail}</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                {pwResult.log_path && (
+                  <p style={{ margin: 0, fontSize: 11, color: 'var(--ink-3)' }}>
+                    Logs detalhados em: <code>{pwResult.log_path}</code>
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+
+          <h3 style={{ marginTop: 18 }}>Execução limpa</h3>
+          <p className="dek">
+            Se a busca travar em 0 leads ou o diagnóstico acima acusar falha em{' '}
+            <code>connect_over_cdp</code>, provavelmente sobrou um processo de uma execução
+            anterior segurando a porta de debug (9222/9223) e o cache. Este botão encerra esses
+            processos e reinicia o app do zero.
+          </p>
+          <div className="sheet-section" style={{ padding: 12 }}>
+            <button
+              type="button"
+              className="pill-btn"
+              onClick={() => void runCleanRun()}
+              disabled={cleaning}
+            >
+              {cleaning ? 'Limpando e reiniciando…' : 'Limpar processos e reiniciar'}
+            </button>
+            <p style={{ marginTop: 8, fontSize: 11, color: 'var(--ink-3)' }}>
+              O app fecha e abre sozinho. Sua sessão do LinkedIn é preservada.
+            </p>
+            {cleanError && (
+              <p style={{ marginTop: 8, color: 'var(--danger, #ff3b30)', fontSize: 12 }}>
+                {cleanError}
+              </p>
+            )}
+          </div>
+
+          <h3 style={{ marginTop: 18 }}>Última busca — por provider</h3>
           <p className="dek">
             Cada provider relata: registros brutos, leads aceitos, registros descartados pelo filtro
             de empresa/cargo, e qualquer erro HTTP.

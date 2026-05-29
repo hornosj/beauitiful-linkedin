@@ -30,12 +30,19 @@ export interface EmbeddedBounds {
 export interface EmbeddedBrowserBridge {
   prepare(liAt: string, url: string): Promise<EmbeddedPrepareResult>
   openLogin(): Promise<EmbeddedLoginResult>
+  reloadLogin(): Promise<EmbeddedLoginResult>
   show(bounds?: EmbeddedBounds): Promise<void>
   hide(): Promise<void>
   status(): Promise<EmbeddedStatus>
   getCdpEndpoint(): Promise<{ endpoint: string; port: number }>
   checkSession(): Promise<{ hasLiAt: boolean; hasJsessionid: boolean }>
   awaitLogin(timeoutMs?: number): Promise<boolean>
+}
+
+export interface CleanRunReport {
+  killedPids: number[]
+  ports: { port: number; pid: number | null; killed: boolean }[]
+  errors: string[]
 }
 
 export interface BeautifulLinkedInBridge {
@@ -46,6 +53,12 @@ export interface BeautifulLinkedInBridge {
     port: number | null
     error: string | null
   }>
+  /**
+   * Encerra processos travados do app (Chromium embutido, Chrome de scraping e
+   * sidecars órfãos) que disputam as portas de debug CDP e reinicia o app para
+   * uma execução limpa. O app reinicia logo após resolver.
+   */
+  cleanRun(): Promise<CleanRunReport>
   chrome: ChromeBridge
   embeddedBrowser?: EmbeddedBrowserBridge
 }
@@ -82,6 +95,7 @@ const chrome: ChromeBridge = {
 const embeddedBrowser: EmbeddedBrowserBridge = {
   prepare: (liAt, url) => ipcRenderer.invoke('embedded:prepare', liAt, url),
   openLogin: () => ipcRenderer.invoke('embedded:open-login'),
+  reloadLogin: () => ipcRenderer.invoke('embedded:reload-login'),
   show: (bounds) => ipcRenderer.invoke('embedded:show', bounds),
   hide: () => ipcRenderer.invoke('embedded:hide'),
   status: () => ipcRenderer.invoke('embedded:status'),
@@ -93,6 +107,7 @@ const embeddedBrowser: EmbeddedBrowserBridge = {
 const bridge: BeautifulLinkedInBridge = {
   getBaseUrl: () => ipcRenderer.invoke('sidecar:get-base-url'),
   getStatus: () => ipcRenderer.invoke('sidecar:status'),
+  cleanRun: () => ipcRenderer.invoke('system:clean-run'),
   chrome,
   embeddedBrowser
 }

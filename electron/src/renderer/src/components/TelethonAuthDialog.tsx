@@ -7,9 +7,16 @@ interface Props {
   client: ApiClient
   onSuccess(): void
   onClose(): void
+  /** Optional: lets the operator forget the saved api_id/api_hash and go
+   *  back to the credentials tutorial when login keeps failing. */
+  onReconfigure?(): void
 }
 
 type Step = 'phone' | 'code' | 'password'
+
+const TELETHON_AUTH_TIMEOUT_MS = 30_000
+const TELETHON_AUTH_TIMEOUT_MESSAGE =
+  'Tempo de resposta do Telegram expirou. Tente novamente em alguns segundos.'
 
 /**
  * Two-step Telegram login for the Telethon-backed evidence flow.
@@ -56,7 +63,10 @@ export default function TelethonAuthDialog(props: Props): JSX.Element | null {
     setBusy(true)
     setError(null)
     try {
-      const response = await props.client.sendTelethonAuthCode({ phone: trimmed })
+      const response = await withTimeout(
+        props.client.sendTelethonAuthCode({ phone: trimmed }),
+        TELETHON_AUTH_TIMEOUT_MESSAGE
+      )
       setPhoneCodeHash(response.phone_code_hash)
       setStep('code')
     } catch (err) {
@@ -75,12 +85,15 @@ export default function TelethonAuthDialog(props: Props): JSX.Element | null {
     setBusy(true)
     setError(null)
     try {
-      const response = await props.client.signInTelethonAuth({
-        phone: phone.trim(),
-        phone_code_hash: phoneCodeHash,
-        code: trimmedCode,
-        password: passwordValue ?? null
-      })
+      const response = await withTimeout(
+        props.client.signInTelethonAuth({
+          phone: phone.trim(),
+          phone_code_hash: phoneCodeHash,
+          code: trimmedCode,
+          password: passwordValue ?? null
+        }),
+        TELETHON_AUTH_TIMEOUT_MESSAGE
+      )
       if (response.requires_password) {
         setStep('password')
         setBusy(false)
@@ -165,6 +178,16 @@ export default function TelethonAuthDialog(props: Props): JSX.Element | null {
                   autoFocus
                 />
               </label>
+              {props.onReconfigure && (
+                <button
+                  type="button"
+                  className="enrich-modal-linkbtn"
+                  onClick={props.onReconfigure}
+                  disabled={busy}
+                >
+                  Usar outras credenciais de API
+                </button>
+              )}
             </>
           )}
 
@@ -227,7 +250,7 @@ export default function TelethonAuthDialog(props: Props): JSX.Element | null {
               onClick={submitPhone}
               disabled={busy}
             >
-              Enviar código
+              {busy ? 'Enviando...' : 'Enviar código'}
             </button>
           )}
           {step === 'code' && (
@@ -237,7 +260,7 @@ export default function TelethonAuthDialog(props: Props): JSX.Element | null {
               onClick={() => submitCode()}
               disabled={busy}
             >
-              Confirmar código
+              {busy ? 'Confirmando...' : 'Confirmar código'}
             </button>
           )}
           {step === 'password' && (
@@ -247,7 +270,7 @@ export default function TelethonAuthDialog(props: Props): JSX.Element | null {
               onClick={submitPassword}
               disabled={busy}
             >
-              Confirmar senha
+              {busy ? 'Confirmando...' : 'Confirmar senha'}
             </button>
           )}
         </footer>
@@ -260,4 +283,14 @@ function formatError(err: unknown): string {
   if (err instanceof Error) return err.message
   if (typeof err === 'string') return err
   return 'Erro desconhecido.'
+}
+
+function withTimeout<T>(promise: Promise<T>, message: string): Promise<T> {
+  let timeoutId: number | undefined
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutId = window.setTimeout(() => reject(new Error(message)), TELETHON_AUTH_TIMEOUT_MS)
+  })
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timeoutId !== undefined) window.clearTimeout(timeoutId)
+  })
 }

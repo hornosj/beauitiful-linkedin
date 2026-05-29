@@ -66,6 +66,9 @@ class TelegramGroupPhoneLookupProvider:
     and harvesting every message that arrives during a capture window."""
 
     name = "telegram_group_consultasgratis"
+    command = "/nome"
+    context = "telegram_group_name_match"
+    confidence_hint = 70
 
     def __init__(
         self,
@@ -92,7 +95,7 @@ class TelegramGroupPhoneLookupProvider:
         if not full_name:
             return []
 
-        message = f"/nome {full_name}"
+        message = f"{self.command} {full_name}"
 
         _wait_for_throttle(self._throttle_seconds)
 
@@ -204,8 +207,8 @@ class TelegramGroupPhoneLookupProvider:
                         source_url=(
                             f"https://t.me/{self._group_username.lstrip('@')}"
                         ),
-                        context="telegram_group_name_match",
-                        confidence_hint=70,
+                        context=self.context,
+                        confidence_hint=self.confidence_hint,
                         extra={
                             "group": self._group_username,
                             "query": message,
@@ -215,6 +218,21 @@ class TelegramGroupPhoneLookupProvider:
                     )
                 )
         return out
+
+
+class TelegramVoidPhoneLookupProvider(TelegramGroupPhoneLookupProvider):
+    """Void Search phone lookup via the same public group channel.
+
+    The transport is identical to :class:`TelegramGroupPhoneLookupProvider`;
+    only the command and provenance differ. Void's phone route is modeled
+    as its own provider so the operator can filter/debug it independently
+    while the UI still renders generic source labels.
+    """
+
+    name = "void_phone_consultasgratis"
+    command = "/telefone"
+    context = "telegram_bot_name_match"
+    confidence_hint = 90
 
 
 def _normalize_group_username(value: str) -> str:

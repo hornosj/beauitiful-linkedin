@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -71,8 +73,71 @@ class Settings:
     telegram_gon_abort_timeout_seconds: float = 45.0
 
 
+def telegram_credentials_path() -> Path:
+    """Where the in-app Telegram API credentials are persisted.
+
+    The end user configures ``api_id``/``api_hash`` through the desktop UI
+    (Settings → Configurar Telegram) instead of hand-editing a ``.env``.
+    We store them in a small JSON next to the other ``data/`` artifacts so
+    the path resolves identically in dev (CWD = project root) and in the
+    packaged app (CWD = Electron ``userData``). An env override exists for
+    tests and advanced setups.
+    """
+    override = os.getenv("BEAUTIFUL_LINKEDIN_TELEGRAM_CONFIG_PATH")
+    if override and override.strip():
+        return Path(override.strip())
+    return Path("data") / "telegram_credentials.json"
+
+
+def read_stored_telegram_credentials() -> tuple[str | None, str | None]:
+    """Read the UI-persisted Telegram credentials, tolerating absence/corruption."""
+    path = telegram_credentials_path()
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except (FileNotFoundError, OSError):
+        return None, None
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return None, None
+    if not isinstance(data, dict):
+        return None, None
+    api_id = _empty_to_none(str(data.get("api_id") or ""))
+    api_hash = _empty_to_none(str(data.get("api_hash") or ""))
+    return api_id, api_hash
+
+
+def save_telegram_credentials(api_id: str, api_hash: str) -> None:
+    """Persist the Telegram API credentials supplied through the UI.
+
+    Written atomically (tmp + replace) so a crash mid-write never leaves a
+    half-written JSON that would silently disable Telegram on next boot.
+    """
+    path = telegram_credentials_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(
+        {"api_id": api_id.strip(), "api_hash": api_hash.strip()},
+        ensure_ascii=False,
+    )
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(payload, encoding="utf-8")
+    tmp.replace(path)
+
+
+def clear_telegram_credentials() -> None:
+    """Remove the UI-persisted Telegram credentials (used to re-configure)."""
+    path = telegram_credentials_path()
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+
+
 def load_settings() -> Settings:
     load_dotenv()
+    stored_telegram_api_id, stored_telegram_api_hash = (
+        read_stored_telegram_credentials()
+    )
     return Settings(
         default_max_results=int(os.getenv("BEAUTIFUL_LINKEDIN_MAX_RESULTS", "20")),
         company_site_timeout_seconds=float(
@@ -138,11 +203,13 @@ def load_settings() -> Settings:
         telegram_api_id=_empty_to_none(
             os.getenv("BEAUTIFUL_LINKEDIN_TELEGRAM_API_ID")
             or os.getenv("TELEGRAM_API_ID")
-        ),
+        )
+        or stored_telegram_api_id,
         telegram_api_hash=_empty_to_none(
             os.getenv("BEAUTIFUL_LINKEDIN_TELEGRAM_API_HASH")
             or os.getenv("TELEGRAM_API_HASH")
-        ),
+        )
+        or stored_telegram_api_hash,
         telegram_session_name=os.getenv(
             "BEAUTIFUL_LINKEDIN_TELEGRAM_SESSION_NAME",
             "data/telegram_phone_lookup",

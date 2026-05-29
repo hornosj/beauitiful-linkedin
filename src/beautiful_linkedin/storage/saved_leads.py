@@ -930,6 +930,65 @@ class SavedLeadsStore:
                 )
         return counters
 
+    def apply_contact_address_updates(
+        self,
+        table_id: str,
+        updates: list[tuple[Lead, str]],
+    ) -> dict[str, int]:
+        """Persist a residential address found by the Telegram CPF stage.
+
+        The address comes from the SISREG-III ``/cpf`` report (the same
+        lookup that harvests the phone). It is informational — it does
+        NOT touch ``confidence`` or the table's enrichment status — and is
+        never overwritten once a lead already has one (first write wins).
+        """
+        counters = {
+            "enriched": 0,
+            "skipped_existing_address": 0,
+            "no_change": 0,
+        }
+        if not updates:
+            return counters
+        now = _now_iso()
+        with self._lock, self._connect() as connection:
+            self._assert_table_exists(connection, table_id)
+            changed = False
+            for lead, address in updates:
+                value = _clean_optional(address)
+                if not value:
+                    counters["no_change"] += 1
+                    continue
+                lead_key = _lead_key_for(lead, fallback_index=0)
+                existing = connection.execute(
+                    """
+                    SELECT endereco FROM saved_leads
+                    WHERE table_id = ? AND lead_key = ?
+                    """,
+                    (table_id, lead_key),
+                ).fetchone()
+                if existing is None:
+                    counters["no_change"] += 1
+                    continue
+                if existing["endereco"]:
+                    counters["skipped_existing_address"] += 1
+                    continue
+                connection.execute(
+                    """
+                    UPDATE saved_leads
+                    SET endereco = ?
+                    WHERE table_id = ? AND lead_key = ? AND endereco IS NULL
+                    """,
+                    (value, table_id, lead_key),
+                )
+                counters["enriched"] += 1
+                changed = True
+            if changed:
+                connection.execute(
+                    "UPDATE saved_lead_tables SET updated_at = ? WHERE id = ?",
+                    (now, table_id),
+                )
+        return counters
+
     def apply_internal_phone_enrichment_updates(
         self,
         table_id: str,
@@ -1608,6 +1667,10 @@ class SavedLeadsStore:
                 "linkedin_profile_validation_payload_json",
                 "TEXT",
             )
+            # Residential address from a Telegram CPF (SISREG-III) consult.
+            # Written only by the phone stage, never overwritten — see
+            # ``apply_contact_address_updates``.
+            _ensure_column(connection, "saved_leads", "endereco", "TEXT")
             # Telegram-group consult results, one row per
             # (table_id, lead_ref, provider). Two providers exist today:
             # "gon" (ConsultoriaGonzalesbot, replies in-group with
@@ -2113,6 +2176,7 @@ def _row_to_lead(row: sqlite3.Row) -> Lead:
         linkedin_location=_row_get(row, "linkedin_location"),
         linkedin_education=_json_dict_list(_row_get(row, "linkedin_education_json")),
         linkedin_birthday=_row_get(row, "linkedin_birthday"),
+        endereco=_row_get(row, "endereco"),
     )
 
 

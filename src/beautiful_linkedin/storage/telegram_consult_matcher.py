@@ -5,14 +5,21 @@ name (homonyms). To pick the most likely actual person we compare each
 candidate's structured fields against signals from the LinkedIn lead
 and produce a 0-100 score plus a per-signal breakdown.
 
-Signal weights:
-- Location  (40 pts) — Brazilian state/city from the candidate's
-  address vs ``lead.linkedin_location`` (and a fallback to
-  ``lead.snippet`` when the location field isn't filled yet).
-- Age       (60 pts) — Brazilian undergrad starts around 18 and ends
-  around 22. Given a candidate's ``data_nascimento`` and the lead's
-  ``linkedin_education`` entries (graduation year), we estimate an
-  expected birth year and reward proximity.
+Signal weights (see the constants below for the exact numbers):
+- Name      — the identity anchor, but DYNAMIC: it keeps full weight when
+  no location can be compared (so a clean match clears the threshold on its
+  own), and yields weight to the location when one is available, because
+  homônimos share the same name and only the location disambiguates them.
+- Location  — Brazilian state/city from the candidate's address vs
+  ``lead.linkedin_location`` (falling back to ``lead.snippet``). Outranks
+  the name whenever it can be compared, and a CLEAR mismatch caps the score
+  so a same-name/wrong-city homonym cannot clear the follow-up threshold.
+- Birthday  — exact DD/MM match is identity-decisive (and suppresses the
+  indirect age signals).
+- Age       — Brazilian undergrad starts around 18 and ends around 22.
+  Given a candidate's ``data_nascimento`` and the lead's
+  ``linkedin_education``/experience, we estimate an expected birth year and
+  reward proximity.
 
 Both signals degrade gracefully when their inputs are missing — the
 score reflects only the comparisons we could actually make, plus a
@@ -72,10 +79,38 @@ _STATE_BY_UF: dict[str, str] = {
 _UF_BY_NAME: dict[str, str] = {name: uf for uf, name in _STATE_BY_UF.items()}
 
 
-_NAME_WEIGHT = 20
-_LOCATION_WEIGHT = 30
+# Identity signals are weighted so that LOCATION outranks NAME whenever we
+# can actually compare a location. Rationale (operator request): muitos leads
+# compartilham nomes parecidos/idênticos (homônimos), então o nome sozinho
+# não distingue a pessoa certa — a localização é o desempate forte.
+#
+# The name weight is therefore DYNAMIC (chosen in ``score_candidate``):
+# - ``_NAME_WEIGHT`` — used when there is NO comparable location. The name
+#   keeps its full weight so a clean full-coverage match (sub=100) earns 70
+#   and clears the follow-up threshold (``TELEGRAM_FOLLOWUP_MIN_SCORE = 65``)
+#   on its own. This is the 'Julia Pascoli' case where LinkedIn carries no
+#   location/age/birthday to corroborate.
+# - ``_NAME_WEIGHT_WITH_LOCATION`` — used when a location can be compared.
+#   The name yields weight to the location, so ``location (55) > name (45)``
+#   and a matching-location candidate wins the homonym tiebreak. A full name
+#   + full location still reaches 100 (45 + 55).
+#
+# The name sub-score itself is proportional to how many of the lead's name
+# pieces match (see ``_score_name_match``), with a light penalty for extra
+# surnames.
+_NAME_WEIGHT = 70
+_NAME_WEIGHT_WITH_LOCATION = 45
+_LOCATION_WEIGHT = 55
 _AGE_CAREER_WEIGHT = 45
 _DATA_QUALITY_WEIGHT = 5
+
+# Each extra candidate surname (a piece the lead does NOT have, e.g. the
+# "TOLEDO" in "Julia Pascoli" → "JULIA PASCOLI DE TOLEDO") shaves a few
+# points off the name sub-score — more divergent surnames make it less
+# likely to be the same person — but never enough to drop a clean
+# full-coverage match below the follow-up threshold on its own.
+_NAME_EXTRA_TOKEN_PENALTY = 6
+_NAME_EXTRA_TOKEN_PENALTY_CAP = 24
 # Birthday is the strongest individual signal we have: an exact DD/MM
 # match between a Telegram CPF candidate's ``data_nascimento`` and the
 # lead's ``linkedin_birthday`` is a near-decisive disambiguator between
@@ -84,6 +119,15 @@ _DATA_QUALITY_WEIGHT = 5
 # double-count the same underlying age inference. The total still caps
 # at 100 — see ``capped_total`` at the bottom of ``score_candidate``.
 _BIRTHDAY_WEIGHT = 60
+
+# Homônimo + localização claramente divergente: quando o nome é match TOTAL
+# (não distingue) e a localização pôde ser comparada mas discorda por
+# completo (sem overlap de UF nem de cidade), travamos o total abaixo do
+# threshold de follow-up — um candidato com mesmo nome e cidade errada não
+# pode passar só no nome+idade. Pulado quando o aniversário bate exatamente
+# (sinal decisivo de identidade: uma pessoa real que apenas mudou de cidade
+# não deve ser rejeitada por um endereço cadastral antigo).
+_LOCATION_MISMATCH_CAP = 40
 
 
 @dataclass
@@ -189,7 +233,13 @@ def score_candidate(
     total = 0
 
     candidate_nome = getattr(candidate, "nome", None)
-    if lead_name and candidate_nome:
+    name_comparable = bool(lead_name and candidate_nome)
+
+    # --- name gate (hard reject) ---------------------------------------
+    # Runs first so a completely different person never reaches scoring.
+    # The name SUB-SCORE is computed later (after location) because the
+    # name's weight depends on whether we can lean on a comparable location.
+    if name_comparable:
         passed, gate_reason, gate_detail = enforce_name_gate(lead_name, candidate_nome)
         if not passed:
             return MatchScore(
@@ -207,18 +257,7 @@ def score_candidate(
                 signals_used=["name_gate"],
             )
         breakdown["name_gate"] = {"passed": True, "reason": gate_reason, **gate_detail}
-        sub_score, sub_detail = _score_name_match(lead_name, candidate_nome)
-        earned = int(sub_score * _NAME_WEIGHT / 100)
-        breakdown["name"] = {
-            "score": sub_score,
-            "weight": _NAME_WEIGHT,
-            "earned": earned,
-            **sub_detail,
-        }
-        signals_used.append("name")
-        total += earned
     else:
-        breakdown["name"] = {"score": None, "reason": "missing_input"}
         breakdown["name_gate"] = {
             "passed": None,
             "reason": "missing_input",
@@ -226,19 +265,57 @@ def score_candidate(
             "candidate_name": candidate_nome,
         }
 
+    # --- location ------------------------------------------------------
+    # Scored before the name so we know whether a usable location exists.
+    # ``location_real_comparison`` is True only when BOTH sides parsed to a
+    # state/city (so ``_score_location`` reached the actual comparison and
+    # exposed ``state_match``/``city_match``). An unparseable address is NOT
+    # treated as comparable — the name then keeps its full weight.
     location_text = linkedin_location or snippet_fallback or ""
+    location_real_comparison = False
+    location_clear_mismatch = False
     if candidate.endereco and location_text:
-        sub_score, sub_detail = _score_location(candidate.endereco, location_text)
+        loc_sub, loc_detail = _score_location(candidate.endereco, location_text)
+        location_real_comparison = "state_match" in loc_detail
+        location_clear_mismatch = (
+            location_real_comparison
+            and not loc_detail.get("state_match")
+            and not loc_detail.get("city_match")
+        )
         breakdown["location"] = {
-            "score": sub_score,
+            "score": loc_sub,
             "weight": _LOCATION_WEIGHT,
-            "earned": int(sub_score * _LOCATION_WEIGHT / 100),
-            **sub_detail,
+            "earned": int(loc_sub * _LOCATION_WEIGHT / 100),
+            **loc_detail,
         }
         signals_used.append("location")
-        total += int(sub_score * _LOCATION_WEIGHT / 100)
+        total += int(loc_sub * _LOCATION_WEIGHT / 100)
     else:
         breakdown["location"] = {"score": None, "reason": "missing_input"}
+
+    # --- name sub-score ------------------------------------------------
+    # The name yields weight to the location when a usable location exists
+    # (homônimos têm nome idêntico — a localização desempata). With no
+    # comparable location the name keeps its full weight so a clean match
+    # still clears the follow-up threshold on its own.
+    name_coverage = 0.0
+    effective_name_weight = (
+        _NAME_WEIGHT_WITH_LOCATION if location_real_comparison else _NAME_WEIGHT
+    )
+    if name_comparable:
+        sub_score, sub_detail = _score_name_match(lead_name, candidate_nome)
+        name_coverage = float(sub_detail.get("coverage") or 0.0)
+        earned = int(sub_score * effective_name_weight / 100)
+        breakdown["name"] = {
+            "score": sub_score,
+            "weight": effective_name_weight,
+            "earned": earned,
+            **sub_detail,
+        }
+        signals_used.append("name")
+        total += earned
+    else:
+        breakdown["name"] = {"score": None, "reason": "missing_input"}
 
     birthday_outcome: str | None = None
     if linkedin_birthday and candidate.data_nascimento:
@@ -342,6 +419,24 @@ def score_candidate(
         breakdown["career_age"] = {"score": None, "reason": "missing_birth_date"}
         breakdown["education_age"] = {"score": None, "reason": "missing_birth_date"}
 
+    # Homônimo + localização claramente divergente: o nome (match total) não
+    # distingue a pessoa e a localização discorda por completo → trava o
+    # total abaixo do threshold de follow-up. Pulado quando o aniversário
+    # bate exatamente (identidade já confirmada; pessoa que só mudou de
+    # cidade não deve ser descartada por endereço cadastral antigo).
+    if (
+        location_clear_mismatch
+        and name_coverage >= 1.0
+        and birthday_outcome != "day_month_exact"
+    ):
+        penalties.append(
+            {
+                "code": "location_homonym_mismatch",
+                "cap": _LOCATION_MISMATCH_CAP,
+                "reason": "same_name_different_location_without_birthday_confirmation",
+            }
+        )
+
     core_total = total
     quality_score, quality_detail = _score_data_quality(candidate)
     quality_earned = int(quality_score * _DATA_QUALITY_WEIGHT / 100) if core_total > 0 else 0
@@ -372,6 +467,23 @@ def score_candidate(
 
 
 def _score_name_match(lead_name: str, candidate_name: str) -> tuple[int, dict[str, Any]]:
+    """Score the candidate's name against the lead's, *per name piece*.
+
+    The sub-score (0-100) is proportional to how many of the lead's name
+    pieces appear in the candidate (coverage), with a light penalty for
+    extra candidate surnames the lead doesn't carry:
+
+        sub = coverage * 100 − min(extra_tokens * PENALTY, PENALTY_CAP)
+
+    Examples for lead ``"Julia Pascoli"`` (pieces: julia, pascoli):
+    - ``"JULIA PASCOLI"``            → coverage 100%, 0 extras → 100
+    - ``"JULIA PASCOLI DE TOLEDO"``  → coverage 100%, 1 extra  → 94
+    - ``"MARIA JULIA GRANDI DE PASCOLI"`` → coverage 100%, 2 extras → 88
+    - ``"JULIA SANTOS"``             → coverage 50% (só "julia") → 50
+
+    Stopwords (``de``, ``da``, ``dos``...) are dropped by ``_name_tokens``
+    so they neither count as coverage nor as extras.
+    """
     lead_tokens = _name_tokens(lead_name)
     candidate_tokens = _name_tokens(candidate_name)
     if not lead_tokens or not candidate_tokens:
@@ -383,37 +495,32 @@ def _score_name_match(lead_name: str, candidate_name: str) -> tuple[int, dict[st
 
     lead_set = set(lead_tokens)
     candidate_set = set(candidate_tokens)
-    overlap = lead_set & candidate_set
-    first_match = lead_tokens[0] == candidate_tokens[0]
-    last_match = lead_tokens[-1] == candidate_tokens[-1]
+    matched = lead_set & candidate_set
+    extra_tokens = candidate_set - lead_set
 
-    if lead_tokens == candidate_tokens:
-        sub = 100
-        reason = "exact"
-    elif lead_set <= candidate_set or candidate_set <= lead_set:
-        sub = 95
-        reason = "contained"
-    elif first_match and last_match:
-        sub = 85
-        reason = "first_last"
-    elif first_match and len(overlap) >= 2:
-        sub = 70
-        reason = "first_plus_overlap"
-    elif len(overlap) >= 2:
-        sub = 50
-        reason = "partial_overlap"
-    elif first_match:
-        sub = 25
-        reason = "first_name_only"
+    coverage = len(matched) / len(lead_set)
+    base = coverage * 100.0
+    extra_penalty = min(
+        len(extra_tokens) * _NAME_EXTRA_TOKEN_PENALTY,
+        _NAME_EXTRA_TOKEN_PENALTY_CAP,
+    )
+    sub = int(round(max(0.0, base - extra_penalty)))
+
+    if coverage >= 1.0:
+        reason = "full_coverage" if not extra_tokens else "full_coverage_with_extras"
+    elif coverage > 0:
+        reason = "partial_coverage"
     else:
-        sub = 0
         reason = "mismatch"
 
     return sub, {
         "reason": reason,
+        "coverage": round(coverage, 3),
         "lead_tokens": lead_tokens,
         "candidate_tokens": candidate_tokens,
-        "overlap": sorted(overlap),
+        "matched": sorted(matched),
+        "extra_candidate_tokens": sorted(extra_tokens),
+        "extra_penalty": extra_penalty,
     }
 
 

@@ -147,6 +147,13 @@ export interface Lead {
   linkedin_contact_phone?: string | null
   linkedin_location?: string | null
   linkedin_education?: Array<Record<string, unknown>>
+  /**
+   * Residential address recovered from a Telegram CPF (SISREG-III)
+   * consult — the same lookup that finds the phone. Informational only;
+   * never overwrites and never affects confidence. May be absent when
+   * the report had no address ("Sem informação").
+   */
+  endereco?: string | null
 }
 
 export interface EmailAlternative {
@@ -234,6 +241,26 @@ export interface CookieDiagnosticResponse {
 export interface CookieDiagnosticRequest {
   cookie?: string | null
   browser?: string
+}
+
+export interface PlaywrightDiagnosticStep {
+  name: string
+  ok: boolean
+  elapsed_ms: number
+  detail?: string | null
+}
+
+export interface PlaywrightDiagnosticRequest {
+  cdp_endpoint?: string | null
+}
+
+export interface PlaywrightDiagnosticResponse {
+  overall_ok: boolean
+  cdp_endpoint: string
+  sidecar_version: string
+  playwright_version?: string | null
+  log_path?: string | null
+  steps: PlaywrightDiagnosticStep[]
 }
 
 export type RunStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
@@ -736,6 +763,11 @@ export interface TelethonAuthSignInResponse {
 export interface TelethonAuthLogoutResponse {
   authorized: boolean
   logged_out: boolean
+}
+
+export interface TelethonConfigRequest {
+  api_id: string
+  api_hash: string
 }
 
 export interface TelethonPipelineRequest {

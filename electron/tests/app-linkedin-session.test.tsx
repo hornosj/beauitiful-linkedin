@@ -20,6 +20,7 @@ describe('App LinkedIn embedded session flow', () => {
   let originalFetch: typeof fetch
   let originalBridge: typeof window.beautifulLinkedIn
   const openLogin = vi.fn()
+  const reloadLogin = vi.fn()
   const hide = vi.fn()
   const prepare = vi.fn()
   const checkSession = vi.fn()
@@ -28,6 +29,7 @@ describe('App LinkedIn embedded session flow', () => {
     originalFetch = globalThis.fetch
     originalBridge = window.beautifulLinkedIn
     openLogin.mockResolvedValue({ ready: true, url: 'https://www.linkedin.com/login', error: null })
+    reloadLogin.mockResolvedValue({ ready: true, url: 'https://www.linkedin.com/login', error: null })
     hide.mockResolvedValue(undefined)
     prepare.mockResolvedValue({ ready: true, url: null, onAuthwall: false, error: null })
     checkSession.mockResolvedValue({ hasLiAt: true, hasJsessionid: true })
@@ -40,6 +42,7 @@ describe('App LinkedIn embedded session flow', () => {
           port: 39712,
           error: null
         }),
+      cleanRun: () => Promise.resolve({ killedPids: [], ports: [], errors: [] }),
       chrome: {
         probe: () => Promise.resolve({ alive: false, endpoint: 'http://127.0.0.1:9222' }),
         isRunning: () => Promise.resolve(false),
@@ -53,6 +56,7 @@ describe('App LinkedIn embedded session flow', () => {
       embeddedBrowser: {
         prepare,
         openLogin,
+        reloadLogin,
         show: () => Promise.resolve(),
         hide,
         status: () => Promise.resolve({ url: null, onAuthwall: false, visible: false }),
@@ -109,6 +113,22 @@ describe('App LinkedIn embedded session flow', () => {
     })
     fireEvent.click(closeButton)
 
+    await waitFor(() => expect(hide).toHaveBeenCalledOnce())
+  })
+
+  it('offers refresh and close controls when the embedded LinkedIn login is open', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({ seniority: [], functions: [], role_presets: [], scrape_modes: [] })) as unknown as typeof fetch
+
+    render(<App />)
+
+    fireEvent.click(await screen.findByRole('button', { name: /logar linkedin/i }))
+    await waitFor(() => expect(openLogin).toHaveBeenCalledOnce())
+
+    const refreshButton = await screen.findByRole('button', { name: /recarregar linkedin/i })
+    fireEvent.click(refreshButton)
+    await waitFor(() => expect(reloadLogin).toHaveBeenCalledOnce())
+
+    fireEvent.click(screen.getByRole('button', { name: /fechar janela linkedin/i }))
     await waitFor(() => expect(hide).toHaveBeenCalledOnce())
   })
 

@@ -30,14 +30,20 @@ class _StubLookup:
 
 def test_resolve_phone_source_names_translates_aliases() -> None:
     assert _resolve_phone_source_names(["telegram_group"]) == {
-        "telegram_group_consultasgratis"
+        "telegram_group_consultasgratis",
+        "void_phone_consultasgratis",
     }
     assert _resolve_phone_source_names(["TELEGRAM_GROUP"]) == {
-        "telegram_group_consultasgratis"
+        "telegram_group_consultasgratis",
+        "void_phone_consultasgratis",
     }
     assert _resolve_phone_source_names(
         ["telegram_group", "receita_cnpj"]
-    ) == {"telegram_group_consultasgratis", "receita_cnpj"}
+    ) == {
+        "telegram_group_consultasgratis",
+        "void_phone_consultasgratis",
+        "receita_cnpj",
+    }
     assert _resolve_phone_source_names(None) is None
     assert _resolve_phone_source_names([]) is None
     assert _resolve_phone_source_names(["  "]) is None
@@ -49,6 +55,7 @@ def test_build_phone_orchestrator_filters_to_telegram_group(monkeypatch) -> None
         _StubLookup("pdf_serp"),
         _StubLookup("consultoria_gonzales_bot"),
         _StubLookup("telegram_group_consultasgratis"),
+        _StubLookup("void_phone_consultasgratis"),
     ]
     monkeypatch.setattr(
         "beautiful_linkedin.server.app._default_phone_lookup_providers",
@@ -66,7 +73,8 @@ def test_build_phone_orchestrator_filters_to_telegram_group(monkeypatch) -> None
     )
 
     assert [p.name for p in orchestrator._lookup_providers] == [
-        "telegram_group_consultasgratis"
+        "telegram_group_consultasgratis",
+        "void_phone_consultasgratis",
     ]
     # Site-harvest bucket is muted when the UI scoped to lookup channels.
     assert orchestrator._harvest_fn("nubank.com") == []
