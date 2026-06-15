@@ -140,22 +140,30 @@ def announce(port: int) -> None:
 def main() -> None:
     configure_stdio()
     configure_logging()
-    port = resolve_port()
-    announce(port)
-    app = build_app()
+    log = logging.getLogger(__name__)
+    try:
+        port = resolve_port()
+        announce(port)
+        app = build_app()
 
-    @app.on_event("startup")  # type: ignore[misc]
-    def _emit_ready() -> None:
-        sys.stdout.write(f"{READY_TOKEN}\n")
-        sys.stdout.flush()
+        @app.on_event("startup")  # type: ignore[misc]
+        def _emit_ready() -> None:
+            sys.stdout.write(f"{READY_TOKEN}\n")
+            sys.stdout.flush()
 
-    uvicorn.run(
-        app,
-        host=DEFAULT_HOST,
-        port=port,
-        log_level="warning",
-        access_log=False,
-    )
+        uvicorn.run(
+            app,
+            host=DEFAULT_HOST,
+            port=port,
+            log_level="warning",
+            access_log=False,
+        )
+    except Exception:
+        # Sem isto, um crash no boot (ex.: import/DB/config) sobe sem passar pelo
+        # logger e nunca chega ao sidecar.log — o operador fica sem a causa. O
+        # Electron já tratou a saída do processo; aqui só garantimos o registro.
+        log.exception("Sidecar falhou ao iniciar")
+        raise
 
 
 if __name__ == "__main__":

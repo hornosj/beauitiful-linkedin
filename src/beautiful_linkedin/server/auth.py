@@ -211,6 +211,27 @@ def _bearer_token(authorization: str | None) -> str | None:
     return None
 
 
+def install_config_lock(app: Any, message: str) -> None:
+    """Trava a API quando a auth é EXIGIDA mas está mal configurada.
+
+    Em vez de derrubar o sidecar (o cliente veria apenas "Sidecar offline", sem
+    causa), subimos o processo travado: ``/health`` (e demais rotas isentas)
+    respondem para o Electron detectar que o backend está vivo, mas toda rota
+    protegida devolve 503 com a causa da má configuração. É *fail-closed* (a API
+    continua inacessível) E diagnosticável (a mensagem aparece em vez do erro
+    opaco). Registrada ANTES do CORS, igual à :func:`install_auth`.
+    """
+
+    @app.middleware("http")
+    async def _config_lock(request: Request, call_next):  # type: ignore[no-untyped-def]
+        if request.method == "OPTIONS" or request.url.path in EXEMPT_PATHS:
+            return await call_next(request)
+        return JSONResponse(
+            {"detail": f"Login obrigatório, mas mal configurado: {message}"},
+            status_code=503,
+        )
+
+
 def install_auth(app: Any, verifier: TokenVerifier) -> None:
     """Registra a middleware de auth.
 

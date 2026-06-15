@@ -1,5 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { fileURLToPath } from 'node:url'
+import { appendFileSync, mkdirSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import {
   resolvePackagedSidecarExecutable,
@@ -61,6 +62,30 @@ function packagedSidecarExecutable(): string | undefined {
   )
 }
 
+/**
+ * Log do boot do sidecar em arquivo (além do console). No app empacotado o
+ * console.log do processo principal não vai a lugar nenhum visível, então o
+ * stderr do Python (incl. o stack do crash) e o erro final de startSidecar se
+ * perdiam — deixando o suporte cego, vendo só "Sidecar offline". Aqui gravamos
+ * em ``<userData>/logs/sidecar-main.log`` para anexar num report.
+ */
+function logSidecarLine(line: string): void {
+  console.log(line)
+  try {
+    const dir = join(app.getPath('userData'), 'logs')
+    mkdirSync(dir, { recursive: true })
+    appendFileSync(join(dir, 'sidecar-main.log'), `${new Date().toISOString()} ${line}\n`)
+  } catch {
+    // best-effort: perfil read-only / disco cheio não pode derrubar o boot.
+  }
+}
+
+function sidecarStartTimeoutMs(): number | undefined {
+  const raw = (process.env.BEAUTIFUL_LINKEDIN_SIDECAR_TIMEOUT_MS ?? '').trim()
+  const parsed = Number.parseInt(raw, 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined
+}
+
 async function bootSidecar(): Promise<void> {
   const projectRoot = resolve(__dirname, '..', '..', '..')
   const isPackaged = app.isPackaged
@@ -70,7 +95,8 @@ async function bootSidecar(): Promise<void> {
     projectRoot: isPackaged ? undefined : projectRoot,
     sidecarExecutablePath: packagedSidecarExecutable(),
     env: supabaseSidecarEnv(),
-    onLog: (line) => console.log(line)
+    startTimeoutMs: sidecarStartTimeoutMs(),
+    onLog: logSidecarLine
   })
 }
 
@@ -271,6 +297,7 @@ if (!gotSingleInstanceLock) {
     void bootSidecar().catch((error) => {
       sidecarError = error instanceof Error ? error.message : String(error)
       console.error('Falha ao iniciar o sidecar Python:', error)
+      logSidecarLine(`[sidecar:fatal] ${sidecarError}`)
     })
 
     app.on('activate', () => {

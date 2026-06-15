@@ -13,6 +13,29 @@ export default defineConfig(({ mode }) => {
   // fora — é a proteção embutida do Vite.
   const repoRoot = resolve(__dirname, '..')
   const env = loadEnv(mode, repoRoot, 'VITE_')
+
+  // Falha o build cedo em vez de embarcar uma config de login quebrada que faria
+  // o sidecar empacotado subir travado (cliente vê "Sidecar offline"). Cobre os
+  // dois erros mais comuns: URL com /rest/v1 ou /auth/v1 no fim, e exigir login
+  // sem informar a URL.
+  const supabaseUrl = (env.VITE_SUPABASE_URL ?? '').trim()
+  const authRequiredRaw = (env.VITE_SUPABASE_AUTH_REQUIRED ?? '').trim().toLowerCase()
+  const authRequired = authRequiredRaw === '1' || authRequiredRaw === 'true'
+  if (supabaseUrl && /\/(rest|auth)\/v1\/?$/.test(supabaseUrl)) {
+    throw new Error(
+      `[config:${mode}] VITE_SUPABASE_URL deve ser a URL BASE do projeto ` +
+        `(https://SEU-PROJETO.supabase.co), sem /rest/v1 ou /auth/v1 no fim. ` +
+        `Valor atual: ${supabaseUrl}`
+    )
+  }
+  if (authRequired && !supabaseUrl) {
+    throw new Error(
+      `[config:${mode}] VITE_SUPABASE_AUTH_REQUIRED está ligado, mas ` +
+        `VITE_SUPABASE_URL está vazio — o sidecar subiria travado. Informe a ` +
+        `URL do Supabase ou desligue a exigência de login.`
+    )
+  }
+
   const supabaseDefines = {
     'import.meta.env.VITE_SUPABASE_URL': JSON.stringify(env.VITE_SUPABASE_URL ?? ''),
     'import.meta.env.VITE_SUPABASE_AUTH_REQUIRED': JSON.stringify(

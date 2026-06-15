@@ -21,7 +21,11 @@ export interface StartSidecarOptions {
   onLog?: (line: string) => void
 }
 
-const DEFAULT_TIMEOUT_MS = 20_000
+// Cold start do exe PyInstaller (onedir ~284MB) no 1º launch costuma estourar
+// 20s quando o antivírus/SmartScreen varre cada arquivo de _internal/ ou o disco
+// é lento — o que aparecia para o cliente como "Sidecar offline" mesmo o backend
+// subindo logo em seguida. 60s dá folga; override via BEAUTIFUL_LINKEDIN_SIDECAR_TIMEOUT_MS.
+const DEFAULT_TIMEOUT_MS = 60_000
 
 interface PythonCommand {
   executable: string

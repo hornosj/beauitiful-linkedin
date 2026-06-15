@@ -28,6 +28,7 @@ from beautiful_linkedin.server.auth import (
     AuthConfig,
     TokenVerifier,
     install_auth,
+    install_config_lock,
     load_auth_config,
 )
 from beautiful_linkedin.cli import build_lead_filter
@@ -1295,12 +1296,25 @@ def build_app(
     # externa e as respostas 401 ainda carreguem cabeçalhos CORS. Sem token válido
     # a API toda (exceto /health) responde 401 — isso impede que alguém chame o
     # 127.0.0.1:porta direto e burle a tela de login do Electron.
-    resolved_auth = auth_config if auth_config is not None else load_auth_config()
+    auth_config_error: str | None = None
+    try:
+        resolved_auth = auth_config if auth_config is not None else load_auth_config()
+    except RuntimeError as exc:
+        # Auth EXIGIDA mas mal configurada (ex.: REQUIRE_AUTH=1 sem SUPABASE_URL
+        # num build de produção). Não derruba o sidecar: sobe travado para que o
+        # Electron veja /health e mostre a causa, em vez de só "Sidecar offline".
+        auth_config_error = str(exc)
+        logger.error("Configuração de login inválida — sidecar sobe travado: %s", auth_config_error)
+        resolved_auth = AuthConfig(enabled=False)
+
     verifier = token_verifier
-    if verifier is None and resolved_auth.enabled:
+    if verifier is None and resolved_auth.enabled and auth_config_error is None:
         verifier = TokenVerifier(resolved_auth)
     app.state.auth_config = resolved_auth
-    if verifier is not None:
+    app.state.auth_config_error = auth_config_error
+    if auth_config_error is not None:
+        install_config_lock(app, auth_config_error)
+    elif verifier is not None:
         install_auth(app, verifier)
         logger.info("Sidecar auth ATIVADA — login obrigatório (Supabase).")
     else:
@@ -1318,7 +1332,11 @@ def build_app(
 
     @app.get("/health")
     def health() -> dict[str, str]:
-        return {"status": "ok", "version": VERSION}
+        payload = {"status": "ok", "version": VERSION}
+        config_error = getattr(app.state, "auth_config_error", None)
+        if config_error:
+            payload["auth_error"] = config_error
+        return payload
 
     @app.get("/taxonomies", response_model=TaxonomiesResponse)
     def taxonomies() -> TaxonomiesResponse:
