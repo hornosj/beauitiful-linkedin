@@ -32,29 +32,7 @@ import type {
   SearchRequest,
   SearchResponse,
   StartRunResponse,
-  TaxonomiesResponse,
-  TelegramConsultListResponse,
-  TelegramConsultRequest,
-  TelegramConsultResponse,
-  TelegramFollowupPhoneRequest,
-  TelegramFollowupPhoneResponse,
-  TelegramPhoneRequest,
-  TelegramPhoneResponse,
-  TelegramPhoneStartRequest,
-  TelegramPhoneStartResponse,
-  TelegramPhoneNextResponse,
-  TelegramPhoneCancelResponse,
-  TelegramPhoneExtractCpfsResponse,
-  TelethonAuthStatusResponse,
-  TelethonAuthSendCodeRequest,
-  TelethonAuthSendCodeResponse,
-  TelethonAuthSignInRequest,
-  TelethonAuthSignInResponse,
-  TelethonAuthLogoutResponse,
-  TelethonConfigRequest,
-  TelethonCpfStageRequest,
-  TelethonPipelineRequest,
-  TelethonPipelineResponse
+  TaxonomiesResponse
 } from './types'
 
 export class ApiError extends Error {
@@ -75,7 +53,27 @@ interface PollOptions {
 const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled'])
 
 export class ApiClient {
-  constructor(private readonly baseUrl: string) {}
+  /**
+   * @param baseUrl  Loopback URL do sidecar (ex.: http://127.0.0.1:PORTA).
+   * @param getToken Provedor opcional do access token (Supabase). Quando o
+   *   controle de acesso por conta está ligado, toda requisição leva
+   *   ``Authorization: Bearer <token>``; o sidecar recusa (401) sem ele. Quando
+   *   a auth está desligada (dev/local), o provedor devolve null e nada muda.
+   */
+  constructor(
+    private readonly baseUrl: string,
+    private readonly getToken?: () => Promise<string | null>
+  ) {}
+
+  /** Monta os headers acrescentando o Bearer token quando disponível. */
+  private async authHeaders(
+    base: Record<string, string> = {}
+  ): Promise<Record<string, string>> {
+    if (!this.getToken) return base
+    const token = await this.getToken()
+    if (!token) return base
+    return { ...base, Authorization: `Bearer ${token}` }
+  }
 
   health(): Promise<HealthResponse> {
     return this.get<HealthResponse>('/health')
@@ -173,229 +171,6 @@ export class ApiClient {
     )
   }
 
-  telegramConsult(
-    tableId: string,
-    payload: TelegramConsultRequest
-  ): Promise<TelegramConsultResponse> {
-    return this.post<TelegramConsultResponse>(
-      `/lead-tables/${encodeURIComponent(tableId)}/telegram-consult`,
-      payload
-    )
-  }
-
-  telegramConsultMultipleExperimental(
-    tableId: string,
-    payload: TelegramConsultRequest
-  ): Promise<TelegramConsultResponse> {
-    return this.post<TelegramConsultResponse>(
-      `/lead-tables/${encodeURIComponent(tableId)}/telegram-consult/multiple-experimental`,
-      payload
-    )
-  }
-
-  telegramConsultTelethonExperimental(
-    tableId: string,
-    payload: TelegramConsultRequest
-  ): Promise<TelegramConsultResponse> {
-    return this.post<TelegramConsultResponse>(
-      `/lead-tables/${encodeURIComponent(tableId)}/telegram-consult/telethon-experimental`,
-      payload
-    )
-  }
-
-  telegramConsultTelethonPipeline(
-    tableId: string,
-    payload: TelethonPipelineRequest
-  ): Promise<TelethonPipelineResponse> {
-    return this.post<TelethonPipelineResponse>(
-      `/lead-tables/${encodeURIComponent(tableId)}/telegram-consult/telethon-pipeline`,
-      payload
-    )
-  }
-
-  telegramPhoneTelethonCpfStage(
-    tableId: string,
-    payload: TelethonCpfStageRequest
-  ): Promise<TelethonPipelineResponse> {
-    return this.post<TelethonPipelineResponse>(
-      `/lead-tables/${encodeURIComponent(tableId)}/telegram-phone/telethon-cpf-stage`,
-      payload
-    )
-  }
-
-  getTelethonAuthStatus(): Promise<TelethonAuthStatusResponse> {
-    return this.get<TelethonAuthStatusResponse>('/telegram/telethon/auth/status')
-  }
-
-  /**
-   * Persist the user-supplied Telegram API credentials (api_id/api_hash
-   * from my.telegram.org). After this resolves the sidecar reports
-   * ``configured: true`` and the phone-login flow can proceed.
-   */
-  saveTelethonConfig(payload: TelethonConfigRequest): Promise<TelethonAuthStatusResponse> {
-    return this.post<TelethonAuthStatusResponse>('/telegram/telethon/config', payload)
-  }
-
-  /** Forget the saved API credentials so the operator can re-enter them. */
-  clearTelethonConfig(): Promise<TelethonAuthStatusResponse> {
-    return this.delete<TelethonAuthStatusResponse>('/telegram/telethon/config')
-  }
-
-  sendTelethonAuthCode(
-    payload: TelethonAuthSendCodeRequest
-  ): Promise<TelethonAuthSendCodeResponse> {
-    return this.post<TelethonAuthSendCodeResponse>(
-      '/telegram/telethon/auth/send-code',
-      payload
-    )
-  }
-
-  signInTelethonAuth(
-    payload: TelethonAuthSignInRequest
-  ): Promise<TelethonAuthSignInResponse> {
-    return this.post<TelethonAuthSignInResponse>(
-      '/telegram/telethon/auth/sign-in',
-      payload
-    )
-  }
-
-  logoutTelethonAuth(): Promise<TelethonAuthLogoutResponse> {
-    return this.post<TelethonAuthLogoutResponse>('/telegram/telethon/auth/logout', {})
-  }
-
-  listTelegramConsults(tableId: string): Promise<TelegramConsultListResponse> {
-    return this.get<TelegramConsultListResponse>(
-      `/lead-tables/${encodeURIComponent(tableId)}/telegram-consults`
-    )
-  }
-
-  /**
-   * Run the CPF-stage follow-up to harvest phones for the selected
-   * leads. Pre-condition: the name-stage Telegram consult must already
-   * have been persisted for each lead — the server reads its ranked
-   * CPF candidates from ``tabela_telegram`` and only dispatches /cpf
-   * queries for the survivors of the matcher's threshold (default 65).
-   *
-   * Phone candidates returned by the server carry their originating
-   * CPF's match_score 1:1 in ``confidence``. The UI should surface
-   * that number unchanged.
-   */
-  telegramFollowupPhone(
-    tableId: string,
-    payload: TelegramFollowupPhoneRequest
-  ): Promise<TelegramFollowupPhoneResponse> {
-    return this.post<TelegramFollowupPhoneResponse>(
-      `/lead-tables/${encodeURIComponent(tableId)}/telegram-followup-phone`,
-      payload
-    )
-  }
-
-  /**
-   * Run the unified Telegram phone flow for the selected leads. The
-   * backend reuses verified persisted CPFs, falls back to Gonzales
-   * /nome → /cpf when needed, then to Findex /email <email> when no CPF
-   * is found and the lead has a Mail Finder e-mail.
-   */
-  telegramPhone(
-    tableId: string,
-    payload: TelegramPhoneRequest
-  ): Promise<TelegramPhoneResponse> {
-    return this.post<TelegramPhoneResponse>(
-      `/lead-tables/${encodeURIComponent(tableId)}/telegram-phone`,
-      payload
-    )
-  }
-
-  /**
-   * Create a resumable Telegram phone run. The server prepares the
-   * ordered queue but runs no Telegram consults until the client calls
-   * ``nextTelegramPhone``. Use this when the operator wants to pause
-   * between leads to avoid burning the Telegram bots' rate limit.
-   */
-  startTelegramPhone(
-    tableId: string,
-    payload: TelegramPhoneStartRequest
-  ): Promise<TelegramPhoneStartResponse> {
-    return this.post<TelegramPhoneStartResponse>(
-      `/lead-tables/${encodeURIComponent(tableId)}/telegram-phone/start`,
-      payload
-    )
-  }
-
-  /**
-   * Process exactly one lead from a resumable run and advance the
-   * cursor. Returns ``status="completed"`` once the queue is exhausted.
-   */
-  nextTelegramPhone(
-    tableId: string,
-    runId: string
-  ): Promise<TelegramPhoneNextResponse> {
-    return this.post<TelegramPhoneNextResponse>(
-      `/lead-tables/${encodeURIComponent(tableId)}/telegram-phone/next`,
-      { run_id: runId }
-    )
-  }
-
-  /**
-   * Cancel a resumable run. Further ``nextTelegramPhone`` calls return
-   * 409 — the operator must start a new run to continue.
-   */
-  cancelTelegramPhone(
-    tableId: string,
-    runId: string
-  ): Promise<TelegramPhoneCancelResponse> {
-    return this.post<TelegramPhoneCancelResponse>(
-      `/lead-tables/${encodeURIComponent(tableId)}/telegram-phone/cancel`,
-      { run_id: runId }
-    )
-  }
-
-  /**
-   * Stage 1 of the two-step flow: run gates + /nome + matcher for the
-   * current lead, return ranked CPF candidates. NO /cpf is fired here
-   * — the UI must call ``runCpfStage`` (with selected CPFs) or
-   * ``skipCurrentLead`` afterwards.
-   */
-  extractCpfsForCurrentLead(
-    tableId: string,
-    runId: string
-  ): Promise<TelegramPhoneExtractCpfsResponse> {
-    return this.post<TelegramPhoneExtractCpfsResponse>(
-      `/lead-tables/${encodeURIComponent(tableId)}/telegram-phone/extract-cpfs`,
-      { run_id: runId }
-    )
-  }
-
-  /**
-   * Stage 2: dispatches /cpf only for the CPFs the operator confirmed
-   * in the UI. Advances the cursor to the next lead.
-   */
-  runCpfStage(
-    tableId: string,
-    runId: string,
-    cpfs: string[]
-  ): Promise<TelegramPhoneNextResponse> {
-    return this.post<TelegramPhoneNextResponse>(
-      `/lead-tables/${encodeURIComponent(tableId)}/telegram-phone/run-cpf-stage`,
-      { run_id: runId, cpfs }
-    )
-  }
-
-  /**
-   * Skip the current lead's CPF stage without firing /cpf — used when
-   * the operator looks at the candidates and decides none are worth
-   * the bot quota.
-   */
-  skipCurrentLead(
-    tableId: string,
-    runId: string
-  ): Promise<TelegramPhoneNextResponse> {
-    return this.post<TelegramPhoneNextResponse>(
-      `/lead-tables/${encodeURIComponent(tableId)}/telegram-phone/skip-current-lead`,
-      { run_id: runId }
-    )
-  }
-
   /**
    * Stream internal enrichment events. The server emits SSE frames the UI
    * can render incrementally. The returned promise resolves with the
@@ -411,11 +186,15 @@ export class ApiClient {
     onEvent: (event: InternalEnrichStreamEvent) => void,
     signal?: AbortSignal
   ): Promise<InternalEnrichStreamDoneEvent> {
+    const headers = await this.authHeaders({
+      'Content-Type': 'application/json',
+      Accept: 'text/event-stream'
+    })
     const response = await fetch(
       `${this.baseUrl}/lead-tables/${encodeURIComponent(tableId)}/internal-enrich/stream`,
       {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+        headers,
         body: JSON.stringify(payload),
         signal
       }
@@ -545,21 +324,24 @@ export class ApiClient {
   }
 
   private async get<T>(path: string): Promise<T> {
-    const response = await fetch(this.url(path), { method: 'GET' })
+    const headers = await this.authHeaders()
+    const response = await fetch(this.url(path), { method: 'GET', headers })
     return this.parse<T>(response)
   }
 
   private async post<T>(path: string, body: unknown): Promise<T> {
+    const headers = await this.authHeaders({ 'content-type': 'application/json' })
     const response = await fetch(this.url(path), {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers,
       body: JSON.stringify(body)
     })
     return this.parse<T>(response)
   }
 
   private async delete<T>(path: string): Promise<T> {
-    const response = await fetch(this.url(path), { method: 'DELETE' })
+    const headers = await this.authHeaders()
+    const response = await fetch(this.url(path), { method: 'DELETE', headers })
     return this.parse<T>(response)
   }
 

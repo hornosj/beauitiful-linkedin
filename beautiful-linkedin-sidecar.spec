@@ -14,17 +14,17 @@ tmp_ret = collect_all('pydantic')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('pandas')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-# Playwright is the only supported lead-search backend (People Search via CDP
-# into the embedded Electron Chromium). Without collect_all the driver/ and
-# package.json under playwright/ are not bundled, so the sidecar exe cannot
-# import playwright.sync_api on the user's machine.
 tmp_ret = collect_all('playwright')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+tmp_ret = collect_all('jwt')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+tmp_ret = collect_all('cryptography')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 
 a = Analysis(
-    ['C:\\Users\\jpedr\\OneDrive\\Documentos\\freela\\Beautiful Linkedin\\src\\beautiful_linkedin\\server\\__main__.py'],
-    pathex=['C:\\Users\\jpedr\\OneDrive\\Documentos\\freela\\Beautiful Linkedin\\src'],
+    ['src\\beautiful_linkedin\\server\\__main__.py'],
+    pathex=['src'],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,

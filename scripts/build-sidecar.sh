@@ -48,6 +48,9 @@ fi
   --collect-all uvicorn \
   --collect-all pydantic \
   --collect-all pandas \
+  --collect-all playwright \
+  --collect-all jwt \
+  --collect-all cryptography \
   "$ENTRY_POINT"
 
 SIDECAR_BIN="$DIST_PATH/beautiful-linkedin-sidecar/beautiful-linkedin-sidecar"

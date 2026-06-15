@@ -98,6 +98,14 @@ O enriquecimento de leads salvos roda em duas camadas, ambas opt-in pelo cliente
    - Nunca sobrescreve dados de contato existentes.
 2. **Pagos (creditos)** — `POST /lead-tables/{id}/enrich`. Lusha, Apollo, Snovio, PDL.
 
+## Controle de Acesso por Conta (Login via Supabase)
+
+Login obrigatorio opt-in para que cada colaborador tenha sua conta e o acesso possa ser revogado remotamente (ex: alguem sai da empresa). Como o sidecar roda na maquina do usuario, a validacao usa o JWKS **publico** do Supabase (chaves assimetricas ES256/RS256) — nenhum segredo e embarcado no app.
+
+- `src/beautiful_linkedin/server/auth.py`: `load_auth_config()` le env (`SUPABASE_URL` deriva JWKS+issuer; `BEAUTIFUL_LINKEDIN_REQUIRE_AUTH=1` faz fail-closed), `TokenVerifier.verify()` valida assinatura/exp/aud/iss (resolver de chave injetavel p/ testes), e `install_auth(app, verifier)` registra a middleware HTTP. **Auth e registrada ANTES do CORS** em `build_app()` para que o CORS fique externo e respostas 401 carreguem cabecalhos CORS. `/health` e isento (o Electron usa no boot). Sem `SUPABASE_URL` a auth fica **desligada** (dev/local) — toda a API abre.
+- Electron renderer: `auth/supabaseClient.ts` (cliente + `authEnabled` + `getAccessToken()`), `auth/AuthGate.tsx` (portao que envolve o `App` em `main.tsx`: splash/login/app + contexto `useAuth`), `auth/LoginScreen.tsx` (login email/senha, pt-BR). O `ApiClient` recebe `getAccessToken` e injeta `Authorization: Bearer` em toda chamada. Vars `VITE_SUPABASE_URL`/`VITE_SUPABASE_ANON_KEY` vem do `.env` da RAIZ do projeto (um arquivo unico p/ Electron + Python; `envDir`/`loadEnv` apontam p/ a raiz no `electron.vite.config.ts`). O processo principal repassa `SUPABASE_URL` ao sidecar empacotado via `supabaseSidecarEnv()` em `main/index.ts` (em producao o exe nao le o `.env` sozinho).
+- **Cadastro so pelo admin** (signups desligados no painel). **Revogacao**: banir/deletar o usuario no Supabase faz o refresh do token falhar; em ate ~1h o token expira e o sidecar recusa (401). O `supabase-js` renova o token de ~1h sozinho e o `onAuthStateChange` derruba a sessao para a tela de login.
+
 ## Loop Iterativo da Aba People
 
 O `LinkedInPeopleSearchProvider` roda na aba `/people/` de empresas no LinkedIn. Ele usa loop iterativo `click -> extract -> validate -> click` gateado pelo `validate_lead_titles(strict=True)` a cada scroll, parando ao atingir `max_results` ou `max_scrolls_cap`.

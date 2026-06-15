@@ -9,9 +9,17 @@
   "main": "out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
+    "dev:clj": "cross-env BEAUTIFUL_LINKEDIN_SIDECAR=clj LINKEDIN_CDP_ENDPOINT=http://127.0.0.1:9223 electron-vite dev",
+    "dev:java": "cross-env BEAUTIFUL_LINKEDIN_SIDECAR=java LINKEDIN_CDP_ENDPOINT=http://127.0.0.1:9223 electron-vite dev",
     "build": "electron-vite build",
+    "build:dev": "electron-vite build --mode development",
+    "build:homolog": "electron-vite build --mode homolog",
+    "build:prod": "electron-vite build --mode production",
     "pack:win": "npm run build && electron-builder --win --dir",
     "dist:win": "npm run build && electron-builder --win nsis",
+    "dist:win:dev": "npm run build:dev && electron-builder --win nsis --config.appId=com.beautifullinkedin.desktop.dev --config.productName=\"Beautiful LinkedIn Dev\" --config.directories.output=release/dev",
+    "dist:win:homolog": "npm run build:homolog && electron-builder --win nsis --config.appId=com.beautifullinkedin.desktop.homolog --config.productName=\"Beautiful LinkedIn Homolog\" --config.directories.output=release/homolog",
+    "dist:win:prod": "npm run build:prod && electron-builder --win nsis --config.appId=com.beautifullinkedin.desktop --config.productName=\"Beautiful LinkedIn\" --config.directories.output=release/prod",
     "pack:mac": "npm run build && electron-builder --mac --dir",
     "dist:mac": "npm run build && electron-builder --mac dmg zip",
     "start": "electron-vite preview",
@@ -30,6 +38,7 @@
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.1",
     "autoprefixer": "^10.4.19",
+    "cross-env": "^7.0.3",
     "electron": "^31.2.0",
     "electron-builder": "^26.8.1",
     "electron-vite": "^2.3.0",
@@ -41,6 +50,7 @@
     "vitest": "^1.6.0"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.45.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
@@ -63,7 +73,7 @@
     "win": {
       "target": "nsis",
       "icon": "resources/icon.ico",
-      "signAndEditExecutable": false,
+      "signAndEditExecutable": true,
       "verifyUpdateCodeSignature": false
     },
     "mac": {

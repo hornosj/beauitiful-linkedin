@@ -179,7 +179,12 @@
       "Bash(python -m pytest tests -q -x)",
       "Bash(python __cleanup_saved_leads.py)",
       "Bash(python -m pytest tests/test_server_sidecar.py tests/test_internal_enrich_endpoint.py -q)",
-      "Bash(python -c \"from beautiful_linkedin.storage.telegram_pipeline import run_telegram_consult, run_phone_followup; print\\('import ok'\\)\")"
+      "Bash(python -c \"from beautiful_linkedin.storage.telegram_pipeline import run_telegram_consult, run_phone_followup; print\\('import ok'\\)\")",
+      "Read(//c/Users/jpedr/OneDrive/**)",
+      "Read(//c/Users/jpedr/**)",
+      "Bash(ls -la electron/build/ electron/resources/ electron/build/icons/)",
+      "Bash(grep -rn \"icon\" electron/electron-builder.yml electron/package.json electron/electron.vite.config.ts)",
+      "Bash(git switch *)"
     ]
   }
 }

@@ -11,19 +11,10 @@ import type {
   InternalEnrichField,
   Lead,
   SavedLeadTable,
-  SavedLeadTableDetail,
-  TelegramConsult,
-  TelegramConsultCandidate,
-  TelegramPhoneLeadResult,
-  TelegramPhoneRankedCandidate,
-  TelegramPhoneSummary,
-  TelethonPipelineResponse
+  SavedLeadTableDetail
 } from '../../../shared/types'
 import { useEnrichmentRunner } from '../enrichment/EnrichmentRunnerContext'
-import CpfPickerTelethonDialog from './CpfPickerTelethonDialog'
-import { CpfReviewList, cpfAllowedForReview } from './CpfReviewList'
 import ChromeBootstrapModal from './ChromeBootstrapModal'
-import TelethonAuthDialog from './TelethonAuthDialog'
 
 function parseArrayField<T>(field: any): T[] {
   if (Array.isArray(field)) return field
@@ -37,16 +28,6 @@ function parseArrayField<T>(field: any): T[] {
   }
   return []
 }
-
-function providerOrder(provider?: string | null): number {
-  if (!provider) return 3
-  if (provider === 'finder' || provider === 'finder_cpf') return 0
-  if (provider === 'gon' || provider === 'gon_cpf') return 1
-  if (provider === 'unix') return 2
-  return 3
-}
-
-
 
 type PresetValue = 'all' | 'rh' | 'people' | 'tech' | 'sales' | 'marketing' | 'custom'
 
@@ -114,86 +95,22 @@ interface Props {
   currentKeywords: string[]
   currentSearchRequest: Record<string, unknown> | null
   onFeedback(kind: 'error' | 'success', message: string): void
-  onTelethonAuthSuccess?(): void
-}
-
-const TELEGRAM_WEB_URL = 'https://web.telegram.org/k/'
-
-/**
- * Garante que o Chrome com `--remote-debugging-port=9222` esteja vivo
- * antes de qualquer fluxo Telegram. Se o CDP já responder, retorna
- * imediatamente. Caso contrário, spawna o Chrome dedicado (com perfil
- * próprio do app, abrindo Telegram Web na primeira aba) e aguarda até
- * 30s o CDP atender. Toda a tentativa é melhor-esforço — falhas viram
- * `onFeedback('error', ...)` para o caller abortar a ação.
- *
- * O perfil do Chrome é dedicado (`BeautifulLinkedIn/ChromeProfile`),
- * então a sessão do Telegram Web persiste entre launches.
- */
-async function ensureChromeReady(
-  onFeedback: (kind: 'error' | 'success', message: string) => void
-): Promise<boolean> {
-  const bridge = window.beautifulLinkedIn?.chrome
-  if (!bridge) {
-    // Bridge ausente significa: rodando fora do Electron (tests/browser).
-    // Não há como auto-iniciar o Chrome aqui — devolvemos ``true`` para
-    // deixar o caller seguir; o backend ainda vai validar que o CDP
-    // está vivo quando tentar conectar. Em produção o preload SEMPRE
-    // injeta o bridge, então esse caminho só é exercitado por tests.
-    return true
-  }
-  try {
-    const probe = await bridge.probe()
-    if (probe.alive) return true
-  } catch {
-    // probe failed — assume CDP is down and try to launch
-  }
-  onFeedback(
-    'success',
-    'Chrome (CDP) não estava aberto — iniciando agora com Telegram Web…'
-  )
-  const launch = await bridge.launch(TELEGRAM_WEB_URL)
-  if (!launch.launched) {
-    onFeedback(
-      'error',
-      launch.error ??
-        'Não foi possível iniciar o Chrome com a porta 9222. Verifique se o Chrome está instalado.'
-    )
-    return false
-  }
-  const alive = await bridge.waitForCdp(30000)
-  if (!alive) {
-    onFeedback(
-      'error',
-      'Chrome abriu mas não expôs a porta 9222 em 30s. Feche outras instâncias do Chrome e tente de novo.'
-    )
-    return false
-  }
-  return true
 }
 
 type AsyncStatus = 'idle' | 'loading'
 
-// Auto-confirm de CPF no picker manual: quando o melhor candidato elegível
-// tem score alto E é dominante (folga sobre o 2º), pulamos a revisão e
-// buscamos o telefone direto. Acima do follow-up min (65) com margem — só
-// "casos óbvios" são automatizados; ambíguos continuam indo para revisão.
-const CPF_AUTO_CONFIRM_SCORE = 85
-const CPF_AUTO_CONFIRM_MARGIN = 15
-
 /**
- * Decide se um conjunto de CPFs elegíveis (ordenado por match_score desc)
- * pode ser auto-confirmado, retornando o CPF a buscar ou null quando o
- * caso é ambíguo (deve ir para revisão manual). Pure → testável.
+ * Gera um nome de arquivo seguro a partir do nome da tabela, usado apenas como
+ * sugestão inicial no diálogo nativo "Salvar como" do export de CSV.
  */
-export function shouldAutoConfirmCpf(
-  eligible: { cpf: string; match_score: number }[]
-): string | null {
-  const top = eligible[0]
-  if (!top || top.match_score < CPF_AUTO_CONFIRM_SCORE) return null
-  const second = eligible[1]
-  if (second && top.match_score - second.match_score < CPF_AUTO_CONFIRM_MARGIN) return null
-  return top.cpf
+export function exportFileSlug(name: string): string {
+  const slug = (name || '')
+    .normalize('NFKD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+  return slug || 'leads'
 }
 
 interface EnrichmentNotice {
@@ -204,18 +121,6 @@ interface EnrichmentNotice {
   cost: number
   provider?: string
 }
-
-type TelethonLogStatus = 'pending' | 'active' | 'done' | 'error'
-
-interface TelethonRunLogEntry {
-  id: string
-  label: string
-  detail: string
-  status: TelethonLogStatus
-}
-
-
-
 
 
 
@@ -255,41 +160,6 @@ export default function SavedLeadsLibrary(props: Props) {
     refs: string[]
     targetUrl: string
     targetSlug: string
-  } | null>(null)
-  // `telegramPhoneRunning` ainda existe (drasticamente menor escopo): só
-  // gateia o handler `handleTelegramPhoneDirectExtract` que dispara
-  // `telegramPhoneTelethonCpfStage` por CPF clicado no picker / no
-  // painel de evidências. Todos os fluxos Playwright/CDP foram removidos.
-  const [telegramPhoneRunning, setTelegramPhoneRunning] = useState(false)
-  const [telegramTelethonPipelineRunning, setTelegramTelethonPipelineRunning] = useState(false)
-  const [telegramPhonePipelineRunning, setTelegramPhonePipelineRunning] = useState(false)
-  const [telethonPipelineLastResult, setTelethonPipelineLastResult] =
-    useState<TelethonPipelineResponse | null>(null)
-  const [telethonRunLogs, setTelethonRunLogs] = useState<TelethonRunLogEntry[]>([])
-  const [telethonAuthOpen, setTelethonAuthOpen] = useState(false)
-  const telethonAuthPendingRefsRef = useRef<string[] | null>(null)
-  const telethonAuthPendingFlowRef =
-    useRef<'experimental' | 'pipeline' | 'phone-pipeline' | 'cpf' | null>(null)
-  const telethonAuthPendingCpfRef = useRef<{ leadRef: string; cpf: string } | null>(null)
-  // Espelha o lead do `cpfPicker` ativo. Como o modal pode ser fechado e
-  // a consulta seguir em segundo plano, o callback de auth-required pode
-  // chegar quando `cpfPicker` já é null — a ref preserva o lead alvo.
-  const cpfPickerLeadRef = useRef<string | null>(null)
-  // Map keyed by ``leadRef(lead)`` → list of consult rows (one per
-  // provider — default "gon" + "unix"; experimental also adds Finder).
-  // Loaded once per active table
-  // and updated optimistically after each batch.
-  const [telegramConsults, setTelegramConsults] = useState<Record<string, TelegramConsult[]>>({})
-  const [expandedTelegramRefs, setExpandedTelegramRefs] = useState<Set<string>>(new Set())
-  // Picker dialog for CPFs already extracted via the Telethon pipeline.
-  // Opens the "Revisar CPFs" screen (see ctx_images/sinais.png) without
-  // touching the Playwright/CDP flow — phone lookups go through Telethon
-  // via ``telegramPhoneTelethonCpfStage``.
-  const [cpfPicker, setCpfPicker] = useState<{
-    leadRef: string
-    leadName: string | null
-    candidates: TelegramPhoneRankedCandidate[]
-    eligibleCpfs: string[]
   } | null>(null)
   const [experimentalResult, setExperimentalResult] =
     useState<ExperimentalSearchResponse | null>(null)
@@ -429,8 +299,6 @@ export default function SavedLeadsLibrary(props: Props) {
   useEffect(() => {
     if (!client || !activeId) {
       setActiveDetail(null)
-      setTelegramConsults({})
-      setExpandedTelegramRefs(new Set())
       return
     }
     let cancelled = false
@@ -447,30 +315,6 @@ export default function SavedLeadsLibrary(props: Props) {
       .catch((error) => {
         if (!cancelled) onFeedback('error', formatError(error))
       })
-    // Load existing Telegram consults for this table so the expand
-    // controls show up immediately without a fresh consult run.
-    const listTelegramConsults = client.listTelegramConsults?.bind(client)
-    if (listTelegramConsults) {
-      void listTelegramConsults(activeId)
-        .then((response) => {
-          if (cancelled) return
-          const map: Record<string, TelegramConsult[]> = {}
-          for (const consult of response.consults) {
-            ;(map[consult.lead_ref] ??= []).push(consult)
-          }
-          // Sort each lead's rows: gon first, then unix.
-          for (const ref of Object.keys(map)) {
-            map[ref].sort((a, b) => providerOrder(a.provider) - providerOrder(b.provider))
-          }
-          setTelegramConsults(map)
-          setExpandedTelegramRefs(new Set())
-        })
-        .catch(() => {
-          // Listing is best-effort — a missing table or transient error
-          // shouldn't block the leads view.
-          if (!cancelled) setTelegramConsults({})
-        })
-    }
     return () => {
       cancelled = true
     }
@@ -551,7 +395,16 @@ export default function SavedLeadsLibrary(props: Props) {
   const handleExport = async () => {
     if (!client || !activeId || !activeDetail) return
     try {
-      const response = await client.exportLeadTable(activeId)
+      const defaultName = `${exportFileSlug(activeDetail.table.name)}.csv`
+      const picker = window.beautifulLinkedIn?.saveCsvDialog
+      const choice = picker ? await picker(defaultName) : null
+      // Sem o bridge nativo (ex.: ambiente de teste) cai no comportamento antigo.
+      if (choice && choice.canceled) return
+      const outputPath = choice?.filePath ?? undefined
+      const response = await client.exportLeadTable(
+        activeId,
+        outputPath ? { output_path: outputPath } : undefined
+      )
       onFeedback('success', `CSV exportado em ${response.output_path}.`)
     } catch (error) {
       onFeedback('error', formatError(error))
@@ -762,22 +615,13 @@ export default function SavedLeadsLibrary(props: Props) {
     )
     if (!proceed) return
 
-    // Phone discovery is currently surfaced in the UI exclusively as the
-    // Telegram-group lookup ("Buscar via Telegram"). The button label is
-    // explicit, so we always restrict the backend to that source — the
-    // other phone providers (site harvest, Receita CNPJ, PDFs, bot 1:1)
-    // would surprise the user given the button copy.
-    const phoneSources =
-      fields === 'phone' || fields === 'both' ? ['telegram_group'] : undefined
-
     enricher.start({
       tableId: activeId,
       tableName: activeDetail.table.name,
       leadRefs: refs,
       totalLeads: targetCount,
       companyDomain,
-      fields,
-      phoneSources
+      fields
     })
   }
 
@@ -805,552 +649,6 @@ export default function SavedLeadsLibrary(props: Props) {
       onFeedback('error', formatError(error))
     } finally {
       setProfileValidationRunning(false)
-    }
-  }
-
-  const openCpfPickerForLead = (lead: Lead) => {
-    const ref = leadRef(lead)
-    if (!ref) return
-    const consults = telegramConsults[ref] ?? []
-    const candidates = collectCpfCandidatesFromConsults(consults)
-    if (candidates.length === 0) {
-      onFeedback(
-        'error',
-        'Nenhum CPF extraído ainda — rode a extração de CPFs antes de buscar telefone.'
-      )
-      return
-    }
-    // Auto-confirm: melhor elegível com score alto e dominante sobre o
-    // segundo → busca telefone direto, sem abrir a revisão manual.
-    const eligible = candidates.filter((c) => c.eligible)
-    const autoCpf = shouldAutoConfirmCpf(eligible)
-    if (autoCpf) {
-      const top = eligible[0]
-      onFeedback(
-        'success',
-        `CPF de alta confiança (score ${top.match_score}) — buscando telefone automaticamente.`
-      )
-      void handleTelegramPhoneDirectExtract(ref, autoCpf)
-      return
-    }
-
-    const eligibleCpfs = eligible.map((c) => c.cpf)
-    cpfPickerLeadRef.current = ref
-    setCpfPicker({
-      leadRef: ref,
-      leadName: lead.person_name ?? null,
-      candidates,
-      eligibleCpfs:
-        eligibleCpfs.length > 0 ? eligibleCpfs : candidates.slice(0, 1).map((c) => c.cpf)
-    })
-  }
-
-  const handleCpfPickerResult = async (response: TelethonPipelineResponse): Promise<void> => {
-    if (!client || !activeId) return
-    const leadResult = response.leads?.[0] ?? null
-    if (leadResult) {
-      mergeConsultsForLead({
-        lead_ref: leadResult.lead_ref,
-        name_consult: null,
-        cpf_consult: leadResult.cpf_consults?.[0] ?? null,
-        candidates: leadResult.candidates,
-        blocked_reason: leadResult.blocked_reason
-      })
-    }
-    try {
-      const refreshed = await client.getLeadTable(activeId)
-      setActiveDetail(refreshed)
-    } catch {
-      // best-effort
-    }
-    onFeedback(
-      'success',
-      `Busca concluída: ${response.summary.leads_with_phone}/${response.summary.requested_leads} lead(s) com telefone.`
-    )
-    // A consulta pode ter rodado em segundo plano (modal fechado pelo ✕)
-    // e o operador já ter aberto o picker de outro lead — só fecha se o
-    // modal ainda mostra o mesmo lead deste resultado.
-    setCpfPicker((prev) =>
-      prev && leadResult && prev.leadRef !== leadResult.lead_ref ? prev : null
-    )
-  }
-
-  const handleCpfPickerAuthRequired = (cpfs: string[]): void => {
-    // Pode chegar com o modal já fechado (consulta em segundo plano): usa
-    // a ref do lead alvo como fallback quando `cpfPicker` é null.
-    const targetLeadRef = cpfPicker?.leadRef ?? cpfPickerLeadRef.current
-    if (!targetLeadRef) return
-    const fallbackCpf = cpfs[0] ?? cpfPicker?.candidates[0]?.cpf
-    if (!fallbackCpf) {
-      setCpfPicker(null)
-      return
-    }
-    telethonAuthPendingCpfRef.current = { leadRef: targetLeadRef, cpf: fallbackCpf }
-    telethonAuthPendingFlowRef.current = 'cpf'
-    setCpfPicker(null)
-    setTelethonAuthOpen(true)
-  }
-
-  const handleTelegramPhoneDirectExtract = async (ref: string, cpfToRun?: string) => {
-    if (!client || !activeId) return
-    const cpf = (cpfToRun ?? '').trim()
-    if (!cpf) {
-      onFeedback('error', 'Nenhum CPF extraído para buscar telefone.')
-      return
-    }
-    setTelegramPhoneRunning(true)
-    beginTelethonRunLogs('Consultando telefone para o CPF selecionado.')
-    try {
-      markTelethonRunLog('consult', 'active')
-      const response = await client.telegramPhoneTelethonCpfStage(activeId, {
-        lead_ref: ref,
-        cpf
-      })
-      markTelethonRunLog('match', 'active')
-      const lead = response.leads[0]
-      if (lead) {
-        mergeConsultsForLead({
-          lead_ref: lead.lead_ref,
-          name_consult: null,
-          cpf_consult: lead.cpf_consults[0] ?? null,
-          candidates: lead.candidates,
-          blocked_reason: lead.blocked_reason
-        })
-      }
-      try {
-        markTelethonRunLog('save', 'active')
-        const refreshed = await client.getLeadTable(activeId)
-        setActiveDetail(refreshed)
-      } catch {}
-      finishTelethonRunLogs('done')
-      onFeedback(
-        'success',
-        `Busca concluída: ${response.summary.leads_with_phone}/${response.summary.requested_leads} lead(s) com telefone.`
-      )
-    } catch (error) {
-      if (error instanceof ApiError && isTelethonAuthError(error)) {
-        finishTelethonRunLogs('error')
-        telethonAuthPendingCpfRef.current = { leadRef: ref, cpf }
-        telethonAuthPendingFlowRef.current = 'cpf'
-        setTelethonAuthOpen(true)
-      } else {
-        finishTelethonRunLogs('error')
-        onFeedback('error', formatError(error))
-      }
-    } finally {
-      setTelegramPhoneRunning(false)
-    }
-  }
-
-
-
-
-
-
-
-
-
-  const handleTelethonAuthSuccess = (): void => {
-    const refs = telethonAuthPendingRefsRef.current
-    const pendingCpf = telethonAuthPendingCpfRef.current
-    const flow = telethonAuthPendingFlowRef.current ?? 'pipeline'
-    telethonAuthPendingRefsRef.current = null
-    telethonAuthPendingCpfRef.current = null
-    telethonAuthPendingFlowRef.current = null
-    setTelethonAuthOpen(false)
-    props.onTelethonAuthSuccess?.()
-    onFeedback('success', 'Telegram autenticado. Retomando o fluxo...')
-    if (flow === 'cpf' && pendingCpf) {
-      void handleTelegramPhoneDirectExtract(pendingCpf.leadRef, pendingCpf.cpf)
-    } else if (flow === 'phone-pipeline' && refs && refs.length > 0) {
-      void executeTelegramTelethonPipeline(refs, { mode: 'phone' })
-    } else if (refs && refs.length > 0) {
-      void executeTelegramCpfExtraction(refs)
-    }
-  }
-
-  const handleTelethonAuthClose = (): void => {
-    telethonAuthPendingRefsRef.current = null
-    telethonAuthPendingCpfRef.current = null
-    telethonAuthPendingFlowRef.current = null
-    setTelethonAuthOpen(false)
-  }
-
-  const beginTelethonRunLogs = (detail: string): void => {
-    setTelethonRunLogs([
-      {
-        id: 'session',
-        label: 'Preparando sessão Telegram',
-        detail: 'Validando a sessão nativa antes de consultar.',
-        status: 'active'
-      },
-      {
-        id: 'consult',
-        label: 'Consultando dados via sessão nativa',
-        detail,
-        status: 'pending'
-      },
-      {
-        id: 'match',
-        label: 'Comparando sinais do lead',
-        detail: 'Cruzando retornos com nome, localização e idade quando houver sinais.',
-        status: 'pending'
-      },
-      {
-        id: 'save',
-        label: 'Consolidando resultados',
-        detail: 'Atualizando evidências, CPFs e telefones sem expor fontes internas.',
-        status: 'pending'
-      }
-    ])
-  }
-
-  const markTelethonRunLog = (id: string, status: TelethonLogStatus): void => {
-    setTelethonRunLogs((prev) =>
-      prev.map((entry) => {
-        if (entry.id === id) return { ...entry, status }
-        if (id === 'consult' && entry.id === 'session' && entry.status === 'active') {
-          return { ...entry, status: 'done' }
-        }
-        if (id === 'match' && entry.id === 'consult' && entry.status !== 'error') {
-          return { ...entry, status: 'done' }
-        }
-        if (id === 'save' && entry.id === 'match' && entry.status !== 'error') {
-          return { ...entry, status: 'done' }
-        }
-        return entry
-      })
-    )
-  }
-
-  const finishTelethonRunLogs = (status: 'done' | 'error'): void => {
-    setTelethonRunLogs((prev) =>
-      prev.map((entry) => ({
-        ...entry,
-        status: entry.status === 'error' ? 'error' : status
-      }))
-    )
-  }
-
-
-
-  const handleRetryTelethonForLead = async (ref: string): Promise<void> => {
-    if (!client || !activeId) return
-    try {
-      if (typeof client.getTelethonAuthStatus === 'function') {
-        const status = await client.getTelethonAuthStatus()
-        if (!status.configured) {
-          onFeedback(
-            'error',
-            'Telegram não configurado. Clique no botão "Telegram" no topo da janela para configurar suas credenciais e conectar.'
-          )
-          return
-        }
-        if (!status.authorized) {
-          telethonAuthPendingRefsRef.current = [ref]
-          telethonAuthPendingFlowRef.current = 'pipeline'
-          setTelethonAuthOpen(true)
-          return
-        }
-      }
-    } catch (error) {
-      console.warn('getTelethonAuthStatus falhou', error)
-    }
-    await executeTelegramCpfExtraction([ref])
-  }
-
-  const executeTelegramCpfExtraction = async (refs: string[]): Promise<void> => {
-    if (!client || !activeId) return
-    setTelegramTelethonPipelineRunning(true)
-    setTelethonPipelineLastResult(null)
-    beginTelethonRunLogs(
-      refs.length === 1
-        ? 'Rodando nome e comparação de CPFs para um lead.'
-        : `Rodando nome e comparação de CPFs para ${refs.length} leads.`
-    )
-    try {
-      markTelethonRunLog('consult', 'active')
-      const response = await client.telegramConsultTelethonExperimental(activeId, {
-        lead_refs: refs,
-        max_leads: 10
-      })
-      markTelethonRunLog('match', 'active')
-      setTelegramConsults((prev) => {
-        const next: Record<string, TelegramConsult[]> = { ...prev }
-        for (const consult of response.consults) {
-          const existing = (next[consult.lead_ref] ?? []).slice()
-          const idx = existing.findIndex(
-            (row) =>
-              row.provider === consult.provider &&
-              (row.query_type ?? 'name') === (consult.query_type ?? 'name')
-          )
-          if (idx >= 0) existing[idx] = consult
-          else existing.push(consult)
-          existing.sort(
-            (a, b) =>
-              providerOrder(a.provider) - providerOrder(b.provider) ||
-              ((a.query_type ?? 'name') === 'name' ? -1 : 1)
-          )
-          next[consult.lead_ref] = existing
-        }
-        return next
-      })
-      setExpandedTelegramRefs((prev) => {
-        const next = new Set(prev)
-        for (const consult of response.consults) next.add(consult.lead_ref)
-        return next
-      })
-      markTelethonRunLog('save', 'active')
-      onFeedback(
-        'success',
-        `Consulta de CPF concluída: ${response.summary.succeeded}/${response.summary.requested_leads} lead(s) com CPFs processados.`
-      )
-      finishTelethonRunLogs('done')
-    } catch (error) {
-      if (error instanceof ApiError && isTelethonAuthError(error)) {
-        finishTelethonRunLogs('error')
-        telethonAuthPendingRefsRef.current = refs
-        telethonAuthPendingFlowRef.current = 'pipeline'
-        setTelethonAuthOpen(true)
-        onFeedback('error', 'Sessão Telegram não autenticada. Faça login para continuar.')
-        return
-      }
-      finishTelethonRunLogs('error')
-      onFeedback('error', formatError(error))
-    } finally {
-      setTelegramTelethonPipelineRunning(false)
-    }
-  }
-
-  const executeTelegramTelethonPipeline = async (
-    refs: string[],
-    options: { mode?: 'cpf' | 'phone' } = {}
-  ): Promise<void> => {
-    if (!client || !activeId) return
-    const isPhonePipeline = options.mode === 'phone'
-    if (isPhonePipeline) setTelegramPhonePipelineRunning(true)
-    else setTelegramTelethonPipelineRunning(true)
-    setTelethonPipelineLastResult(null)
-    beginTelethonRunLogs(
-      refs.length === 1
-        ? isPhonePipeline
-          ? 'Rodando nome, comparação e telefone para o CPF de maior score.'
-          : 'Rodando nome e comparação de CPFs para um lead.'
-        : isPhonePipeline
-          ? `Rodando nome, comparação e telefone pelo melhor CPF para ${refs.length} leads.`
-          : `Rodando nome e comparação de CPFs para ${refs.length} leads.`
-    )
-    try {
-      markTelethonRunLog('consult', 'active')
-      const response = await client.telegramConsultTelethonPipeline(activeId, {
-        lead_refs: refs,
-        max_leads: 10,
-        ...(isPhonePipeline ? { max_cpf_candidates: 1 } : {})
-      })
-      setTelethonPipelineLastResult(response)
-      markTelethonRunLog('match', 'active')
-      // Merge name + cpf consults into the per-lead Telegram evidence map so
-      // the existing expander surfaces them without an extra fetch.
-      setTelegramConsults((prev) => {
-        const next: Record<string, TelegramConsult[]> = { ...prev }
-        for (const leadResult of response.leads) {
-          const ref = leadResult.lead_ref
-          const existing = (next[ref] ?? []).slice()
-          const incoming: TelegramConsult[] = [
-            ...leadResult.name_consults,
-            ...leadResult.cpf_consults
-          ]
-          for (const consult of incoming) {
-            const idx = existing.findIndex(
-              (row) =>
-                row.provider === consult.provider &&
-                (row.query_type ?? 'name') === (consult.query_type ?? 'name')
-            )
-            if (idx >= 0) existing[idx] = consult
-            else existing.push(consult)
-          }
-          existing.sort(
-            (a, b) =>
-              providerOrder(a.provider) - providerOrder(b.provider) ||
-              ((a.query_type ?? 'name') === 'name' ? -1 : 1)
-          )
-          next[ref] = existing
-        }
-        return next
-      })
-      setExpandedTelegramRefs((prev) => {
-        const next = new Set(prev)
-        for (const leadResult of response.leads) next.add(leadResult.lead_ref)
-        return next
-      })
-      markTelethonRunLog('save', 'active')
-      // Refresh the lead detail so phone updates land in the table.
-      if (activeId) {
-        try {
-          const refreshed = await client.getLeadTable(activeId)
-          setActiveDetail(refreshed)
-        } catch (err) {
-          console.warn('Falha ao atualizar tabela após pipeline Telethon', err)
-        }
-      }
-      onFeedback(
-        'success',
-        isPhonePipeline
-          ? `Busca de telefones concluída: ${response.summary.leads_with_phone}/${response.summary.requested_leads} lead(s) com telefone (` +
-              `${response.summary.phones_persisted} persistido(s)).`
-          : `Consulta de CPF concluída: ${response.summary.name_consults} consulta(s) de nome e ${response.summary.cpf_consults} consulta(s) de CPF registradas.`
-      )
-      finishTelethonRunLogs('done')
-    } catch (error) {
-      if (error instanceof ApiError && isTelethonAuthError(error)) {
-        finishTelethonRunLogs('error')
-        telethonAuthPendingRefsRef.current = refs
-        telethonAuthPendingFlowRef.current = isPhonePipeline ? 'phone-pipeline' : 'pipeline'
-        setTelethonAuthOpen(true)
-        onFeedback('error', 'Sessão Telegram não autenticada. Faça login para continuar.')
-        return
-      }
-      finishTelethonRunLogs('error')
-      onFeedback('error', formatError(error))
-    } finally {
-      if (isPhonePipeline) setTelegramPhonePipelineRunning(false)
-      else setTelegramTelethonPipelineRunning(false)
-    }
-  }
-
-  const handleTelegramTelethonPipeline = async (): Promise<void> => {
-    if (!client || !activeId || !activeDetail) return
-    const refs = Array.from(selectedLeadRefs)
-    if (refs.length === 0) {
-      onFeedback('error', 'Selecione ao menos um lead para extrair CPFs.')
-      return
-    }
-    if (refs.length > 10) {
-      onFeedback(
-        'error',
-        'A extração aceita no máximo 10 leads por rodada — o intervalo de segurança entre consultas estende muito o tempo total.'
-      )
-      return
-    }
-    const proceed = await askConfirm(
-      'Extração completa de CPFs',
-      `Vou consultar a sessão Telegram nativa, comparar sinais do LinkedIn, consolidar CPFs e buscar telefones quando houver CPF confiável. ` +
-        `Cada ação respeita o intervalo mínimo conservador de 15s (anti-bloqueio). ` +
-        `Tempo estimado: ~1 min ou mais por telefone encontrado. Leads alvo: ${refs.length}.`,
-      'Rodar pipeline'
-    )
-    if (!proceed) return
-
-    try {
-      if (typeof client.getTelethonAuthStatus === 'function') {
-        const status = await client.getTelethonAuthStatus()
-        if (!status.configured) {
-          onFeedback(
-            'error',
-            'Telegram não configurado. Clique no botão "Telegram" no topo da janela para configurar suas credenciais e conectar.'
-          )
-          return
-        }
-        if (!status.authorized) {
-          telethonAuthPendingRefsRef.current = refs
-          telethonAuthPendingFlowRef.current = 'pipeline'
-          setTelethonAuthOpen(true)
-          return
-        }
-      }
-    } catch (error) {
-      console.warn('getTelethonAuthStatus falhou', error)
-    }
-
-    await executeTelegramCpfExtraction(refs)
-  }
-
-  const handleFindPhonesViaTelethon = async (): Promise<void> => {
-    if (!client || !activeId || !activeDetail) return
-    const refs = Array.from(selectedLeadRefs)
-    if (refs.length === 0) {
-      onFeedback('error', 'Selecione ao menos um lead para encontrar telefones.')
-      return
-    }
-    if (refs.length > 10) {
-      onFeedback(
-        'error',
-        'A busca de telefones aceita no máximo 10 leads por rodada para manter o intervalo seguro entre ações.'
-      )
-      return
-    }
-    const averageSecondsPerLead = 60
-    const estimatedMinutes = Math.max(1, Math.ceil((refs.length * averageSecondsPerLead) / 60))
-    const leadLabel = refs.length === 1 ? 'lead selecionado' : 'leads selecionados'
-    const proceed = await askConfirm(
-      'Encontrar telefones',
-      `Vou rodar CPF e telefone pela sessão Telegram nativa e consultar telefone só para o CPF com maior score de qualidade em cada lead. ` +
-        `As ações usam intervalo mínimo conservador de 15s para reduzir risco de bloqueio. ` +
-        `Média usada: ~1 min por lead. Tempo estimado: cerca de ${estimatedMinutes} min ou mais para ${refs.length} ${leadLabel}.`,
-      'Encontrar telefones'
-    )
-    if (!proceed) return
-
-    try {
-      if (typeof client.getTelethonAuthStatus === 'function') {
-        const status = await client.getTelethonAuthStatus()
-        if (!status.configured) {
-          onFeedback(
-            'error',
-            'Telegram não configurado. Clique no botão "Telegram" no topo da janela para configurar suas credenciais e conectar.'
-          )
-          return
-        }
-        if (!status.authorized) {
-          telethonAuthPendingRefsRef.current = refs
-          telethonAuthPendingFlowRef.current = 'phone-pipeline'
-          setTelethonAuthOpen(true)
-          return
-        }
-      }
-    } catch (error) {
-      console.warn('getTelethonAuthStatus falhou', error)
-    }
-
-    await executeTelegramTelethonPipeline(refs, { mode: 'phone' })
-  }
-
-  // Reusado pela merge de consults na lista de cada lead.
-  const mergeConsultsForLead = (lead: {
-    lead_ref: string
-    name_consult?: TelegramConsult | null
-    cpf_consult?: TelegramConsult | null
-    candidates?: readonly unknown[]
-    blocked_reason?: string | null
-  }) => {
-    setTelegramConsults((prev) => {
-      const next: Record<string, TelegramConsult[]> = { ...prev }
-      const existing = (next[lead.lead_ref] ?? []).slice()
-      for (const consult of [lead.name_consult, lead.cpf_consult]) {
-        if (!consult) continue
-        const idx = existing.findIndex(
-          (row) =>
-            row.provider === consult.provider &&
-            (row.query_type ?? 'name') === (consult.query_type ?? 'name')
-        )
-        if (idx >= 0) existing[idx] = consult
-        else existing.push(consult)
-      }
-      existing.sort(
-        (a, b) =>
-          providerOrder(a.provider) - providerOrder(b.provider) ||
-          ((a.query_type ?? 'name') === 'name' ? -1 : 1)
-      )
-      next[lead.lead_ref] = existing
-      return next
-    })
-    const candidatesLength = lead.candidates?.length ?? 0
-    if (candidatesLength > 0 || lead.blocked_reason || lead.cpf_consult?.error) {
-      setExpandedTelegramRefs((prev) => {
-        const next = new Set(prev)
-        next.add(lead.lead_ref)
-        return next
-      })
     }
   }
 
@@ -1731,50 +1029,6 @@ export default function SavedLeadsLibrary(props: Props) {
                     <>✉ Achar e-mails {selectedLeadRefs.size > 0 ? `(${selectedLeadRefs.size})` : ''}</>
                   )}
                 </button>
-                <button
-                  type="button"
-                  className="pill-btn primary"
-                  onClick={() => void handleTelegramTelethonPipeline()}
-                  disabled={
-                    telegramTelethonPipelineRunning ||
-                    telegramPhonePipelineRunning ||
-                    !activeDetail ||
-                    selectedLeadRefs.size === 0
-                  }
-                  aria-label="Extrair CPFs via Telegram"
-                  title="Roda a sessão Telegram nativa para extrair CPFs, pontuar sinais do lead e consolidar evidências. Sem Chrome, sem Playwright. Máx. 10 leads."
-                >
-                  {telegramTelethonPipelineRunning ? (
-                    <>
-                      <span className="enrich-inline-dot" aria-hidden="true" />
-                      Extraindo CPFs…
-                    </>
-                  ) : (
-                    <>🪪 Extrair CPFs via Telegram {selectedLeadRefs.size > 0 ? `(${selectedLeadRefs.size})` : ''}</>
-                  )}
-                </button>
-                <button
-                  type="button"
-                  className="pill-btn primary"
-                  onClick={() => void handleFindPhonesViaTelethon()}
-                  disabled={
-                    telegramPhonePipelineRunning ||
-                    telegramTelethonPipelineRunning ||
-                    !activeDetail ||
-                    selectedLeadRefs.size === 0
-                  }
-                  aria-label="Encontrar telefones via Telegram"
-                  title="Roda a pipeline Telethon completa e consulta telefone apenas para o CPF com maior score de qualidade. Máx. 10 leads."
-                >
-                  {telegramPhonePipelineRunning ? (
-                    <>
-                      <span className="enrich-inline-dot" aria-hidden="true" />
-                      Encontrando telefones…
-                    </>
-                  ) : (
-                    <>☎ Encontrar telefones {selectedLeadRefs.size > 0 ? `(${selectedLeadRefs.size})` : ''}</>
-                  )}
-                </button>
 
                 <div className="action-group-divider" aria-hidden="true" />
 
@@ -1819,14 +1073,6 @@ export default function SavedLeadsLibrary(props: Props) {
                   🗑 Excluir
                 </button>
               </div>
-              <TelethonRunLogPanel
-                entries={telethonRunLogs}
-                running={
-                  telegramTelethonPipelineRunning ||
-                  telegramPhonePipelineRunning ||
-                  telegramPhoneRunning
-                }
-              />
             </header>
 
             {enrichmentOpen && (
@@ -1873,8 +1119,6 @@ export default function SavedLeadsLibrary(props: Props) {
                       }}
                     >
                       <option value="email">Somente e-mail</option>
-                      <option value="phone">Somente telefone</option>
-                      <option value="both">E-mail + telefone</option>
                     </select>
                   </label>
 
@@ -2265,11 +1509,6 @@ export default function SavedLeadsLibrary(props: Props) {
                 <tbody>
                   {filteredLeads.map((lead, idx) => {
                     const ref = leadRef(lead)
-                    const consults = ref ? telegramConsults[ref] ?? [] : []
-                    const expanded = !!ref && expandedTelegramRefs.has(ref)
-                    const anyError = consults.some((c) => c.error)
-                    const cpfCandidates = collectCpfCandidatesFromConsults(consults)
-                    const hasCpfCandidates = cpfCandidates.length > 0
                     return (
                       <React.Fragment key={`${lead.linkedin_url ?? lead.source_url}:${idx}`}>
                         <tr>
@@ -2296,7 +1535,7 @@ export default function SavedLeadsLibrary(props: Props) {
                             )}
                           </td>
                           <td style={td}>
-                            {(!lead.enrichment_source || lead.enrichment_source === 'internal') && consults.length === 0 ? (
+                            {(!lead.enrichment_source || lead.enrichment_source === 'internal') ? (
                               '—'
                             ) : (
                               <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-start' }}>
@@ -2304,46 +1543,6 @@ export default function SavedLeadsLibrary(props: Props) {
                                   lead={lead}
                                   onInspect={() => setInspectedApiLead(lead)}
                                 />
-                                {hasCpfCandidates && (
-                                  <button
-                                    type="button"
-                                    className="pill-btn primary"
-                                    style={{
-                                      fontSize: 11,
-                                      maxWidth: '100%',
-                                      whiteSpace: 'normal',
-                                      textAlign: 'left',
-                                      lineHeight: 1.2,
-                                      padding: '6px 8px'
-                                    }}
-                                    onClick={() => openCpfPickerForLead(lead)}
-                                    title="Abre a tela de revisão de CPFs. A consulta de telefone usa o Telegram."
-                                  >
-                                    🪪 CPFs encontrados ({cpfCandidates.length}) — Achar telefone?
-                                  </button>
-                                )}
-                                {consults.length > 0 && (
-                                  <button
-                                    type="button"
-                                    className="pill-btn"
-                                    style={{ fontSize: 11, maxWidth: '100%' }}
-                                    onClick={() => {
-                                      setExpandedTelegramRefs((prev) => {
-                                        const next = new Set(prev)
-                                        if (next.has(ref)) next.delete(ref)
-                                        else next.add(ref)
-                                        return next
-                                      })
-                                    }}
-                                    title={
-                                      anyError
-                                        ? `Algum provider falhou — abra para ver detalhes`
-                                        : `${consults.length} consulta(s) salvas no Telegram`
-                                    }
-                                  >
-                                    {anyError ? '⚠' : '📄'} Telegram · {consults.length} {expanded ? '▾' : '▸'}
-                                  </button>
-                                )}
                               </div>
                             )}
                           </td>
@@ -2367,18 +1566,6 @@ export default function SavedLeadsLibrary(props: Props) {
                             )}
                           </td>
                         </tr>
-                        {expanded && consults.length > 0 && (
-                          <tr key={`telegram:${ref}`}>
-                            <td colSpan={8} style={{ padding: 0, background: 'var(--surface-2)' }}>
-                              <TelegramConsultMultiProviderPanel
-                                consults={consults}
-                                onStartPhoneRun={(cpf) => handleTelegramPhoneDirectExtract(ref, cpf)}
-                                onRetryTelethon={() => void handleRetryTelethonForLead(ref)}
-                                retryBusy={telegramTelethonPipelineRunning}
-                              />
-                            </td>
-                          </tr>
-                        )}
                       </React.Fragment>
                     )
                   })}
@@ -2402,27 +1589,6 @@ export default function SavedLeadsLibrary(props: Props) {
           onConfirm={(value) => closeDialog(value)}
         />
       )}
-      {client && (
-        <TelethonAuthDialog
-          open={telethonAuthOpen}
-          client={client}
-          onSuccess={handleTelethonAuthSuccess}
-          onClose={handleTelethonAuthClose}
-        />
-      )}
-      <CpfPickerTelethonDialog
-        open={cpfPicker !== null}
-        client={client}
-        tableId={activeId}
-        leadRef={cpfPicker?.leadRef ?? ''}
-        leadName={cpfPicker?.leadName ?? null}
-        candidates={cpfPicker?.candidates ?? []}
-        eligibleCpfs={cpfPicker?.eligibleCpfs ?? []}
-        onClose={() => setCpfPicker(null)}
-        onResult={handleCpfPickerResult}
-        onAuthRequired={handleCpfPickerAuthRequired}
-        onError={(message) => onFeedback('error', message)}
-      />
       {profileValidationBootstrap && (
         <ChromeBootstrapModal
           targetUrl={profileValidationBootstrap.targetUrl}
@@ -2439,114 +1605,6 @@ export default function SavedLeadsLibrary(props: Props) {
     </div>
   )
 }
-
-function isTelethonAuthError(error: ApiError): boolean {
-  const body = error.body
-  if (body && typeof body === 'object' && 'detail' in body) {
-    const detail = (body as { detail?: unknown }).detail
-    if (typeof detail === 'string') {
-      return detail.includes('telethon_session_not_authorized')
-    }
-  }
-  return error.message.includes('telethon_session_not_authorized')
-}
-
-function TelethonRunLogPanel({
-  entries,
-  running
-}: {
-  entries: TelethonRunLogEntry[]
-  running?: boolean
-}) {
-  if (entries.length === 0) return null
-  return (
-    <div
-      role="status"
-      aria-live="polite"
-      style={{
-        display: 'grid',
-        gap: 8,
-        padding: '10px 12px',
-        border: '0.5px solid var(--line)',
-        borderRadius: 10,
-        background: 'var(--surface-2)',
-        maxWidth: '100%'
-      }}
-    >
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
-        <strong style={{ fontSize: 12, color: 'var(--ink)' }}>Trilha da consulta</strong>
-        <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>
-          Sem nomes de fontes internas
-        </span>
-      </div>
-      {/* Barra indeterminada enquanto a consulta roda — o backend processa
-          o lote num único request, então não há progresso real por lead;
-          mostramos atividade (reusa o primitivo .enrich-progress). */}
-      {running && (
-        <div className="enrich-progress-track" data-indeterminate="true" aria-hidden="true">
-          <div className="enrich-progress-fill" />
-        </div>
-      )}
-      <ol
-        style={{
-          listStyle: 'none',
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
-          gap: 8,
-          padding: 0,
-          margin: 0
-        }}
-      >
-        {entries.map((entry) => (
-          <li
-            key={entry.id}
-            style={{
-              display: 'grid',
-              gridTemplateColumns: '10px minmax(0, 1fr)',
-              gap: 8,
-              alignItems: 'start',
-              padding: '8px 10px',
-              borderRadius: 8,
-              background: 'var(--surface)',
-              border: '0.5px solid var(--line)'
-            }}
-          >
-            <span
-              aria-hidden="true"
-              style={{
-                width: 8,
-                height: 8,
-                borderRadius: 999,
-                marginTop: 4,
-                background:
-                  entry.status === 'done'
-                    ? 'var(--success)'
-                    : entry.status === 'error'
-                      ? 'var(--risky)'
-                      : entry.status === 'active'
-                        ? 'var(--accent)'
-                        : 'var(--ink-5, rgba(0,0,0,0.16))',
-                boxShadow:
-                  entry.status === 'active'
-                    ? '0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent)'
-                    : undefined
-              }}
-            />
-            <span style={{ minWidth: 0, display: 'grid', gap: 2 }}>
-              <strong style={{ fontSize: 11.5, color: 'var(--ink)', fontWeight: 600 }}>
-                {entry.label}
-              </strong>
-              <span style={{ fontSize: 11, color: 'var(--ink-3)', lineHeight: 1.25 }}>
-                {entry.detail}
-              </span>
-            </span>
-          </li>
-        ))}
-      </ol>
-    </div>
-  )
-}
-
 
 const th: React.CSSProperties = {
   padding: '8px 10px',
@@ -2566,19 +1624,11 @@ const fieldLabel: React.CSSProperties = {
   color: 'var(--ink-3)'
 }
 
-function internalFieldObjectLabel(fields: InternalEnrichField): string {
-  if (fields === 'phone') return 'telefones via grupo Telegram'
-  if (fields === 'both') return 'e-mails internos + telefones via grupo Telegram'
+function internalFieldObjectLabel(_fields: InternalEnrichField): string {
   return 'e-mails internos'
 }
 
-function internalEnrichDescription(fields: InternalEnrichField): string {
-  if (fields === 'phone') {
-    return 'Sem APIs pagas. O fluxo operacional de telefone via Telegram fica no botão "Pegar telefone via Telegram", que cruza as consultas disponíveis (inclusive por e-mail quando houver).'
-  }
-  if (fields === 'both') {
-    return 'Sem APIs pagas. O app tenta inferir e-mails profissionais pelo domínio da empresa; para telefones, use o botão dedicado "Pegar telefone via Telegram".'
-  }
+function internalEnrichDescription(_fields: InternalEnrichField): string {
   return 'Sem APIs pagas. O app tenta inferir e-mails profissionais pelo domínio da empresa e padrões comuns, validando MX e SMTP de forma conservadora.'
 }
 
@@ -2936,9 +1986,9 @@ function LeadPhoneCell({ lead, hideFallback }: { lead: Lead; hideFallback?: bool
 }
 
 /**
- * Endereço residencial trazido pela consulta de CPF (mesma consulta que
- * acha o telefone). Linha discreta no card de contato, com tooltip para
- * o endereço completo. Não expomos a fonte interna — só o 📍.
+ * Endereço residencial já presente nos dados do lead. Exibição read-only:
+ * linha discreta no card de contato, com tooltip para o endereço completo.
+ * Não expomos a fonte interna — só o 📍.
  */
 function LeadAddressCell({ lead }: { lead: Lead }): JSX.Element | null {
   const address = (lead.endereco ?? '').trim()
@@ -2979,18 +2029,6 @@ function LeadAddressCell({ lead }: { lead: Lead }): JSX.Element | null {
 function formatPhoneSourceLabel(source?: string | null): string {
   const normalized = (source || '').trim().toLowerCase()
   if (!normalized) return 'Consulta por telefone'
-  if (
-    normalized.includes('telegram') ||
-    normalized.includes('void') ||
-    normalized.includes('gon') ||
-    normalized.includes('gonzales') ||
-    normalized.includes('findex') ||
-    normalized.includes('finder') ||
-    normalized.includes('unix') ||
-    normalized.includes('sisreg')
-  ) {
-    return 'Consulta por telefone'
-  }
   if (normalized.includes('linkedin')) return 'Contato informado no perfil'
   if (normalized.includes('receita') || normalized.includes('cnpj')) return 'Base pública'
   if (normalized.includes('pdf') || normalized.includes('serp')) return 'Fonte pública'
@@ -3183,11 +2221,8 @@ function CostExplainer(props: {
 }) {
   const { fields, mode, providers, costs, selectedCount } = props
   const ordered = sortProvidersByCost(providers, costs, fields)
-  const fieldsPerProvider = (provider: EnrichmentProvider): string[] => {
-    const out: string[] = []
-    if (fields === 'email' || fields === 'both') out.push('email')
-    if ((fields === 'phone' || fields === 'both') && provider !== 'snovio') out.push('phone')
-    return out
+  const fieldsPerProvider = (_provider: EnrichmentProvider): string[] => {
+    return ['email']
   }
   const rows = ordered.map((provider) => {
     const perCredit = Number.parseFloat(costs[provider] || '0') || 0
@@ -3361,718 +2396,6 @@ function ApiConsultationPanel(props: {
   )
 }
 
-function TelegramConsultMultiProviderPanel({
-  consults,
-  onStartPhoneRun,
-  onRetryTelethon,
-  retryBusy = false
-}: {
-  consults: TelegramConsult[]
-  onStartPhoneRun?: (cpf?: string) => void
-  onRetryTelethon?: () => void
-  retryBusy?: boolean
-}) {
-  const rows = buildTelegramComparisonRows(consults)
-  const errorCount = consults.filter((consult) => consult.error || consult.blocked_reason).length
-  const hasStructuredCpf = rows.some((row) => !!row.cpf)
-  const canRetryTelethon = consults.length > 0 && !hasStructuredCpf && !!onRetryTelethon
-  // Findex expira o link `api.fdxapis.us/temp/...` em poucos minutos.
-  // Detecta tanto blocked_reason canônico quanto texto bruto — alguns
-  // providers só anotam o HTML retornado.
-  const findexExpired = consults.some(
-    (c) =>
-      isFindexPageExpired(c.error) ||
-      isFindexPageExpired(c.blocked_reason) ||
-      isFindexPageExpired(c.raw_text)
-  )
-  return (
-    <div
-      style={{
-        padding: '12px 14px 14px',
-        display: 'grid',
-        gap: 10,
-        maxWidth: '100%',
-        overflow: 'hidden',
-        borderTop: '1px solid var(--line)',
-        borderBottom: '1px solid var(--line)'
-      }}
-    >
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-        <div style={{ display: 'grid', gap: 2 }}>
-          <strong style={{ fontSize: 12, color: 'var(--ink)' }}>Comparação Telegram</strong>
-          <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>
-            {rows.length} CPF(s) consolidado(s) · {consults.length} evidência(s){errorCount ? ` · ${errorCount} alerta(s)` : ''}
-          </span>
-        </div>
-      </div>
-      {findexExpired && (
-        <div
-          role="alert"
-          style={{
-            display: 'flex',
-            alignItems: 'flex-start',
-            gap: 10,
-            padding: '10px 12px',
-            border: '0.5px solid rgba(220,38,38,0.28)',
-            borderRadius: 8,
-            background: 'rgba(220,38,38,0.06)',
-            color: 'var(--ink-2)'
-          }}
-        >
-          <span aria-hidden="true" style={{ fontSize: 16, lineHeight: 1 }}>⌛</span>
-          <div style={{ display: 'grid', gap: 4, flex: 1, minWidth: 0 }}>
-            <strong style={{ fontSize: 12.5, color: '#b91c1c' }}>
-              Resultado da consulta expirou
-            </strong>
-            <span style={{ fontSize: 11.5, color: 'var(--ink-3)', lineHeight: 1.4 }}>
-              O resultado temporário tem validade curta e foi fechado antes do app
-              capturar o telefone. Rode a consulta de novo para gerar um resultado novo.
-            </span>
-          </div>
-          {onRetryTelethon && (
-            <button
-              type="button"
-              className="pill-btn primary"
-              style={{ flexShrink: 0 }}
-              onClick={(event) => {
-                event.stopPropagation()
-                onRetryTelethon()
-              }}
-              disabled={retryBusy}
-              title="Repete a consulta de telefone para este lead — gera um resultado novo."
-            >
-              {retryBusy ? 'Tentando…' : 'Tentar novamente'}
-            </button>
-          )}
-        </div>
-      )}
-      {canRetryTelethon && !findexExpired && (
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: 12,
-            padding: '10px 12px',
-            border: '0.5px solid rgba(14,116,144,0.22)',
-            borderRadius: 8,
-            background: 'rgba(14,116,144,0.07)',
-            color: 'var(--ink-2)',
-            flexWrap: 'wrap'
-          }}
-        >
-          <div style={{ display: 'grid', gap: 2, minWidth: 220 }}>
-            <strong style={{ fontSize: 12, color: 'var(--ink)' }}>Sem CPF estruturado nesta busca</strong>
-            <span style={{ fontSize: 11, color: 'var(--ink-3)', lineHeight: 1.35 }}>
-              A consulta ficou salva, mas não trouxe CPF aproveitável. Você pode repetir pela sessão nativa sem abrir Chrome.
-            </span>
-          </div>
-          <button
-            type="button"
-            className="pill-btn primary"
-            onClick={(event) => {
-              event.stopPropagation()
-              onRetryTelethon?.()
-            }}
-            disabled={retryBusy}
-            title="Repete a busca de telefone para este lead."
-          >
-            {retryBusy ? 'Tentando…' : 'Tentar novamente'}
-          </button>
-        </div>
-      )}
-      {rows.length > 0 ? (
-        <div style={{ overflow: 'auto', maxHeight: 320, border: '1px solid var(--line)', borderRadius: 8, background: 'var(--surface)', maxWidth: '100%' }}>
-          <table style={{ width: '100%', minWidth: 0, borderCollapse: 'collapse', tableLayout: 'fixed', fontSize: 12 }}>
-            <thead>
-              <tr style={{ background: 'var(--surface-2)', color: 'var(--ink-2)', textAlign: 'left' }}>
-                <th style={{ padding: '8px 8px', width: '17%', fontWeight: 600 }}>CPF</th>
-                <th style={{ padding: '8px 8px', width: '24%', fontWeight: 600 }}>Nome</th>
-                <th style={{ padding: '8px 8px', width: '13%', fontWeight: 600 }}>Nasc.</th>
-                <th style={{ padding: '8px 8px', width: '8%', fontWeight: 600 }}>Score</th>
-                <th style={{ padding: '8px 8px', width: '10%', fontWeight: 600 }}>Evid.</th>
-                <th style={{ padding: '8px 8px', width: '18%', fontWeight: 600 }}>Obs.</th>
-                <th style={{ padding: '8px 8px', width: '10%', fontWeight: 600 }}></th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => {
-                const score = row.scores.length > 0 ? Math.max(...row.scores) : null
-                const conflicts = row.nomes.length > 1 || row.births.length > 1 || row.addresses.length > 1
-                return (
-                  <tr key={row.key} style={{ borderTop: '1px solid var(--line)', verticalAlign: 'top' }}>
-                    <td style={{ padding: '9px 8px', fontFamily: 'var(--font-mono)', fontVariantNumeric: 'tabular-nums', color: 'var(--ink)', overflowWrap: 'anywhere' }}>
-                      {row.cpf ?? '—'}
-                    </td>
-                    <td style={{ padding: '9px 8px', color: 'var(--ink)', fontWeight: 500, overflowWrap: 'anywhere' }}>
-                      <ValueStack values={row.nomes} />
-                    </td>
-                    <td style={{ padding: '9px 8px', color: 'var(--ink-2)', fontVariantNumeric: 'tabular-nums', overflowWrap: 'anywhere' }}>
-                      <ValueStack values={row.births} />
-                    </td>
-                    <td style={{ padding: '9px 8px', color: score !== null && score >= 70 ? 'var(--success)' : 'var(--ink-3)', fontWeight: 600 }}>
-                      {score ?? '—'}
-                    </td>
-                    <td style={{ padding: '9px 8px', color: 'var(--ink-2)' }}>
-                      {row.sourceCount}
-                      {row.queryTypes.has('cpf') ? <span style={{ color: 'var(--ink-3)' }}> · cpf</span> : null}
-                    </td>
-                    <td style={{ padding: '9px 8px', color: conflicts ? 'var(--warning)' : 'var(--ink-3)', lineHeight: 1.35, overflowWrap: 'anywhere' }}>
-                      {row.errors.length > 0 ? (
-                        <ValueStack values={row.errors.map(humanizeBlockedReason)} />
-                      ) : conflicts ? (
-                        'Dados divergentes entre evidências.'
-                      ) : row.addresses.length > 0 ? (
-                        <ValueStack values={row.addresses} />
-                      ) : (
-                        'Dados alinhados.'
-                      )}
-                    </td>
-                    <td style={{ padding: '8px 8px', textAlign: 'right' }}>
-                      {onStartPhoneRun && row.cpf ? (
-                        <button
-                          className="pill-btn primary"
-                          style={{ whiteSpace: 'normal', maxWidth: '100%', minWidth: 0, height: 'auto', lineHeight: 1.15, padding: '6px 8px' }}
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            onStartPhoneRun(row.cpf ?? undefined)
-                          }}
-                          title="Buscar telefone usando este CPF"
-                        >
-                          Achar telefone
-                        </button>
-                      ) : null}
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
-      ) : (
-        <div style={{ color: 'var(--ink-3)', fontSize: 12, padding: '8px 10px', border: '1px solid var(--line)', borderRadius: 8, background: 'var(--surface)' }}>
-          Nenhum CPF estruturado nas evidências salvas.
-        </div>
-      )}
-    </div>
-  )
-}
-
-interface TelegramComparisonRow {
-  key: string
-  cpf: string | null
-  nomes: string[]
-  births: string[]
-  addresses: string[]
-  scores: number[]
-  errors: string[]
-  sourceCount: number
-  queryTypes: Set<string>
-}
-
-function buildTelegramComparisonRows(consults: TelegramConsult[]): TelegramComparisonRow[] {
-  const rows = new Map<string, TelegramComparisonRow>()
-  const addRow = (
-    key: string,
-    payload: {
-      cpf?: string | null
-      nome?: string | null
-      birth?: string | null
-      address?: string | null
-      score?: number | null
-      error?: string | null
-      queryType?: string | null
-    }
-  ) => {
-    const existing = rows.get(key) ?? {
-      key,
-      cpf: payload.cpf ?? null,
-      nomes: [],
-      births: [],
-      addresses: [],
-      scores: [],
-      errors: [],
-      sourceCount: 0,
-      queryTypes: new Set<string>()
-    }
-    existing.sourceCount += 1
-    if (payload.cpf && !existing.cpf) existing.cpf = payload.cpf
-    pushUnique(existing.nomes, payload.nome)
-    pushUnique(existing.births, payload.birth)
-    pushUnique(existing.addresses, payload.address)
-    if (typeof payload.score === 'number') existing.scores.push(payload.score)
-    pushUnique(existing.errors, payload.error)
-    if (payload.queryType) existing.queryTypes.add(payload.queryType)
-    rows.set(key, existing)
-  }
-
-  for (const consult of consults) {
-    const queryType = consult.query_type ?? 'name'
-    const error = consult.error || consult.blocked_reason || null
-    const candidates = Array.isArray(consult.extracted_candidates) ? consult.extracted_candidates : []
-    if (error && !consult.extracted_cpf && candidates.length === 0) {
-      continue
-    }
-    if (candidates.length > 0) {
-      for (const candidate of candidates) {
-        const cpf = candidate.cpf || consult.extracted_cpf || null
-        addRow(cpf ? `cpf:${cpf}` : `consult:${consult.id}`, {
-          cpf,
-          nome: candidate.nome || consult.extracted_nome,
-          birth: candidate.data_nascimento || consult.extracted_birth_date,
-          address: candidate.endereco || consult.extracted_address,
-          score: candidate.match_score ?? consult.match_score,
-          error,
-          queryType
-        })
-      }
-      continue
-    }
-    const cpf = consult.extracted_cpf || null
-    addRow(cpf ? `cpf:${cpf}` : `consult:${consult.id}`, {
-      cpf,
-      nome: consult.extracted_nome,
-      birth: consult.extracted_birth_date,
-      address: consult.extracted_address,
-      score: consult.match_score,
-      error,
-      queryType
-    })
-  }
-
-  return Array.from(rows.values()).sort((a, b) => {
-    const aScore = a.scores.length > 0 ? Math.max(...a.scores) : -1
-    const bScore = b.scores.length > 0 ? Math.max(...b.scores) : -1
-    return bScore - aScore || b.sourceCount - a.sourceCount || (a.cpf ?? '').localeCompare(b.cpf ?? '')
-  })
-}
-
-function pushUnique(target: string[], value?: string | null): void {
-  const clean = (value ?? '').trim()
-  if (clean && !target.includes(clean)) target.push(clean)
-}
-
-function ValueStack({ values }: { values: string[] }) {
-  if (values.length === 0) return <>—</>
-  return (
-    <span style={{ display: 'grid', gap: 2 }}>
-      {values.slice(0, 3).map((value) => (
-        <span key={value}>{value}</span>
-      ))}
-      {values.length > 3 && <span style={{ color: 'var(--ink-3)' }}>+{values.length - 3}</span>}
-    </span>
-  )
-}
-
-function TelegramConsultProviderBlock({ consult, onStartPhoneRun }: { consult: TelegramConsult, onStartPhoneRun?: (cpf?: string) => void }) {
-  const handleCopy = () => {
-    if (consult.raw_text) {
-      void navigator.clipboard.writeText(consult.raw_text).catch(() => {})
-    }
-  }
-  // Provider names are internal — the UI labels evidence rows by *what the
-  // consult does* (name vs CPF lookup), never by the underlying source.
-  const providerLabel =
-    consult.provider === 'finder_cpf' || consult.provider === 'gon_cpf'
-      ? 'Consulta por CPF'
-      : 'Consulta por nome'
-  const stage = consult.query_type ?? 'name'
-  const stageBadge =
-    stage === 'cpf'
-      ? { label: 'Follow-up CPF', color: 'var(--accent)', bg: 'var(--accent-tint)' }
-      : stage === 'phone'
-        ? { label: 'Follow-up telefone', color: '#0e7490', bg: 'rgba(14,116,144,0.12)' }
-        : null
-  const firstCandidateCpf = Array.isArray(consult.extracted_candidates)
-    ? consult.extracted_candidates.find((candidate) => candidate?.cpf)?.cpf
-    : undefined
-  const phoneLookupCpf = consult.extracted_cpf || firstCandidateCpf
-
-  return (
-    <div
-      style={{
-        display: 'grid',
-        gap: 8,
-        border: '1px solid var(--line)',
-        borderRadius: '10px',
-        padding: '12px',
-        background: 'var(--surface)',
-        boxShadow: '0 1px 3px rgba(0,0,0,0.02)'
-      }}
-    >
-      <div style={{ display: 'flex', gap: 12, alignItems: 'center', fontSize: 11, color: 'var(--ink-3)', flexWrap: 'wrap' }}>
-        <strong style={{ color: 'var(--ink)', fontSize: '12px', fontWeight: 600 }}>{providerLabel}</strong>
-        {stageBadge && (
-          <span
-            style={{
-              padding: '2px 8px',
-              borderRadius: '999px',
-              fontSize: '10px',
-              color: stageBadge.color,
-              background: stageBadge.bg,
-              fontWeight: 600
-            }}
-          >
-            {stageBadge.label}
-          </span>
-        )}
-        <span style={{ fontSize: '11.5px' }}>Consulta: <code style={{ fontFamily: 'var(--font-mono)', background: 'var(--surface-3)', padding: '2px 4px', borderRadius: '4px' }}>{consult.query || '—'}</code></span>
-        {consult.downloaded_at && <span>· {formatDate(consult.downloaded_at)}</span>}
-        {consult.source_url && (
-          <a href={consult.source_url} target="_blank" rel="noreferrer" style={{ color: 'var(--accent)', textDecoration: 'none', fontWeight: 500 }}>
-            Fonte ↗
-          </a>
-        )}
-        {consult.raw_text && (
-          <button
-            type="button"
-            className="pill-btn"
-            style={{ fontSize: 10, padding: '2px 6px', height: '20px' }}
-            onClick={handleCopy}
-          >
-            Copiar texto
-          </button>
-        )}
-      </div>
-      {consult.blocked_reason && (() => {
-        const tone = classifyBlockedReason(consult.blocked_reason)
-        return (
-          <div
-            style={{
-              color: tone.color,
-              fontSize: 12,
-              background: tone.background,
-              border: `0.5px solid ${tone.border}`,
-              padding: '6px 10px',
-              borderRadius: '6px',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 6
-            }}
-          >
-            <span>{tone.icon}</span>{' '}
-            <strong>{tone.label}:</strong>{' '}
-            {humanizeBlockedReason(consult.blocked_reason)}
-          </div>
-        )
-      })()}
-      {consult.error && !consult.blocked_reason && (
-        <div style={{ color: 'var(--risky)', fontSize: 12, background: 'rgba(255,59,48,0.06)', border: '0.5px solid rgba(255,59,48,0.15)', padding: '6px 10px', borderRadius: '6px', display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span>⚠</span> <strong>Erro:</strong> {consult.error}
-        </div>
-      )}
-      {(consult.extracted_nome || consult.extracted_cpf || consult.extracted_birth_date || consult.extracted_address) && (
-        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 }}>
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
-              gap: 10,
-              padding: '10px',
-              background: 'var(--surface-2)',
-              borderRadius: '8px',
-              border: '0.5px solid var(--line)',
-              fontSize: 12,
-              flex: 1
-            }}
-          >
-            {consult.extracted_nome && (
-              <div>
-                <span style={{ color: 'var(--ink-3)', fontWeight: 500 }}>Nome Extraído:</span>{' '}
-                <strong style={{ color: 'var(--ink)' }}>{consult.extracted_nome}</strong>
-              </div>
-            )}
-            {consult.extracted_cpf && (
-              <div>
-                <span style={{ color: 'var(--ink-3)', fontWeight: 500 }}>CPF Extraído:</span>{' '}
-                <strong style={{ color: 'var(--ink)', fontFamily: 'var(--font-mono)' }}>{consult.extracted_cpf}</strong>
-              </div>
-            )}
-            {consult.extracted_birth_date && (
-              <div>
-                <span style={{ color: 'var(--ink-3)', fontWeight: 500 }}>Nascimento:</span>{' '}
-                <span style={{ color: 'var(--ink)' }}>{consult.extracted_birth_date}</span>
-              </div>
-            )}
-            {consult.extracted_address && (
-              <div style={{ gridColumn: '1 / -1' }}>
-                <span style={{ color: 'var(--ink-3)', fontWeight: 500 }}>Endereço:</span>{' '}
-                <span style={{ color: 'var(--ink)' }}>{consult.extracted_address}</span>
-              </div>
-            )}
-          </div>
-          {onStartPhoneRun && phoneLookupCpf && (
-            <button
-              className="pill-btn primary"
-              style={{ whiteSpace: 'nowrap', marginTop: 10 }}
-              onClick={(e) => {
-                e.stopPropagation()
-                onStartPhoneRun(phoneLookupCpf)
-              }}
-              title="Buscar telefone usando o CPF selecionado"
-            >
-              Achar telefone
-            </button>
-          )}
-        </div>
-      )}
-      {Array.isArray(consult.extracted_candidates) && consult.extracted_candidates.length > 1 && (
-        <TelegramCandidatesTable candidates={consult.extracted_candidates} />
-      )}
-      {consult.raw_text ? (
-        <details style={{ marginTop: 4 }}>
-          <summary style={{ fontSize: 11, color: 'var(--ink-3)', cursor: 'pointer', userSelect: 'none', fontWeight: 500 }}>
-            Ver texto completo da consulta Telegram
-          </summary>
-          <pre
-            style={{
-              margin: '6px 0 0',
-              padding: 10,
-              background: 'var(--surface-2)',
-              border: '1px solid var(--line)',
-              borderRadius: 8,
-              fontSize: 11.5,
-              fontFamily: 'var(--font-mono)',
-              whiteSpace: 'pre-wrap',
-              wordBreak: 'break-word',
-              maxHeight: 200,
-              overflow: 'auto',
-              color: 'var(--ink-2)'
-            }}
-          >
-            {consult.raw_text}
-          </pre>
-        </details>
-      ) : !consult.error ? (
-        <div style={{ color: 'var(--ink-3)', fontSize: 11, fontStyle: 'italic' }}>Sem texto retornado do bot.</div>
-      ) : null}
-    </div>
-  )
-}
-
-interface BlockedReasonTone {
-  color: string
-  background: string
-  border: string
-  icon: string
-  label: string
-}
-
-/**
- * Detecta se o erro/texto bruto de uma consulta indica que a página
- * temporária do Findex (`api.fdxapis.us/temp/...`) expirou — o link
- * tem TTL curto e devolve uma página "Página Expirada / Tempo esgotado"
- * quando o operador (ou o scraper) chega tarde. O backend pode retornar
- * isso como `findex_page_expired` ou texto bruto contendo marcadores
- * conhecidos. Detector tolerante a variações de string.
- */
-function isFindexPageExpired(text: string | null | undefined): boolean {
-  if (!text) return false
-  const t = text.toLowerCase()
-  return (
-    t.includes('findex_page_expired') ||
-    t.includes('página expirada') ||
-    t.includes('pagina expirada') ||
-    t.includes('tempo esgotado') ||
-    t.includes('tempo de acesso terminou') ||
-    t.includes('esta página não está mais disponível') ||
-    t.includes('esta pagina nao esta mais disponivel')
-  )
-}
-
-function classifyBlockedReason(reason: string): BlockedReasonTone {
-  const normalized = (reason || '').toLowerCase()
-  // Findex página expirada → vermelho dedicado, operador precisa
-  // rodar de novo (link tem TTL curto).
-  if (isFindexPageExpired(normalized)) {
-    return {
-      color: '#b91c1c',
-      background: 'rgba(220,38,38,0.06)',
-      border: 'rgba(220,38,38,0.18)',
-      icon: '⌛',
-      label: 'Resultado expirado'
-    }
-  }
-  // Recuperáveis: o pipeline já tentou outro caminho ou pode tentar de novo.
-  // Tom amarelo/info — não é falha do operador.
-  if (
-    normalized.includes('routed_to_findex') ||
-    normalized === 'email_stage_no_phone' ||
-    normalized === 'no_cpf_from_name_stage' ||
-    normalized === 'no_eligible_cpf' ||
-    normalized === 'telethon_group_join_pending' ||
-    normalized === 'telethon_result_timeout'
-  ) {
-    return {
-      color: '#b45309',
-      background: 'rgba(245,158,11,0.08)',
-      border: 'rgba(245,158,11,0.2)',
-      icon: 'ℹ️',
-      label: 'Sem resultado'
-    }
-  }
-  // Telegram access problems the operator must fix before retrying.
-  if (
-    normalized === 'telethon_not_in_group' ||
-    normalized === 'telethon_bot_not_started' ||
-    normalized === 'telethon_blocked_bot' ||
-    normalized === 'telethon_session_not_authorized'
-  ) {
-    return {
-      color: '#b91c1c',
-      background: 'rgba(220,38,38,0.06)',
-      border: 'rgba(220,38,38,0.18)',
-      icon: '🔐',
-      label: 'Ação necessária'
-    }
-  }
-  // Bloqueios reais: o operador precisa fazer algo (revalidar LinkedIn,
-  // esperar cooldown, encontrar um e-mail). Tom vermelho.
-  if (
-    normalized === 'rate_limited' ||
-    normalized === 'no_email_for_findex_fallback' ||
-    normalized === 'linkedin_cargo_divergente' ||
-    normalized === 'missing_linkedin_signals' ||
-    normalized === 'linkedin_titulo_ausente' ||
-    normalized.startsWith('name_stage_error') ||
-    normalized.startsWith('email_stage_error')
-  ) {
-    return {
-      color: '#b91c1c',
-      background: 'rgba(220,38,38,0.06)',
-      border: 'rgba(220,38,38,0.18)',
-      icon: '🚫',
-      label: 'Bloqueado'
-    }
-  }
-  return {
-    color: '#b45309',
-    background: 'rgba(245,158,11,0.08)',
-    border: 'rgba(245,158,11,0.2)',
-    icon: '🚫',
-    label: 'Bloqueado'
-  }
-}
-
-function humanizeBlockedReason(reason: string): string {
-  const normalized = (reason || '').toLowerCase()
-  if (isFindexPageExpired(normalized)) {
-    return 'o resultado temporário da consulta expirou antes do app capturar o telefone — rode a consulta de novo.'
-  }
-  if (normalized.includes('routed_to_findex')) {
-    if (normalized.startsWith('linkedin_cargo_divergente')) {
-      return 'cargo do LinkedIn não bate com o alvo — tentou a consulta via e-mail.'
-    }
-    if (normalized.startsWith('linkedin_titulo_ausente')) {
-      return 'sem cargo no LinkedIn — tentou a consulta via e-mail.'
-    }
-    if (normalized.startsWith('missing_linkedin_signals')) {
-      return 'sem sinais LinkedIn — tentou a consulta via e-mail.'
-    }
-    return 'desviado para a consulta via e-mail.'
-  }
-  const map: Record<string, string> = {
-    linkedin_cargo_divergente: 'cargo do LinkedIn diverge do alvo e o lead não tem e-mail para a consulta alternativa.',
-    linkedin_titulo_ausente: 'sem título no LinkedIn e sem e-mail para a consulta alternativa.',
-    missing_linkedin_signals: 'sinais LinkedIn ausentes e sem e-mail para a consulta alternativa.',
-    no_eligible_cpf: 'nenhum CPF passou a comparação com sinais LinkedIn.',
-    no_cpf_from_name_stage: 'a consulta por nome não devolveu CPF.',
-    no_email_for_findex_fallback: 'sem e-mail disponível para a consulta alternativa.',
-    email_stage_no_phone: 'a consulta por e-mail não retornou telefone.',
-    rate_limited: 'serviço de consulta em cooldown — tente novamente em alguns minutos.',
-    lead_sem_nome_ou_ref: 'lead sem nome ou referência canônica.',
-    telethon_not_in_group: 'sua conta não está no grupo de consultas necessário — entre no grupo e tente de novo.',
-    telethon_group_join_pending: 'o ingresso no grupo de consultas aguarda aprovação — tente de novo depois de ser aceito.',
-    telethon_bot_not_started: 'inicie a conversa com o serviço de consulta (botão Iniciar/Start) e tente de novo.',
-    telethon_blocked_bot: 'o serviço de consulta está bloqueado na sua conta do Telegram — desbloqueie e tente de novo.',
-    telethon_session_not_authorized: 'sessão do Telegram não autenticada — faça login no Telegram nas configurações.',
-    telethon_result_timeout: 'o serviço de consulta não respondeu a tempo — tente novamente.',
-    telegram_not_configured: 'integração do Telegram não configurada.'
-  }
-  return map[normalized] ?? reason
-}
-
-function TelegramCandidatesTable({ candidates }: { candidates: TelegramConsult['extracted_candidates'] }) {
-  return (
-    <div style={{ marginTop: 8, minWidth: 0 }}>
-      <div style={{ fontSize: 11, color: 'var(--ink-3)', marginBottom: 6, fontWeight: 500 }}>
-        🔍 {candidates.length} candidatos encontrados · ranqueados por correspondência com LinkedIn
-      </div>
-      <div style={{ overflow: 'auto', maxHeight: 300, border: '1px solid var(--line)', borderRadius: '8px', background: 'var(--surface)' }}>
-        <table style={{ width: '100%', minWidth: '760px', borderCollapse: 'collapse', fontSize: 12 }}>
-          <thead>
-            <tr style={{ background: 'var(--surface-2)', color: 'var(--ink-2)', borderBottom: '1px solid var(--line)', textAlign: 'left' }}>
-              <th style={{ padding: '8px 10px', width: '60px', fontWeight: 600 }}>Score</th>
-              <th style={{ padding: '8px 10px', width: '120px', fontWeight: 600 }}>CPF</th>
-              <th style={{ padding: '8px 10px', minWidth: '180px', fontWeight: 600 }}>Nome</th>
-              <th style={{ padding: '8px 10px', width: '100px', fontWeight: 600 }}>Nascimento</th>
-              <th style={{ padding: '8px 10px', minWidth: '200px', fontWeight: 600 }}>Endereço</th>
-              <th style={{ padding: '8px 10px', minWidth: '120px', fontWeight: 600 }}>Sinais</th>
-            </tr>
-          </thead>
-          <tbody>
-            {candidates.map((c, idx) => {
-              const isHighMatch = (c.match_score ?? 0) >= 70
-              const isMediumMatch = (c.match_score ?? 0) >= 50 && (c.match_score ?? 0) < 70
-              return (
-                <tr
-                  key={`${c.cpf}:${idx}`}
-                  style={{
-                    borderTop: '0.5px solid var(--line)',
-                    background: isHighMatch ? 'rgba(52, 199, 89, 0.03)' : 'transparent',
-                    transition: 'background-color 150ms'
-                  }}
-                  className="hover:bg-surface-2"
-                >
-                  <td
-                    style={{
-                      padding: '8px 10px',
-                      fontWeight: 600,
-                      color: isHighMatch ? 'var(--success)' : isMediumMatch ? 'var(--warning)' : 'var(--ink-3)'
-                    }}
-                  >
-                    {c.match_score ?? '—'}
-                  </td>
-                  <td style={{ padding: '8px 10px', fontVariantNumeric: 'tabular-nums', letterSpacing: '-0.02em' }}>
-                    {c.cpf}
-                  </td>
-                  <td style={{ padding: '8px 10px', fontWeight: 500, color: 'var(--ink)' }}>
-                    {c.nome ?? '—'}
-                  </td>
-                  <td style={{ padding: '8px 10px', fontVariantNumeric: 'tabular-nums', color: 'var(--ink-2)' }}>
-                    {c.data_nascimento ?? '—'}
-                  </td>
-                  <td style={{ padding: '8px 10px', color: 'var(--ink-2)', lineHeight: 1.3 }}>
-                    {c.endereco ?? '—'}
-                  </td>
-                  <td style={{ padding: '8px 10px', color: 'var(--ink-3)', fontSize: 11 }}>
-                    {(c.signals_used ?? []).map(s => (
-                      <span
-                        key={s}
-                        style={{
-                          display: 'inline-block',
-                          padding: '1px 5px',
-                          borderRadius: '4px',
-                          background: 'var(--surface-3)',
-                          marginRight: '3px',
-                          marginBottom: '2px',
-                          fontSize: '10px'
-                        }}
-                      >
-                        {s}
-                      </span>
-                    )) || '—'}
-                  </td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  )
-}
-
 function ApiConsultationButton(props: {
   lead: Lead
   onInspect(): void
@@ -4099,77 +2422,6 @@ function ApiConsultationButton(props: {
 
 function leadRef(lead: Lead): string {
   return lead.linkedin_url || lead.source_url || lead.person_name || ''
-}
-
-/**
- * Dedupe candidatos de CPF entre as evidências persistidas (Finder, Gon,
- * Unix, etc.) e devolve uma lista ordenada por match_score desc — o shape
- * casa com ``TelegramPhoneRankedCandidate`` esperado pelo CpfReviewList.
- *
- * Regras:
- *  - Linhas com ``query_type === 'cpf'`` são follow-ups do CPF e não
- *    geram cards novos no picker (a UI dessa tela é sobre escolher CPF
- *    pra disparar telefone).
- *  - Quando o mesmo CPF aparece em mais de uma fonte, mantemos o maior
- *    ``match_score`` e completamos campos faltantes (nome, nascimento,
- *    endereço, sinais) com o que tiver na primeira fonte que trouxe.
- *  - ``eligible`` segue o flag explícito do candidato quando vier; senão
- *    usamos score >= 65 como heurística (mesmo limiar do matcher).
- */
-function collectCpfCandidatesFromConsults(
-  consults: readonly TelegramConsult[]
-): TelegramPhoneRankedCandidate[] {
-  const byCpf = new Map<string, TelegramPhoneRankedCandidate>()
-  for (const consult of consults) {
-    if ((consult.query_type ?? 'name') === 'cpf') continue
-    const raw: TelegramConsultCandidate[] = Array.isArray(consult.extracted_candidates)
-      ? consult.extracted_candidates
-      : []
-    for (const candidate of raw) {
-      if (!candidate || !candidate.cpf) continue
-      const cpf = candidate.cpf
-      const incomingScore =
-        typeof candidate.match_score === 'number' ? candidate.match_score : 0
-      const explicitEligible = (candidate as { eligible?: unknown }).eligible
-      const eligible =
-        typeof explicitEligible === 'boolean' ? explicitEligible : incomingScore >= 65
-      const incoming: TelegramPhoneRankedCandidate = {
-        cpf,
-        nome: candidate.nome ?? null,
-        data_nascimento: candidate.data_nascimento ?? null,
-        endereco: candidate.endereco ?? null,
-        match_score: incomingScore,
-        signals_used: Array.isArray(candidate.signals_used) ? candidate.signals_used : [],
-        breakdown: (candidate.breakdown as Record<string, unknown>) ?? {},
-        eligible
-      }
-      const existing = byCpf.get(cpf)
-      if (!existing) {
-        byCpf.set(cpf, incoming)
-        continue
-      }
-      const merged: TelegramPhoneRankedCandidate = {
-        ...existing,
-        nome: existing.nome ?? incoming.nome ?? null,
-        data_nascimento: existing.data_nascimento ?? incoming.data_nascimento ?? null,
-        endereco: existing.endereco ?? incoming.endereco ?? null,
-        match_score: Math.max(existing.match_score, incoming.match_score),
-        signals_used:
-          existing.signals_used.length >= incoming.signals_used.length
-            ? existing.signals_used
-            : incoming.signals_used,
-        breakdown:
-          Object.keys(existing.breakdown).length >= Object.keys(incoming.breakdown).length
-            ? existing.breakdown
-            : incoming.breakdown,
-        eligible: existing.eligible || incoming.eligible
-      }
-      byCpf.set(cpf, merged)
-    }
-  }
-  return Array.from(byCpf.values())
-    .filter(cpfAllowedForReview)
-    .sort((a, b) => b.match_score - a.match_score)
 }
 
 
@@ -4227,7 +2479,7 @@ function suggestDomainFromCompanyName(value: string | undefined): string {
   if (!value) return ''
   const slug = value
     .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[̀-ͯ]/g, '')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '')
   return slug ? `${slug}.com.br` : ''
@@ -4276,13 +2528,9 @@ function displayWebsite(url: string): string {
 function sortProvidersByCost(
   providers: EnrichmentProvider[],
   costs: Record<EnrichmentProvider, string>,
-  fields: EnrichmentFields
+  _fields: EnrichmentFields
 ): EnrichmentProvider[] {
-  const usable = providers.filter((p) => {
-    if (p === 'snovio' && fields === 'phone') return false
-    return true
-  })
-  return [...usable].sort((a, b) => {
+  return [...providers].sort((a, b) => {
     const ca = Number.parseFloat(costs[a] || '0') || 0
     const cb = Number.parseFloat(costs[b] || '0') || 0
     return ca - cb
@@ -4292,17 +2540,13 @@ function sortProvidersByCost(
 function filterPending(
   allLeads: Lead[],
   wantedRefs: Set<string>,
-  fields: EnrichmentFields
+  _fields: EnrichmentFields
 ): string[] {
   const out: string[] = []
   for (const lead of allLeads) {
     const ref = leadRef(lead)
     if (!wantedRefs.has(ref)) continue
-    let missing = false
-    if (fields === 'email') missing = !lead.email
-    else if (fields === 'phone') missing = !lead.phone
-    else missing = !lead.email || !lead.phone
-    if (missing) out.push(ref)
+    if (!lead.email) out.push(ref)
   }
   return out
 }

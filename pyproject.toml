@@ -48,7 +48,8 @@ scrapling = [
 ]
 server = [
   "fastapi>=0.110",
-  "uvicorn>=0.30"
+  "uvicorn>=0.30",
+  "pyjwt[crypto]>=2.8"
 ]
 
 [project.scripts]

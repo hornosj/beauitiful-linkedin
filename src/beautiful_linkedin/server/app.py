@@ -24,6 +24,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 
+from beautiful_linkedin.server.auth import (
+    AuthConfig,
+    TokenVerifier,
+    install_auth,
+    load_auth_config,
+)
 from beautiful_linkedin.cli import build_lead_filter
 from beautiful_linkedin.config import (
     Settings,
@@ -1272,13 +1278,36 @@ _HUMAN_LABELS_SCRAPE_MODE = {
 }
 
 
-def build_app(*, saved_leads_path: str | None = None) -> FastAPI:
+def build_app(
+    *,
+    saved_leads_path: str | None = None,
+    auth_config: AuthConfig | None = None,
+    token_verifier: TokenVerifier | None = None,
+) -> FastAPI:
     app = FastAPI(title="Beautiful LinkedIn Sidecar", version=VERSION)
     app.state.run_registry = RunRegistry()
     app.state.probe_registry = ProbeRegistry()
     app.state.telegram_phone_run_registry = TelegramPhoneRunRegistry()
     resolved_path = saved_leads_path or load_settings().saved_leads_path
     app.state.saved_leads_store = SavedLeadsStore(resolved_path)
+
+    # Auth PRIMEIRO, para que o CORS (adicionado depois) fique como a camada mais
+    # externa e as respostas 401 ainda carreguem cabeçalhos CORS. Sem token válido
+    # a API toda (exceto /health) responde 401 — isso impede que alguém chame o
+    # 127.0.0.1:porta direto e burle a tela de login do Electron.
+    resolved_auth = auth_config if auth_config is not None else load_auth_config()
+    verifier = token_verifier
+    if verifier is None and resolved_auth.enabled:
+        verifier = TokenVerifier(resolved_auth)
+    app.state.auth_config = resolved_auth
+    if verifier is not None:
+        install_auth(app, verifier)
+        logger.info("Sidecar auth ATIVADA — login obrigatório (Supabase).")
+    else:
+        logger.warning(
+            "Sidecar auth DESATIVADA — qualquer cliente local acessa a API. "
+            "Configure SUPABASE_URL para exigir login."
+        )
 
     app.add_middleware(
         CORSMiddleware,

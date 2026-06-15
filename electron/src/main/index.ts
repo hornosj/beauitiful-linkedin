@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 import {
@@ -69,8 +69,27 @@ async function bootSidecar(): Promise<void> {
     cwd: isPackaged ? app.getPath('userData') : projectRoot,
     projectRoot: isPackaged ? undefined : projectRoot,
     sidecarExecutablePath: packagedSidecarExecutable(),
+    env: supabaseSidecarEnv(),
     onLog: (line) => console.log(line)
   })
+}
+
+/**
+ * Config do Supabase repassada ao sidecar. Os valores são embutidos no bundle
+ * do main em build time (define no electron.vite.config.ts), a partir de
+ * `electron/.env`. Em produção o sidecar empacotado não enxerga o `.env` da
+ * raiz, então é o main que liga o login no backend — quando SUPABASE_URL está
+ * definido, o sidecar passa a exigir o token JWT em toda requisição.
+ */
+function supabaseSidecarEnv(): NodeJS.ProcessEnv {
+  const metaEnv =
+    (import.meta as unknown as { env?: Record<string, string | undefined> }).env ?? {}
+  const supabaseUrl = (metaEnv.VITE_SUPABASE_URL ?? '').trim()
+  const requireAuth = (metaEnv.VITE_SUPABASE_AUTH_REQUIRED ?? '').trim()
+  const extra: NodeJS.ProcessEnv = {}
+  if (supabaseUrl) extra.SUPABASE_URL = supabaseUrl
+  if (requireAuth) extra.BEAUTIFUL_LINKEDIN_REQUIRE_AUTH = requireAuth
+  return extra
 }
 
 function registerEmbeddedBrowserHandlers(): void {
@@ -112,6 +131,10 @@ function registerEmbeddedBrowserHandlers(): void {
   ipcMain.handle('embedded:check-session', () => {
     console.log('[IPC embedded:check-session]')
     return embeddedManager.checkSession()
+  })
+  ipcMain.handle('embedded:get-li-at', () => {
+    console.log('[IPC embedded:get-li-at]')
+    return embeddedManager.getLiAt()
   })
   ipcMain.handle('embedded:await-login', (_event, timeoutMs?: number) => {
     const ms = typeof timeoutMs === 'number' ? timeoutMs : 120_000
@@ -191,6 +214,25 @@ if (!gotSingleInstanceLock) {
     ipcMain.handle('chrome:check-linkedin', () => checkLinkedInLogin())
     ipcMain.handle('chrome:open-url', (_event, url: string) => openUrl(url))
     ipcMain.handle('chrome:list-tabs', () => listTabs())
+
+    // Diálogo nativo "Salvar como" para o export de CSV. Em produção o sidecar
+    // empacotado roda com um CWD imprevisível, então um caminho relativo cairia
+    // num lugar que o usuário não encontra. Aqui o usuário escolhe o destino e
+    // devolvemos o caminho absoluto, que vira o ``output_path`` do export.
+    ipcMain.handle(
+      'dialog:save-csv',
+      async (_event, defaultName?: string): Promise<{ canceled: boolean; filePath: string | null }> => {
+        const parent = mainWindow ?? BrowserWindow.getFocusedWindow() ?? undefined
+        const suggested = (defaultName && defaultName.trim()) || 'leads.csv'
+        const baseDir = app.getPath('downloads')
+        const result = await dialog.showSaveDialog(parent as BrowserWindow, {
+          title: 'Exportar leads para CSV',
+          defaultPath: join(baseDir, suggested),
+          filters: [{ name: 'CSV', extensions: ['csv'] }]
+        })
+        return { canceled: result.canceled, filePath: result.filePath ?? null }
+      }
+    )
 
     ipcMain.handle('system:clean-run', async () => {
       console.log('[IPC system:clean-run] iniciando limpeza de processos concorrentes')

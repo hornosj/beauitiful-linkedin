@@ -77,31 +77,4 @@ describe('InternalEnrichProgress', () => {
     expect(screen.getByText('Encontrado')).toBeInTheDocument()
     expect(container.querySelector('.enrich-lead-row[data-status="enriched"]')).toBeTruthy()
   })
-
-  it('highlights each found phone in the live modal feed', () => {
-    render(
-      <InternalEnrichProgress
-        {...baseProps}
-        fields="phone"
-        phase="lookup"
-        recentLeads={[
-          {
-            type: 'lead',
-            lead_ref: 'ana',
-            person_name: 'Ana Silva',
-            company_name: 'Nubank',
-            status: 'enriched',
-            phone: '+5511999990000',
-            confidence: 90,
-            source: 'company_site',
-            channel: 'phone'
-          }
-        ]}
-      />
-    )
-
-    expect(screen.getByText('+5511999990000')).toBeInTheDocument()
-    expect(screen.getByText('Encontrado')).toBeInTheDocument()
-    expect(screen.getByText('Procurando telefones')).toBeInTheDocument()
-  })
 })

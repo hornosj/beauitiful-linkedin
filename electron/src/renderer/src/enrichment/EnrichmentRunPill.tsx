@@ -11,25 +11,10 @@ export default function EnrichmentRunPill() {
 
   const done = !run.running
   const total = run.totalLeads || 0
-  const completed =
-    run.meta.fields === 'phone'
-      ? Math.min(run.phoneCompleted, total)
-      : run.meta.fields === 'both'
-        ? Math.min(Math.max(run.completed, run.phoneCompleted), total)
-        : Math.min(run.completed, total)
+  const completed = Math.min(run.completed, total)
   const ratio = total > 0 ? completed / total : 0
-  const contactLabel =
-    run.meta.fields === 'phone'
-      ? 'telefones'
-      : run.meta.fields === 'both'
-        ? 'contatos'
-        : 'e-mails'
-  const doneCount =
-    run.meta.fields === 'phone'
-      ? run.summary?.enriched_phone_leads ?? 0
-      : run.meta.fields === 'both'
-        ? (run.summary?.enriched_leads ?? 0) + (run.summary?.enriched_phone_leads ?? 0)
-        : run.summary?.enriched_leads ?? 0
+  const contactLabel = 'e-mails'
+  const doneCount = run.summary?.enriched_leads ?? 0
 
   const label = done
     ? run.errorMessage

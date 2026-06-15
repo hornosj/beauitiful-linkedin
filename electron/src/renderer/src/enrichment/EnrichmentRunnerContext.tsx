@@ -53,17 +53,10 @@ export interface StartEnrichmentArgs {
   totalLeads: number
   companyDomain?: string | null
   /**
-   * Which contact pipelines to run. Defaults to ``'email'`` so existing
-   * callers behave exactly as before. Use ``'phone'`` to only descend
-   * the phone discovery pipeline (Bucket A + B + WhatsApp) or
-   * ``'both'`` to run e-mail and phone sequentially in the same call.
+   * Which contact pipeline to run. Only ``'email'`` remains, so this is
+   * optional and defaults to ``'email'``.
    */
   fields?: InternalEnrichField
-  /**
-   * Restrict the phone pipeline to specific sources (e.g. ``['telegram_group']``).
-   * Forwarded as-is to the backend; ``undefined`` keeps the full pipeline.
-   */
-  phoneSources?: string[]
 }
 
 export interface EnrichmentRunnerContextValue {
@@ -147,8 +140,7 @@ export function EnrichmentRunnerProvider(props: ProviderProps) {
               lead_refs: args.leadRefs,
               fields,
               confirmed: true,
-              company_domain: args.companyDomain ?? null,
-              phone_sources: args.phoneSources
+              company_domain: args.companyDomain ?? null
             },
             applyEvent,
             controller.signal
@@ -167,19 +159,11 @@ export function EnrichmentRunnerProvider(props: ProviderProps) {
             }
           })
           const s = done.summary
-          const parts: string[] = []
-          if (fields === 'email' || fields === 'both') {
-            parts.push(`${s.enriched_leads} e-mail(s) novo(s)`)
-            parts.push(`${s.skipped_existing_email} já tinha e-mail`)
-            parts.push(`${s.failed_missing_domain} sem domínio`)
-          }
-          if (fields === 'phone' || fields === 'both') {
-            parts.push(`${s.enriched_phone_leads ?? 0} telefone(s) novo(s)`)
-            parts.push(`${s.skipped_existing_phone ?? 0} já tinha telefone`)
-            parts.push(
-              `${s.failed_no_phone_candidate ?? 0} sem candidato de telefone`
-            )
-          }
+          const parts: string[] = [
+            `${s.enriched_leads} e-mail(s) novo(s)`,
+            `${s.skipped_existing_email} já tinha e-mail`,
+            `${s.failed_missing_domain} sem domínio`
+          ]
           onSuccess?.(`Enriquecimento concluído: ${parts.join(' · ')}.`)
         } catch (err) {
           if (controller.signal.aborted) {

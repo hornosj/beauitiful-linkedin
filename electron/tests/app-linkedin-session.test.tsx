@@ -43,6 +43,7 @@ describe('App LinkedIn embedded session flow', () => {
           error: null
         }),
       cleanRun: () => Promise.resolve({ killedPids: [], ports: [], errors: [] }),
+      saveCsvDialog: () => Promise.resolve({ canceled: true, filePath: null }),
       chrome: {
         probe: () => Promise.resolve({ alive: false, endpoint: 'http://127.0.0.1:9222' }),
         isRunning: () => Promise.resolve(false),
@@ -62,6 +63,7 @@ describe('App LinkedIn embedded session flow', () => {
         status: () => Promise.resolve({ url: null, onAuthwall: false, visible: false }),
         getCdpEndpoint: () => Promise.resolve({ endpoint: 'http://127.0.0.1:9223', port: 9223 }),
         checkSession,
+        getLiAt: () => Promise.resolve('li_at-test-value'),
         awaitLogin: () => Promise.resolve(true)
       }
     }
@@ -175,69 +177,6 @@ describe('App LinkedIn embedded session flow', () => {
     })
     expect(prepare).not.toHaveBeenCalled()
     expect(hide).toHaveBeenCalled()
-  })
-
-  it('authenticates the Telethon Telegram session from the title bar', async () => {
-    const fetchMock = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
-      const path = String(url)
-      if (path.endsWith('/taxonomies')) {
-        return Promise.resolve(jsonResponse({ seniority: [], functions: [], role_presets: [], scrape_modes: [] }))
-      }
-      if (path.endsWith('/telegram/telethon/auth/status')) {
-        return Promise.resolve(
-          jsonResponse({
-            authorized: false,
-            configured: true,
-            session_name: 'telegram_phone_lookup'
-          })
-        )
-      }
-      if (path.endsWith('/telegram/telethon/auth/send-code')) {
-        expect(JSON.parse(String(init?.body))).toMatchObject({ phone: '+5511999999999' })
-        return Promise.resolve(
-          jsonResponse({
-            phone_code_hash: 'hash-123',
-            next_type: null,
-            timeout: null
-          })
-        )
-      }
-      if (path.endsWith('/telegram/telethon/auth/sign-in')) {
-        expect(JSON.parse(String(init?.body))).toMatchObject({
-          phone: '+5511999999999',
-          phone_code_hash: 'hash-123',
-          code: '12345'
-        })
-        return Promise.resolve(
-          jsonResponse({
-            authorized: true,
-            requires_password: false,
-            user_id: 42,
-            username: 'operator',
-            first_name: 'Operator'
-          })
-        )
-      }
-      return Promise.resolve(jsonResponse({ status: 'ok' }))
-    })
-    globalThis.fetch = fetchMock as unknown as typeof fetch
-
-    render(<App />)
-
-    fireEvent.click(await screen.findByRole('button', { name: /telegram não logado/i }))
-    fireEvent.change(await screen.findByLabelText('Telefone'), {
-      target: { value: '+5511999999999' }
-    })
-    fireEvent.click(screen.getByRole('button', { name: /enviar código/i }))
-
-    fireEvent.change(await screen.findByLabelText('Código'), {
-      target: { value: '12345' }
-    })
-    fireEvent.click(screen.getByRole('button', { name: /confirmar código/i }))
-
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: /telegram logado/i })).toHaveClass('ready')
-    })
   })
 })
 

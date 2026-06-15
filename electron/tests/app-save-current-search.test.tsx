@@ -61,6 +61,7 @@ describe('App save current search flow', () => {
           error: null
         }),
       cleanRun: () => Promise.resolve({ killedPids: [], ports: [], errors: [] }),
+      saveCsvDialog: () => Promise.resolve({ canceled: true, filePath: null }),
       chrome: {
         probe: () => Promise.resolve({ alive: true, endpoint: 'http://127.0.0.1:9222' }),
         isRunning: () => Promise.resolve(true),

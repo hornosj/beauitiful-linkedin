@@ -8,7 +8,12 @@ htmlcov/
 .venv/
 venv/
 env/
+# Arquivo de secrets local da máquina do dev (li_at, telegram api, etc.). Os
+# arquivos por ambiente (.env.development/.homolog/.production) SÃO versionados —
+# contêm só flags e config pública do Supabase (anon key é pública por design).
 .env
+# Overrides locais por ambiente (convenção do Vite) — nunca versionar.
+.env*.local
 build/
 dist/
 electron/release/
@@ -18,3 +23,5 @@ output/*
 data/cache.sqlite*
 # User-supplied Telegram API credentials (api_id/api_hash) — secret, never commit.
 data/telegram_credentials.json
+# Logs de build (artefatos transitórios do empacotamento).
+*.log

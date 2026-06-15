@@ -45,6 +45,9 @@ if (-not $SkipInstallCheck) {
   --collect-all uvicorn `
   --collect-all pydantic `
   --collect-all pandas `
+  --collect-all playwright `
+  --collect-all jwt `
+  --collect-all cryptography `
   $EntryPoint
 
 if ($LASTEXITCODE -ne 0) {

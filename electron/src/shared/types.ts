@@ -148,10 +148,8 @@ export interface Lead {
   linkedin_location?: string | null
   linkedin_education?: Array<Record<string, unknown>>
   /**
-   * Residential address recovered from a Telegram CPF (SISREG-III)
-   * consult — the same lookup that finds the phone. Informational only;
-   * never overwrites and never affects confidence. May be absent when
-   * the report had no address ("Sem informação").
+   * Residential address recovered during enrichment, when available.
+   * Informational only; never overwrites and never affects confidence.
    */
   endereco?: string | null
 }
@@ -400,7 +398,7 @@ export interface ExperimentalSearchResponse {
   note?: string | null
 }
 
-export type EnrichmentFields = 'email' | 'phone' | 'both'
+export type EnrichmentFields = 'email'
 export type EnrichmentProvider = 'apollo' | 'lusha' | 'snovio' | 'pdl'
 
 export interface EnrichmentPricingItem {
@@ -416,14 +414,13 @@ export interface EnrichmentPricingResponse {
   note: string
 }
 
-export type InternalEnrichField = 'email' | 'phone' | 'both'
+export type InternalEnrichField = 'email'
 
 export interface InternalEnrichRequest {
   lead_refs?: string[]
   fields: InternalEnrichField
   confirmed: boolean
   company_domain?: string | null
-  phone_sources?: string[]
 }
 
 export interface InternalEnrichSummary {
@@ -432,11 +429,6 @@ export interface InternalEnrichSummary {
   skipped_existing_email: number
   failed_missing_domain: number
   no_change: number
-  // Phone-side counters live on the same summary so the UI can render
-  // both pipelines with one shape. Zero when ``fields="email"``.
-  enriched_phone_leads?: number
-  skipped_existing_phone?: number
-  failed_no_phone_candidate?: number
 }
 
 export interface InternalEnrichResponse {
@@ -488,22 +480,16 @@ export type InternalEnrichPhase =
 export type InternalEnrichLeadStatus =
   | 'enriched'
   | 'skipped_existing_email'
-  | 'skipped_existing_phone'
   | 'failed_missing_domain'
   | 'failed_no_candidate'
-  | 'failed_existing_phone'
   | 'failed'
   | 'no_change'
 
 /**
- * Demultiplexer for ``fields="both"`` SSE streams.
- *
- * Events without a ``channel`` field default to the e-mail pipeline
- * (the historical contract). Phone-side events arrive tagged
- * ``channel: "phone"`` so the renderer can route them to a separate
- * progress bucket.
+ * Channel tag carried by SSE events. Only the e-mail pipeline remains,
+ * so this is always ``'email'``; events may omit the field entirely.
  */
-export type InternalEnrichChannel = 'email' | 'phone'
+export type InternalEnrichChannel = 'email'
 
 export interface InternalEnrichStartEvent {
   type: 'start'
@@ -562,7 +548,6 @@ export interface InternalEnrichLeadEvent {
   company_name: string | null
   status: InternalEnrichLeadStatus
   email?: string | null
-  phone?: string | null
   confidence: number
   /**
    * Domain whose candidate eventually validated, or `null` when the
@@ -576,11 +561,6 @@ export interface InternalEnrichLeadEvent {
    * the lead's column had `acme.com` but only `acme.io` validated.
    */
   tested_domains?: string[]
-  /** Source label of the chosen candidate (phone only). */
-  source?: string | null
-  /** Active-presence probe verdict (phone only). */
-  whatsapp_status?: 'active' | 'inactive' | 'unknown' | 'invalid' | null
-  hlr_status?: 'reachable' | 'unreachable' | 'absent' | 'unknown' | null
   channel?: InternalEnrichChannel
 }
 
@@ -669,296 +649,3 @@ export interface EnrichLeadTableResponse {
   leads: Lead[]
 }
 
-export interface TelegramConsultCandidate {
-  cpf: string
-  nome: string | null
-  data_nascimento: string | null
-  endereco: string | null
-  match_score?: number
-  signals_used?: string[]
-  breakdown?: Record<string, unknown>
-}
-
-export interface TelegramConsult {
-  id: number
-  table_id: string
-  lead_ref: string
-  provider: 'finder' | 'finder_cpf' | 'gon' | 'unix' | 'gon_cpf' | string
-  lead_name: string
-  query: string
-  raw_text: string | null
-  source_url: string | null
-  downloaded_at: string | null
-  error: string | null
-  extracted_nome: string | null
-  extracted_cpf: string | null
-  extracted_birth_date: string | null
-  extracted_address: string | null
-  extracted_candidates: TelegramConsultCandidate[]
-  match_score: number | null
-  match_details: Record<string, unknown>
-  created_at: string
-  // Pipeline fields (Phase 3). ``query_type`` defaults to ``"name"`` for
-  // rows persisted before the schema bump. The CPF-stage follow-up
-  // produces rows with ``query_type === "cpf"`` and ``blocked_reason``
-  // set when the lead was skipped (e.g. cargo divergente).
-  run_id?: string | null
-  query_type?: 'name' | 'cpf' | 'phone' | 'email' | string
-  query_value?: string | null
-  blocked_reason?: string | null
-}
-
-export interface TelegramConsultRequest {
-  lead_refs: string[]
-  max_leads?: number
-}
-
-export interface TelegramConsultSummary {
-  requested_leads: number
-  succeeded: number
-  failed: number
-}
-
-export interface TelegramConsultResponse {
-  status: string
-  summary: TelegramConsultSummary
-  consults: TelegramConsult[]
-}
-
-export interface TelegramConsultListResponse {
-  consults: TelegramConsult[]
-}
-
-export interface TelethonAuthStatusResponse {
-  authorized: boolean
-  configured: boolean
-  session_name: string | null
-}
-
-export interface TelethonAuthSendCodeRequest {
-  phone: string
-}
-
-export interface TelethonAuthSendCodeResponse {
-  phone_code_hash: string
-  next_type: string | null
-  timeout: number | null
-}
-
-export interface TelethonAuthSignInRequest {
-  phone: string
-  phone_code_hash: string
-  code: string
-  password?: string | null
-}
-
-export interface TelethonAuthSignInResponse {
-  authorized: boolean
-  requires_password: boolean
-  user_id: number | null
-  username: string | null
-  first_name: string | null
-}
-
-export interface TelethonAuthLogoutResponse {
-  authorized: boolean
-  logged_out: boolean
-}
-
-export interface TelethonConfigRequest {
-  api_id: string
-  api_hash: string
-}
-
-export interface TelethonPipelineRequest {
-  lead_refs: string[]
-  max_leads?: number
-  min_score?: number
-  max_cpf_candidates?: number
-  target_titles?: string[] | null
-}
-
-export interface TelethonCpfStageRequest {
-  lead_ref: string
-  cpf: string
-}
-
-export interface TelethonPipelineLeadResult {
-  lead_ref: string
-  lead_name: string | null
-  name_consults: TelegramConsult[]
-  cpf_consults: TelegramConsult[]
-  blocked_reason: string | null
-  candidates: TelegramFollowupPhoneCandidate[]
-}
-
-export interface TelethonPipelineSummary {
-  requested_leads: number
-  name_consults: number
-  cpf_consults: number
-  leads_with_phone: number
-  phones_persisted: number
-}
-
-export interface TelethonPipelineResponse {
-  status: string
-  summary: TelethonPipelineSummary
-  leads: TelethonPipelineLeadResult[]
-}
-
-// ---- Telegram phone follow-up (CPF stage) -------------------------------
-//
-// The follow-up is gated by the LinkedIn-cargo rule and the matcher
-// score threshold (default 65). Each returned phone carries the
-// originating CPF's match_score 1:1 in ``confidence`` — the UI must
-// surface this number as-is and never recompute it.
-
-export interface TelegramFollowupPhoneCandidate {
-  phone_raw: string
-  phone_digits: string
-  cpf: string
-  confidence: number
-  source_provider: string
-  nome?: string | null
-  provenance: Record<string, unknown>
-}
-
-export interface TelegramFollowupLeadResult {
-  lead_ref: string
-  lead_name?: string | null
-  blocked_reason?: string | null
-  candidates: TelegramFollowupPhoneCandidate[]
-  consults: TelegramConsult[]
-}
-
-export interface TelegramFollowupPhoneSummary {
-  requested_leads: number
-  leads_with_phone: number
-  leads_blocked: number
-  phones_persisted: number
-  skipped_existing_phone: number
-}
-
-export interface TelegramFollowupPhoneResponse {
-  status: string
-  summary: TelegramFollowupPhoneSummary
-  leads: TelegramFollowupLeadResult[]
-}
-
-export interface TelegramFollowupPhoneRequest {
-  lead_refs: string[]
-  target_titles?: string[] | null
-  max_leads?: number
-}
-
-// ---- Unified Telegram phone flow ----------------------------------------
-//
-// The user-facing "Pegar telefone via Telegram" button calls
-// ``POST /lead-tables/{id}/telegram-phone``. Per lead it first reuses a
-// verified persisted CPF when available, otherwise runs /nome → /cpf.
-// If no CPF is found and the lead has a Mail Finder e-mail, the backend
-// can return the Findex /email e-mail fallback as an ``email`` consult row.
-
-export interface TelegramPhoneRequest {
-  lead_refs: string[]
-  target_titles?: string[] | null
-  max_leads?: number
-}
-
-export interface TelegramPhoneStageEvent {
-  stage: string
-  timestamp: string
-  detail: Record<string, unknown>
-}
-
-export interface TelegramPhoneLeadResult {
-  lead_ref: string
-  lead_name?: string | null
-  blocked_reason?: string | null
-  candidates: TelegramFollowupPhoneCandidate[]
-  name_consult?: TelegramConsult | null
-  cpf_consult?: TelegramConsult | null
-  stages?: TelegramPhoneStageEvent[]
-  last_stage?: string | null
-}
-
-export interface TelegramPhoneSummary {
-  requested_leads: number
-  leads_with_phone: number
-  leads_blocked: number
-  phones_persisted: number
-  skipped_existing_phone: number
-}
-
-export interface TelegramPhoneResponse {
-  status: string
-  summary: TelegramPhoneSummary
-  leads: TelegramPhoneLeadResult[]
-}
-
-// Resumable per-lead runs. The UI uses these to pause between consults
-// (anti-ban dos bots Telegram): /start cria o run, /next processa um
-// lead por chamada, /cancel encerra. Cada /next devolve o resultado do
-// lead processado e o cursor atualizado para o cliente decidir
-// continuar manualmente.
-
-export interface TelegramPhoneStartRequest {
-  lead_refs: string[]
-  target_titles?: string[] | null
-  max_leads?: number
-}
-
-export interface TelegramPhoneStartResponse {
-  run_id: string
-  table_id: string
-  total_leads: number
-  next_index: number
-  lead_refs: string[]
-  status: string
-}
-
-export interface TelegramPhoneNextResponse {
-  run_id: string
-  status: string
-  next_index: number
-  total_leads: number
-  summary: TelegramPhoneSummary
-  last_lead?: TelegramPhoneLeadResult | null
-}
-
-export interface TelegramPhoneCancelResponse {
-  run_id: string
-  status: string
-  next_index: number
-  total_leads: number
-}
-
-// Two-step interactive flow. /extract-cpfs roda /nome + matcher e
-// devolve os CPFs candidatos pra UI exibir checkboxes. O operador
-// confirma quais vão pra /cpf via /run-cpf-stage (ou pula via
-// /skip-current-lead). Anti-ban + transparência sobre quais CPFs
-// vão consumir quota de bot.
-
-export interface TelegramPhoneRankedCandidate {
-  cpf: string
-  nome?: string | null
-  data_nascimento?: string | null
-  endereco?: string | null
-  match_score: number
-  signals_used: string[]
-  breakdown: Record<string, unknown>
-  eligible: boolean
-}
-
-export interface TelegramPhoneExtractCpfsResponse {
-  run_id: string
-  status: string
-  next_index: number
-  total_leads: number
-  lead_ref: string
-  lead_name?: string | null
-  blocked_reason?: string | null
-  eligible_cpfs: string[]
-  candidates: TelegramPhoneRankedCandidate[]
-  name_consult?: TelegramConsult | null
-}

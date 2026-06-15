@@ -36,6 +36,7 @@ export interface EmbeddedBrowserBridge {
   status(): Promise<EmbeddedStatus>
   getCdpEndpoint(): Promise<{ endpoint: string; port: number }>
   checkSession(): Promise<{ hasLiAt: boolean; hasJsessionid: boolean }>
+  getLiAt(): Promise<string | null>
   awaitLogin(timeoutMs?: number): Promise<boolean>
 }
 
@@ -59,6 +60,11 @@ export interface BeautifulLinkedInBridge {
    * uma execução limpa. O app reinicia logo após resolver.
    */
   cleanRun(): Promise<CleanRunReport>
+  /**
+   * Abre o diálogo nativo "Salvar como" para o export de CSV e devolve o
+   * caminho absoluto escolhido pelo usuário (ou ``canceled``).
+   */
+  saveCsvDialog(defaultName?: string): Promise<{ canceled: boolean; filePath: string | null }>
   chrome: ChromeBridge
   embeddedBrowser?: EmbeddedBrowserBridge
 }
@@ -101,6 +107,7 @@ const embeddedBrowser: EmbeddedBrowserBridge = {
   status: () => ipcRenderer.invoke('embedded:status'),
   getCdpEndpoint: () => ipcRenderer.invoke('embedded:cdp-endpoint'),
   checkSession: () => ipcRenderer.invoke('embedded:check-session'),
+  getLiAt: () => ipcRenderer.invoke('embedded:get-li-at'),
   awaitLogin: (timeoutMs) => ipcRenderer.invoke('embedded:await-login', timeoutMs)
 }
 
@@ -108,6 +115,7 @@ const bridge: BeautifulLinkedInBridge = {
   getBaseUrl: () => ipcRenderer.invoke('sidecar:get-base-url'),
   getStatus: () => ipcRenderer.invoke('sidecar:status'),
   cleanRun: () => ipcRenderer.invoke('system:clean-run'),
+  saveCsvDialog: (defaultName) => ipcRenderer.invoke('dialog:save-csv', defaultName),
   chrome,
   embeddedBrowser
 }

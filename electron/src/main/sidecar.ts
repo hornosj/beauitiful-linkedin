@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { once } from 'node:events'
+import { mkdirSync } from 'node:fs'
 import { delimiter, join, posix, win32 } from 'node:path'
 import { parseBootStdout, READY_TOKEN } from './sidecar-protocol'
 
@@ -91,7 +92,118 @@ export function buildSidecarEnv(projectRoot: string | undefined, env: NodeJS.Pro
   }
 }
 
+// Cold start da JVM/Clojure (compila ~60 namespaces) é mais lento que o Python.
+const CLJ_DEFAULT_TIMEOUT_MS = 90_000
+
+function isCljMode(): boolean {
+  return (process.env.BEAUTIFUL_LINKEDIN_SIDECAR ?? '').trim().toLowerCase() === 'clj'
+}
+
+// Diretório do projeto Clojure (irmão de beauitiful-linkedin). Override:
+// BEAUTIFUL_LINKEDIN_CLJ_DIR. Em dev, options.projectRoot == .../beauitiful-linkedin.
+function resolveCljDir(options: StartSidecarOptions): string {
+  const explicit = (process.env.BEAUTIFUL_LINKEDIN_CLJ_DIR ?? '').trim()
+  if (explicit) return explicit
+  const base = options.projectRoot ?? options.cwd ?? process.cwd()
+  return join(base, '..', 'beautiful-linkedin-clj-dev')
+}
+
+// Comando do sidecar Clojure. Defaults: `clojure -M:server`. Overrides:
+// BEAUTIFUL_LINKEDIN_CLJ_CMD (ex.: java) e BEAUTIFUL_LINKEDIN_CLJ_ARGS
+// (ex.: "-jar target/sidecar.jar" se você empacotar um uberjar).
+function buildCljCommand(): SidecarCommand {
+  const exe = (process.env.BEAUTIFUL_LINKEDIN_CLJ_CMD ?? '').trim() || 'clojure'
+  const args = (process.env.BEAUTIFUL_LINKEDIN_CLJ_ARGS ?? '-M:server').trim().split(/\s+/)
+  return { executable: exe, args }
+}
+
+// Cold start da JVM + Gradle (compila + sobe o Spring Boot) é mais lento que o
+// Python; daí o timeout generoso.
+const JAVA_DEFAULT_TIMEOUT_MS = 120_000
+
+function isJavaMode(): boolean {
+  return (process.env.BEAUTIFUL_LINKEDIN_SIDECAR ?? '').trim().toLowerCase() === 'java'
+}
+
+// Diretório do projeto Java (irmão de beauitiful-linkedin). Override:
+// BEAUTIFUL_LINKEDIN_JAVA_DIR. Em dev, options.projectRoot == .../beauitiful-linkedin.
+function resolveJavaDir(options: StartSidecarOptions): string {
+  const explicit = (process.env.BEAUTIFUL_LINKEDIN_JAVA_DIR ?? '').trim()
+  if (explicit) return explicit
+  const base = options.projectRoot ?? options.cwd ?? process.cwd()
+  return join(base, '..', 'beautiful-linkedin-java')
+}
+
+// Comando do sidecar Java. Default: `gradlew bootRun --console=plain` no projeto
+// Java. Overrides: BEAUTIFUL_LINKEDIN_JAVA_CMD (ex.: java) e
+// BEAUTIFUL_LINKEDIN_JAVA_ARGS (ex.: "-jar build/libs/beautiful-linkedin-java-0.1.0.jar").
+function buildJavaCommand(javaDir: string): SidecarCommand {
+  const cmdOverride = (process.env.BEAUTIFUL_LINKEDIN_JAVA_CMD ?? '').trim()
+  const argsOverride = (process.env.BEAUTIFUL_LINKEDIN_JAVA_ARGS ?? '').trim()
+  if (cmdOverride) {
+    return { executable: cmdOverride, args: argsOverride ? argsOverride.split(/\s+/) : [] }
+  }
+  const gradleArgs = (argsOverride || 'bootRun --console=plain').split(/\s+/)
+  if (process.platform === 'win32') {
+    // Node não executa .bat diretamente — passa pelo cmd.exe.
+    const gradlew = join(javaDir, 'gradlew.bat')
+    return {
+      executable: process.env.ComSpec ?? 'cmd.exe',
+      args: ['/d', '/s', '/c', gradlew, ...gradleArgs]
+    }
+  }
+  return { executable: join(javaDir, 'gradlew'), args: gradleArgs }
+}
+
 export async function startSidecar(options: StartSidecarOptions = {}): Promise<SidecarHandle> {
+  // Modo Clojure (dev): BEAUTIFUL_LINKEDIN_SIDECAR=clj sobe `clojure -M:server`
+  // no projeto irmão. Mesmo handshake PORT/READY no stdout, então renderer e o
+  // resto do main não mudam.
+  if (isCljMode()) {
+    const cljDir = resolveCljDir(options)
+    const command = buildCljCommand()
+    options.onLog?.(
+      `[sidecar] modo CLOJURE: ${command.executable} ${command.args.join(' ')} (cwd=${cljDir})`
+    )
+    return startSidecarWithCommand(command, {
+      ...options,
+      cwd: cljDir,
+      startTimeoutMs: options.startTimeoutMs ?? CLJ_DEFAULT_TIMEOUT_MS
+    })
+  }
+
+  // Modo Java (dev): BEAUTIFUL_LINKEDIN_SIDECAR=java sobe o sidecar Spring Boot
+  // via Gradle (gradlew bootRun) no projeto irmão beautiful-linkedin-java. Mesmo
+  // handshake PORT/READY no stdout, então renderer e o resto do main não mudam.
+  if (isJavaMode()) {
+    const javaDir = resolveJavaDir(options)
+    const command = buildJavaCommand(javaDir)
+    // O caminho do SQLite é relativo ao projeto Java; garante que data/ existe e
+    // força um caminho absoluto para não depender do cwd do bootRun.
+    const savedLeadsPath = join(javaDir, 'data', 'saved_leads.sqlite')
+    try {
+      mkdirSync(join(javaDir, 'data'), { recursive: true })
+    } catch {
+      // best-effort
+    }
+    options.onLog?.(
+      `[sidecar] modo JAVA: ${command.executable} ${command.args.join(' ')} (cwd=${javaDir})`
+    )
+    const port =
+      options.env?.BEAUTIFUL_LINKEDIN_PORT ?? process.env.BEAUTIFUL_LINKEDIN_PORT ?? '0'
+    return startSidecarWithCommand(command, {
+      ...options,
+      cwd: javaDir,
+      env: {
+        ...(options.env ?? {}),
+        // Porta efêmera (0) como o sidecar Python — a porta real volta no stdout.
+        BEAUTIFUL_LINKEDIN_PORT: port,
+        BEAUTIFUL_LINKEDIN_SAVED_LEADS_PATH: savedLeadsPath
+      },
+      startTimeoutMs: options.startTimeoutMs ?? JAVA_DEFAULT_TIMEOUT_MS
+    })
+  }
+
   const commands = buildSidecarCommands({
     explicitPythonExecutable: options.pythonExecutable ?? process.env.BEAUTIFUL_LINKEDIN_PYTHON,
     packagedSidecarExecutable: options.sidecarExecutablePath

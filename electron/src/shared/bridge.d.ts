@@ -36,6 +36,7 @@ declare global {
     status(): Promise<{ url: string | null; onAuthwall: boolean; visible: boolean }>
     getCdpEndpoint(): Promise<{ endpoint: string; port: number }>
     checkSession(): Promise<{ hasLiAt: boolean; hasJsessionid: boolean }>
+    getLiAt(): Promise<string | null>
     awaitLogin(timeoutMs?: number): Promise<boolean>
   }
 
@@ -54,6 +55,7 @@ declare global {
       error: string | null
     }>
     cleanRun(): Promise<CleanRunReport>
+    saveCsvDialog(defaultName?: string): Promise<{ canceled: boolean; filePath: string | null }>
     chrome: ChromeBridge
     embeddedBrowser?: EmbeddedBrowserBridge
   }

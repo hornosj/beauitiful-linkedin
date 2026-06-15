@@ -32,13 +32,13 @@ import ProbeProgress from './components/ProbeProgress'
 import LiveFoundLeads from './components/LiveFoundLeads'
 import CompanySearchRuns from './components/CompanySearchRuns'
 import InternalEnrichProgress from './components/InternalEnrichProgress'
-import TelethonAuthDialog from './components/TelethonAuthDialog'
-import TelegramConfigDialog from './components/TelegramConfigDialog'
 import LiveActivityBubbles, {
   type LiveActivityItem
 } from './components/LiveActivityBubbles'
 import { EnrichmentRunnerProvider, useEnrichmentRunner } from './enrichment/EnrichmentRunnerContext'
 import EnrichmentRunPill from './enrichment/EnrichmentRunPill'
+import { useAuth } from './auth/AuthGate'
+import { getAccessToken } from './auth/supabaseClient'
 import type {
   InternalEnrichLeadEvent,
   PeopleSearchProbeResponse,
@@ -64,7 +64,6 @@ interface CompanyRun {
 type ThemeMode = 'light' | 'dark'
 type View = 'search' | 'leads' | 'providers'
 type LinkedInSessionState = 'unknown' | 'logged_out' | 'logged_in' | 'open'
-type TelegramSessionState = 'unknown' | 'logged_out' | 'logged_in' | 'not_configured'
 
 const API_KEYS_STORAGE_KEY = 'beautiful-linkedin.api-keys'
 const THEME_STORAGE_KEY = 'beautiful-linkedin.theme'
@@ -88,9 +87,6 @@ export default function App() {
   const [linkedInSession, setLinkedInSession] = useState<LinkedInSessionState>('unknown')
   const [linkedInPanelVisible, setLinkedInPanelVisible] = useState(false)
   const [linkedInLoginBusy, setLinkedInLoginBusy] = useState(false)
-  const [telegramSession, setTelegramSession] = useState<TelegramSessionState>('unknown')
-  const [telethonAuthOpen, setTelethonAuthOpen] = useState(false)
-  const [telegramConfigOpen, setTelegramConfigOpen] = useState(false)
   const [smallCompanyProbe, setSmallCompanyProbe] =
     useState<PeopleSearchProbeResponse | null>(null)
   const [probeEvents, setProbeEvents] = useState<ProbeEvent[]>([])
@@ -110,7 +106,14 @@ export default function App() {
   const liveActivityTimersRef = useRef<number[]>([])
   const lastSearchActivityRef = useRef<string | null>(null)
 
-  const client = useMemo(() => (baseUrl ? new ApiClient(baseUrl) : null), [baseUrl])
+  const auth = useAuth()
+  // O ApiClient recebe o provedor de token: quando o controle de acesso está
+  // ligado, toda chamada ao sidecar leva o Bearer do Supabase. getAccessToken é
+  // estável (módulo), então não entra nas deps do memo.
+  const client = useMemo(
+    () => (baseUrl ? new ApiClient(baseUrl, getAccessToken) : null),
+    [baseUrl]
+  )
   const allLeads = useMemo(
     () => (result ? result.leads.slice(0, visibleLeadCount) : []),
     [result, visibleLeadCount]
@@ -431,111 +434,6 @@ export default function App() {
     if (!loggedIn) setLinkedInSession('logged_out')
   }
 
-  const refreshTelegramSession = useCallback(async (): Promise<TelegramSessionState> => {
-    if (!client) {
-      setTelegramSession('unknown')
-      return 'unknown'
-    }
-    try {
-      const status = await client.getTelethonAuthStatus()
-      const next: TelegramSessionState = !status.configured
-        ? 'not_configured'
-        : status.authorized
-          ? 'logged_in'
-          : 'logged_out'
-      setTelegramSession(next)
-      return next
-    } catch {
-      setTelegramSession('logged_out')
-      return 'logged_out'
-    }
-  }, [client])
-
-  const handleTelegramLogin = async () => {
-    if (!client) {
-      setFeedback({ kind: 'error', message: 'Sidecar offline. O login Telegram precisa da API local ativa.' })
-      return
-    }
-    setFeedback(null)
-    const session = await refreshTelegramSession()
-    if (session === 'not_configured') {
-      setTelegramConfigOpen(true)
-      return
-    }
-    if (session === 'logged_in') {
-      setFeedback({ kind: 'success', message: 'Telegram conectado. Sessão pronta para consultas.' })
-      return
-    }
-    setTelethonAuthOpen(true)
-  }
-
-  // Credentials saved via the tutorial dialog → advance straight to the
-  // phone-login step so the operator finishes the flow in one go.
-  const handleTelegramConfigSaved = (): void => {
-    setTelegramConfigOpen(false)
-    setTelegramSession('logged_out')
-    setTelethonAuthOpen(true)
-  }
-
-  const handleTelegramConfigClose = (): void => {
-    setTelegramConfigOpen(false)
-    void refreshTelegramSession()
-  }
-
-  // Escape hatch from the phone step when the saved api_id/api_hash were
-  // wrong: forget them and reopen the tutorial so the user can re-enter.
-  const handleTelegramReconfigure = async (): Promise<void> => {
-    setTelethonAuthOpen(false)
-    if (client) {
-      try {
-        await client.clearTelethonConfig()
-      } catch {
-        // best-effort — reopening the dialog lets the user overwrite anyway
-      }
-    }
-    setTelegramSession('not_configured')
-    setTelegramConfigOpen(true)
-  }
-
-  const markTelegramLoggedIn = useCallback((): void => {
-    setTelethonAuthOpen(false)
-    setTelegramSession('logged_in')
-  }, [])
-
-  const handleTelethonAuthSuccess = (): void => {
-    markTelegramLoggedIn()
-    setFeedback({ kind: 'success', message: 'Telegram conectado. Sessão pronta para consultas.' })
-  }
-
-  const handleTelethonAuthClose = (): void => {
-    setTelethonAuthOpen(false)
-    void refreshTelegramSession()
-  }
-
-  const handleTelegramLogout = async (): Promise<void> => {
-    if (!client) {
-      setFeedback({ kind: 'error', message: 'Sidecar offline. O logout do Telegram precisa da API local ativa.' })
-      return
-    }
-    setFeedback(null)
-    try {
-      await client.logoutTelethonAuth()
-      setTelegramSession('logged_out')
-      setFeedback({
-        kind: 'success',
-        message: 'Telegram desconectado. Você já pode entrar com outra conta (ou a mesma).'
-      })
-    } catch (error) {
-      const message =
-        error instanceof ApiError
-          ? `${error.status}: ${error.message}`
-          : error instanceof Error
-            ? error.message
-            : 'Não foi possível desconectar o Telegram.'
-      setFeedback({ kind: 'error', message })
-    }
-  }
-
   useEffect(() => {
     if (!linkedInPanelVisible) return
     const timer = window.setInterval(() => {
@@ -543,11 +441,6 @@ export default function App() {
     }, 1500)
     return () => window.clearInterval(timer)
   }, [linkedInPanelVisible, refreshLinkedInSession])
-
-  useEffect(() => {
-    if (!client) return
-    void refreshTelegramSession()
-  }, [client, refreshTelegramSession])
 
   const runSearch = async (formOverride?: SearchFormState, requestOverrides?: { cdp_endpoint?: string }) => {
     if (!client) {
@@ -629,7 +522,7 @@ export default function App() {
   // aggregate results table fills in progressively as companies finish.
   const runMultiSearch = async (
     companies: { name: string; domain?: string; linkedinUrl?: string }[],
-    requestOverrides?: { cdp_endpoint?: string }
+    requestOverrides?: { cdp_endpoint?: string; linkedin_cookie?: string }
   ) => {
     if (!client) {
       setFeedback({ kind: 'error', message: 'Sidecar offline. A busca precisa de uma API local ativa.' })
@@ -843,7 +736,14 @@ export default function App() {
         }
         await embedded.hide()
         setLinkedInPanelVisible(false)
-        const overrides = { cdp_endpoint: 'http://127.0.0.1:9223' }
+        // Hand the sidecar the embedded session's li_at so it can scrape via Playwright launch even if
+        // the CDP bridge is hanging (hidden-view renderer freeze). The cookie lives in the app's own
+        // session — no manual paste, no external-browser cookie extraction.
+        const liAt = await embedded.getLiAt()
+        const overrides: { cdp_endpoint?: string; linkedin_cookie?: string } = {
+          cdp_endpoint: 'http://127.0.0.1:9223'
+        }
+        if (liAt) overrides.linkedin_cookie = liAt
         if (multi) void runMultiSearch(companies, overrides)
         else void runSearch(undefined, overrides)
         return
@@ -863,12 +763,6 @@ export default function App() {
       : linkedInSession === 'open'
         ? 'LinkedIn aberto'
         : 'Logar LinkedIn'
-  const telegramSessionLabel =
-    telegramSession === 'logged_in'
-      ? 'Telegram logado'
-      : telegramSession === 'not_configured'
-        ? 'Telegram não configurado'
-        : 'Telegram não logado'
 
   return (
     <EnrichmentRunnerProvider
@@ -920,27 +814,6 @@ export default function App() {
             </button>
           </div>
         )}
-        <button
-          type="button"
-          className={`linkedin-session-btn ${telegramSession === 'logged_in' ? 'ready' : ''}`}
-          aria-label={telegramSessionLabel}
-          onClick={handleTelegramLogin}
-          title="Autenticar Telegram para consultas"
-        >
-          <span className="linkedin-session-dot" />
-          {telegramSessionLabel}
-        </button>
-        {telegramSession === 'logged_in' && (
-          <button
-            type="button"
-            className="linkedin-session-btn"
-            aria-label="Desconectar Telegram"
-            onClick={handleTelegramLogout}
-            title="Desconectar o Telegram para entrar com outra conta"
-          >
-            Sair do Telegram
-          </button>
-        )}
         {form.companyName && (
           <div className="text-[12px] font-normal text-ink-3 pl-3 ml-1 border-l border-line select-none">
             {form.companyName}
@@ -950,6 +823,25 @@ export default function App() {
           </div>
         )}
         <div className="flex items-center gap-1 ml-auto select-none">
+          {auth.enabled && (
+            <>
+              <span
+                className="text-[11px] text-ink-3 max-w-[160px] truncate max-sm:hidden"
+                title={auth.email ?? undefined}
+              >
+                {auth.email}
+              </span>
+              <button
+                type="button"
+                className="tb-btn"
+                aria-label="Sair da conta"
+                onClick={() => void auth.signOut()}
+                title={auth.email ? `${auth.email} · clique para sair` : 'Sair da conta'}
+              >
+                ⏻
+              </button>
+            </>
+          )}
           <button
             type="button"
             className="tb-btn"
@@ -1152,7 +1044,6 @@ export default function App() {
                 currentKeywords={parseKeywords(form.titles)}
                 currentSearchRequest={buildPersistedSearchRequest(form)}
                 onFeedback={(kind, message) => setFeedback({ kind, message })}
-                onTelethonAuthSuccess={markTelegramLoggedIn}
               />
             ) : (
               <div className="search-workspace-grid">
@@ -1301,23 +1192,6 @@ export default function App() {
           </button>
         </div>
       )}
-      {client && (
-        <TelegramConfigDialog
-          open={telegramConfigOpen}
-          client={client}
-          onSaved={handleTelegramConfigSaved}
-          onClose={handleTelegramConfigClose}
-        />
-      )}
-      {client && (
-        <TelethonAuthDialog
-          open={telethonAuthOpen}
-          client={client}
-          onSuccess={handleTelethonAuthSuccess}
-          onClose={handleTelethonAuthClose}
-          onReconfigure={handleTelegramReconfigure}
-        />
-      )}
     </div>
     </EnrichmentRunnerProvider>
   )
@@ -1351,7 +1225,7 @@ function EnrichmentBackground(props: {
   useEffect(() => {
     const latest = run?.recentLeads[0]
     if (!latest) return
-    const key = `${run?.meta.startedAt ?? 0}:${latest.lead_ref ?? latest.person_name ?? ''}:${latest.status}:${latest.email ?? latest.phone ?? ''}`
+    const key = `${run?.meta.startedAt ?? 0}:${latest.lead_ref ?? latest.person_name ?? ''}:${latest.status}:${latest.email ?? ''}`
     if (lastLeadEventRef.current === key) return
     lastLeadEventRef.current = key
     onActivity(formatEnrichmentActivity(latest))
@@ -1448,20 +1322,11 @@ function formatEnrichmentActivity(
       tone: 'success'
     }
   }
-  if (event.phone) {
-    return {
-      title: 'Telefone encontrado',
-      detail: `${person} · ${event.phone}`,
-      tone: 'success'
-    }
-  }
   const label: Record<InternalEnrichLeadEvent['status'], string> = {
     enriched: 'Contato encontrado',
     skipped_existing_email: 'Lead já tinha e-mail',
-    skipped_existing_phone: 'Lead já tinha telefone',
     failed_missing_domain: 'Sem domínio para validar',
-    failed_no_candidate: 'Sem candidato de telefone',
-    failed_existing_phone: 'Lead já tinha telefone',
+    failed_no_candidate: 'Sem candidato',
     failed: 'Sem candidato válido',
     no_change: 'Sem mudança'
   }

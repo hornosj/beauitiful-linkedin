@@ -16,6 +16,7 @@ const viewStop = vi.fn()
 const viewExecuteJavaScript = vi.fn()
 const viewClose = vi.fn()
 const viewIsDestroyed = vi.fn()
+const viewSetBackgroundThrottling = vi.fn()
 const viewSetBounds = vi.fn()
 const addChildView = vi.fn()
 const removeChildView = vi.fn()
@@ -75,7 +76,8 @@ vi.mock('electron', () => ({
       focus: viewFocus,
       executeJavaScript: viewExecuteJavaScript,
       close: viewClose,
-      isDestroyed: viewIsDestroyed
+      isDestroyed: viewIsDestroyed,
+      setBackgroundThrottling: viewSetBackgroundThrottling
     },
     setBounds: viewSetBounds
   })),
@@ -99,6 +101,7 @@ describe('EmbeddedBrowserManager login window', () => {
     cookieGet.mockResolvedValue([])
     cookieSet.mockResolvedValue(undefined)
     cookieRemove.mockResolvedValue(undefined)
+    viewLoadURL.mockResolvedValue(undefined)
     viewGetURL.mockReturnValue('https://www.linkedin.com/login')
     viewIsLoading.mockReturnValue(false)
     viewIsDestroyed.mockReturnValue(false)

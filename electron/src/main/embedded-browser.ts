@@ -126,6 +126,19 @@ export class EmbeddedBrowserManager {
     return { hasLiAt, hasJsessionid }
   }
 
+  /**
+   * Read the li_at VALUE from the embedded LinkedIn session so the sidecar can scrape via Playwright
+   * launch + li_at without the CDP bridge (which can hang while the view is hidden). The cookie lives in
+   * THIS app's own session — no rookiepy / external-browser decryption needed, so no Chrome 127+ ABE issue.
+   */
+  async getLiAt(): Promise<string | null> {
+    const ses = session.fromPartition(LINKEDIN_SESSION)
+    const cookies = await ses.cookies.get({ url: 'https://www.linkedin.com', name: 'li_at' })
+    const value = cookies.find((c) => c.name === 'li_at')?.value?.trim()
+    console.log(`${tag} getLiAt: ${value ? `li_at presente (${value.length} chars)` : 'ausente'}`)
+    return value && value.length > 0 ? value : null
+  }
+
   async awaitLogin(timeoutMs: number = 120_000): Promise<boolean> {
     console.log(`${tag} awaitLogin: aguardando JSESSIONID por até ${timeoutMs}ms`)
     const deadline = Date.now() + timeoutMs
