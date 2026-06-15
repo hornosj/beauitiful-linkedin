@@ -23,8 +23,8 @@ datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 
 a = Analysis(
-    ['src\\beautiful_linkedin\\server\\__main__.py'],
-    pathex=['src'],
+    ['C:\\Users\\jpedr\\OneDrive\\Documentos\\fritas\\beauitiful-linkedin\\src\\beautiful_linkedin\\server\\__main__.py'],
+    pathex=['C:\\Users\\jpedr\\OneDrive\\Documentos\\fritas\\beauitiful-linkedin\\src'],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
