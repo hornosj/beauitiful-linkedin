@@ -1,5 +1,10 @@
 import type { ScrapeMode, SearchRequest, Seniority, TaxonomyItem } from '../../../shared/types'
-import type { SearchFormFilters, SearchFormState, ValidationErrors } from '../../../shared/validation'
+import type {
+  ExtraCompany,
+  SearchFormFilters,
+  SearchFormState,
+  ValidationErrors
+} from '../../../shared/validation'
 
 interface Props {
   form: SearchFormState
@@ -64,13 +69,15 @@ export default function SearchForm(props: Props) {
   const extraCompanies = props.form.extraCompanies
   const companyCount =
     (props.form.companyName.trim() ? 1 : 0) +
-    extraCompanies.filter((value) => value.trim()).length
+    extraCompanies.filter((entry) => entry.name.trim()).length
   const isMultiCompany = companyCount >= 2
 
-  const setExtraCompanies = (next: string[]) => props.onChange({ extraCompanies: next })
-  const addCompany = () => setExtraCompanies([...extraCompanies, ''])
-  const updateCompany = (index: number, value: string) =>
-    setExtraCompanies(extraCompanies.map((entry, i) => (i === index ? value : entry)))
+  const setExtraCompanies = (next: ExtraCompany[]) => props.onChange({ extraCompanies: next })
+  const addCompany = () => setExtraCompanies([...extraCompanies, { name: '', domain: '' }])
+  const updateCompany = (index: number, patch: Partial<ExtraCompany>) =>
+    setExtraCompanies(
+      extraCompanies.map((entry, i) => (i === index ? { ...entry, ...patch } : entry))
+    )
   const removeCompany = (index: number) =>
     setExtraCompanies(extraCompanies.filter((_, i) => i !== index))
 
@@ -190,14 +197,25 @@ export default function SearchForm(props: Props) {
           <label className="form-label">Outras empresas</label>
           {extraCompanies.length > 0 && (
             <div style={{ display: 'grid', gap: 6, marginBottom: 8 }}>
-              {extraCompanies.map((value, index) => (
-                <div key={index} style={{ display: 'flex', gap: 6 }}>
+              {extraCompanies.map((entry, index) => (
+                <div
+                  key={index}
+                  style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 6 }}
+                >
                   <input
                     className="input"
-                    value={value}
-                    onChange={(e) => updateCompany(index, e.target.value)}
+                    value={entry.name}
+                    onChange={(e) => updateCompany(index, { name: e.target.value })}
                     placeholder="Nome da empresa ou URL do LinkedIn"
                     aria-label={`Empresa adicional ${index + 1}`}
+                  />
+                  <input
+                    className="input mono"
+                    value={entry.domain}
+                    onChange={(e) => updateCompany(index, { domain: e.target.value })}
+                    placeholder="dominio.com.br"
+                    autoComplete="url"
+                    aria-label={`Domínio da empresa adicional ${index + 1}`}
                   />
                   <button
                     type="button"
@@ -217,8 +235,9 @@ export default function SearchForm(props: Props) {
             + Adicionar empresa
           </button>
           <div className="field-hint">
-            Cada empresa dispara uma busca própria, em sequência. Uma falha não
-            interrompe as demais.
+            Cada empresa dispara uma busca própria, em sequência. O domínio de
+            cada uma é usado para encontrar e-mails. Uma falha não interrompe as
+            demais.
           </div>
         </div>
 

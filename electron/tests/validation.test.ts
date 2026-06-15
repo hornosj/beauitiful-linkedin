@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   applyRolePresetToForm,
   buildSearchRequestFromForm,
+  buildSearchRequestForCompany,
+  collectCompanies,
   isRiskyScrapeMode,
   validateSearchForm,
   type SearchFormState
@@ -75,6 +77,52 @@ describe('validateSearchForm', () => {
       acceptRisk: true
     })
     expect(result.ok).toBe(true)
+  })
+})
+
+describe('collectCompanies (busca múltipla com domínio por empresa)', () => {
+  it('carrega o domínio próprio de cada empresa extra', () => {
+    const companies = collectCompanies({
+      ...baseForm,
+      companyName: 'Nubank',
+      companyDomain: 'nubank.com.br',
+      linkedinUrl: '',
+      extraCompanies: [
+        { name: 'Mercado Livre', domain: 'mercadolivre.com' },
+        { name: 'Stone', domain: 'stone.com.br' }
+      ]
+    })
+    expect(companies).toEqual([
+      { name: 'Nubank', domain: 'nubank.com.br' },
+      { name: 'Mercado Livre', domain: 'mercadolivre.com' },
+      { name: 'Stone', domain: 'stone.com.br' }
+    ])
+  })
+
+  it('cada empresa vira um request com seu próprio company_domain', () => {
+    const form: SearchFormState = {
+      ...baseForm,
+      companyName: 'Nubank',
+      companyDomain: 'nubank.com.br',
+      linkedinUrl: '',
+      extraCompanies: [{ name: 'Mercado Livre', domain: 'mercadolivre.com' }]
+    }
+    const [primary, extra] = collectCompanies(form)
+    expect(buildSearchRequestForCompany(form, primary).company_domain).toBe('nubank.com.br')
+    expect(buildSearchRequestForCompany(form, extra).company_domain).toBe('mercadolivre.com')
+  })
+
+  it('empresa extra sem domínio fica sem company_domain (não herda da primária)', () => {
+    const form: SearchFormState = {
+      ...baseForm,
+      companyName: 'Nubank',
+      companyDomain: 'nubank.com.br',
+      linkedinUrl: '',
+      extraCompanies: [{ name: 'Stone', domain: '   ' }]
+    }
+    const [, extra] = collectCompanies(form)
+    expect(extra.domain).toBeUndefined()
+    expect(buildSearchRequestForCompany(form, extra).company_domain).toBeUndefined()
   })
 })
 

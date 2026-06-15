@@ -17,13 +17,21 @@ export interface SearchFormFilters {
   dropUnclassified: boolean
 }
 
+/** Empresa adicional numa busca múltipla: nome (ou URL do LinkedIn) e seu
+ *  próprio domínio. O domínio é por empresa porque é o que ancora a busca de
+ *  e-mail — sem ele, o enriquecimento de e-mail daquela empresa falha. */
+export interface ExtraCompany {
+  name: string
+  domain: string
+}
+
 export interface SearchFormState {
   companyName: string
   companyDomain: string
   linkedinUrl: string
-  /** Empresas adicionais (nome OU URL do LinkedIn). Cada entrada dispara
-   *  sua própria busca. Vazio = busca de empresa única (legado). */
-  extraCompanies: string[]
+  /** Empresas adicionais (nome OU URL do LinkedIn) com domínio próprio. Cada
+   *  entrada dispara sua própria busca. Vazio = busca de empresa única. */
+  extraCompanies: ExtraCompany[]
   /** Com 2+ empresas: 'single' agrega tudo numa tabela (coluna identifica
    *  a empresa) e 'separate' cria uma tabela por empresa. */
   tableMode: 'single' | 'separate'
@@ -174,8 +182,17 @@ export function collectCompanies(form: SearchFormState): CompanyDraft[] {
       linkedinUrl: form.linkedinUrl.trim() || undefined
     })
   }
-  for (const entry of form.extraCompanies) push(draftFromEntry(entry))
+  for (const entry of form.extraCompanies) push(draftFromExtra(entry))
   return drafts
+}
+
+/** Turn a structured extra-company entry into a draft, parsing the name field
+ *  as a plain name or a LinkedIn URL and attaching its own domain. */
+function draftFromExtra(entry: ExtraCompany): CompanyDraft | null {
+  const base = draftFromEntry(entry.name)
+  if (!base) return null
+  const domain = entry.domain.trim()
+  return domain ? { ...base, domain } : base
 }
 
 /** Build a search request for one specific company, reusing every shared
