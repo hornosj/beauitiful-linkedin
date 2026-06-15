@@ -8,7 +8,10 @@ $ErrorActionPreference = "Stop"
 $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $EntryPoint = Join-Path $RepoRoot "src\beautiful_linkedin\server\__main__.py"
 $DistPath = Join-Path $RepoRoot "dist"
-$WorkPath = Join-Path $RepoRoot "build\pyinstaller"
+# Workpath FORA do repo (OneDrive trava arquivos durante a sincronizacao e o
+# --clean do PyInstaller falha com "Acesso negado" ao apagar build\pyinstaller).
+# So o distpath precisa ficar no repo (o electron-builder le ../dist/sidecar).
+$WorkPath = Join-Path $env:TEMP "beautiful-linkedin-pyinstaller"
 
 if (-not $Python) {
   $VenvPython = Join-Path $RepoRoot ".venv\Scripts\python.exe"
