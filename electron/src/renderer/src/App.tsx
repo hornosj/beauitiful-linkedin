@@ -968,7 +968,7 @@ export default function App() {
                 background: sidecarOk ? 'var(--success)' : 'var(--ink-4)'
               }}
             />
-            v0.1.5
+            v0.1.8
           </button>
           <button className="pill-btn max-sm:hidden" onClick={() => setShowSettings(true)}>
             ⚙ Preferências{configuredApiKeyCount ? ` · ${configuredApiKeyCount}` : ''}

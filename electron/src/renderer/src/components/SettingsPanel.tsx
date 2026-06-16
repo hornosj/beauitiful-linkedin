@@ -664,7 +664,7 @@ export default function SettingsPanel(props: Props) {
                     <div className="t">Versão</div>
                   </div>
                   <div style={{ fontFamily: 'var(--mono)', fontSize: 12, color: 'var(--ink-3)' }}>
-                    0.1.3
+                    0.1.8
                   </div>
                 </div>
                 <div className="row">

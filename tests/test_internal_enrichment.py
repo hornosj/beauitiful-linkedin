@@ -493,12 +493,15 @@ def test_service_tries_next_candidate_when_mailbox_rejects_first_guess() -> None
     )
 
     def verify(email: str) -> MailboxVerificationResult:
-        if email == "ana@empresa.com":
+        # The top-priority guess (first.last) is rejected by SMTP; the
+        # service must skip it and confirm the next-best pattern (flast)
+        # instead of persisting the rejected address.
+        if email == "ana.silva@empresa.com":
             return MailboxVerificationResult(
                 status=EmailValidationStatus.RISKY,
                 reason="smtp_rejected",
             )
-        if email == "ana.silva@empresa.com":
+        if email == "asilva@empresa.com":
             return MailboxVerificationResult(
                 status=EmailValidationStatus.VALID,
                 reason="smtp_valid",
@@ -528,9 +531,168 @@ def test_service_tries_next_candidate_when_mailbox_rejects_first_guess() -> None
 
     update = service.enrich_lead(lead, existing_company_emails=[])
 
-    assert update.email == "ana.silva@empresa.com"
+    assert update.email == "asilva@empresa.com"
     assert update.email_validation_status == EmailValidationStatus.VALID
-    assert "ana@empresa.com" in update.discarded_candidates
+    assert "ana.silva@empresa.com" in update.discarded_candidates
+
+
+# ---- regression: pattern ranking & domain hygiene -------------------------
+
+
+def test_service_prefers_first_dot_last_over_bare_first_without_pattern() -> None:
+    """The bug the client hit: with no detected company pattern and only an
+    MX signal, the service used to persist the bare given name
+    (``pedro@empresa.com``). It must now pick the structured ``first.last``
+    address, which is what real corporate inboxes look like in Brazil."""
+    from beautiful_linkedin.models import Lead
+    from beautiful_linkedin.storage.internal_enrichment import (
+        InternalLeadEnrichmentService,
+    )
+
+    service = InternalLeadEnrichmentService(
+        validator=EmailValidator(mx_resolver=lambda _: True),
+    )
+    lead = Lead(
+        company_name="Empresa",
+        company_domain="empresa.com",
+        person_name="Pedro Silva",
+        title="Comprador",
+        linkedin_url="https://www.linkedin.com/in/pedro/",
+        source_url="https://www.linkedin.com/in/pedro/",
+        source_type="linkedin_people_search",
+        snippet="",
+        confidence_score=80,
+    )
+
+    update = service.enrich_lead(lead, existing_company_emails=[])
+
+    assert update.email == "pedro.silva@empresa.com"
+    assert update.matched_pattern == EnrichmentPattern.FIRST_DOT_LAST
+    # The bare-first guess is demoted below every structured pattern: it is
+    # never the winner, and ranks below the top fallbacks too.
+    assert update.email != "pedro@empresa.com"
+    assert "pedro@empresa.com" not in update.ranked_alternatives[:1]
+
+
+def test_service_offers_ranked_alternatives_on_same_domain() -> None:
+    from beautiful_linkedin.models import Lead
+    from beautiful_linkedin.storage.internal_enrichment import (
+        InternalLeadEnrichmentService,
+    )
+
+    service = InternalLeadEnrichmentService(
+        validator=EmailValidator(mx_resolver=lambda _: True),
+    )
+    lead = Lead(
+        company_name="Empresa",
+        company_domain="empresa.com",
+        person_name="Ana Silva",
+        title="x",
+        linkedin_url="https://www.linkedin.com/in/ana/",
+        source_url="https://www.linkedin.com/in/ana/",
+        source_type="linkedin_people_search",
+        snippet="",
+        confidence_score=80,
+    )
+
+    update = service.enrich_lead(lead, existing_company_emails=[])
+
+    assert update.email == "ana.silva@empresa.com"
+    assert update.ranked_alternatives  # non-empty fallbacks
+    # All fallbacks live on the SAME validated domain and exclude the winner.
+    assert all(alt.endswith("@empresa.com") for alt in update.ranked_alternatives)
+    assert update.email not in update.ranked_alternatives
+    # flast is the next-most-likely pattern after first.last.
+    assert "asilva@empresa.com" in update.ranked_alternatives
+
+
+def test_service_repairs_duplicated_tld_domain() -> None:
+    """A double-pasted domain (``empresa.com.com``) must be repaired so the
+    generated e-mails land on the real domain instead of a dead one."""
+    from beautiful_linkedin.models import Lead
+    from beautiful_linkedin.storage.internal_enrichment import (
+        InternalLeadEnrichmentService,
+    )
+
+    seen_domains: list[str] = []
+
+    def fake_mx(domain: str) -> bool:
+        seen_domains.append(domain)
+        return domain == "empresa.com"
+
+    service = InternalLeadEnrichmentService(
+        validator=EmailValidator(mx_resolver=fake_mx),
+    )
+    lead = Lead(
+        company_name="Empresa",
+        company_domain="empresa.com.com",
+        person_name="Pedro Silva",
+        title="x",
+        linkedin_url="https://www.linkedin.com/in/pedro/",
+        source_url="https://www.linkedin.com/in/pedro/",
+        source_type="linkedin_people_search",
+        snippet="",
+        confidence_score=80,
+    )
+
+    update = service.enrich_lead(lead, existing_company_emails=[])
+
+    assert update.email == "pedro.silva@empresa.com"
+    # The MX resolver was only ever asked about the repaired domain.
+    assert "empresa.com.com" not in seen_domains
+
+
+def test_generator_treats_generational_suffix_as_not_the_surname() -> None:
+    """'Omar Abujamra Junior' → surname is Abujamra, not Junior."""
+    locals_ = {
+        c.local_part
+        for c in EmailPatternGenerator().generate(
+            "Omar Abujamra Junior", "empresa.com"
+        )
+    }
+    assert "omar.abujamra" in locals_  # real surname used
+    assert "oabujamra" in locals_
+    # The suffixed form is kept only as a (low-ranked) alternative.
+    assert "omar.junior" in locals_
+
+
+def test_service_picks_real_surname_over_generational_suffix() -> None:
+    from beautiful_linkedin.models import Lead
+    from beautiful_linkedin.storage.internal_enrichment import (
+        InternalLeadEnrichmentService,
+    )
+
+    service = InternalLeadEnrichmentService(
+        validator=EmailValidator(mx_resolver=lambda _: True),
+    )
+    lead = Lead(
+        company_name="Empresa",
+        company_domain="empresa.com",
+        person_name="Omar Abujamra Junior",
+        title="x",
+        linkedin_url="https://www.linkedin.com/in/omar/",
+        source_url="https://www.linkedin.com/in/omar/",
+        source_type="linkedin_people_search",
+        snippet="",
+        confidence_score=80,
+    )
+    update = service.enrich_lead(lead, existing_company_emails=[])
+    assert update.email == "omar.abujamra@empresa.com"
+
+
+def test_sanitize_company_domain_variants() -> None:
+    from beautiful_linkedin.storage.internal_enrichment import (
+        sanitize_company_domain,
+    )
+
+    assert sanitize_company_domain("superdalben.com.com") == "superdalben.com"
+    assert sanitize_company_domain("acme.com.com.br") == "acme.com.br"
+    assert sanitize_company_domain("https://www.Empresa.com/contato") == "empresa.com"
+    assert sanitize_company_domain("WWW.NUBANK.COM.BR") == "nubank.com.br"
+    assert sanitize_company_domain("nubank.com.br") == "nubank.com.br"
+    assert sanitize_company_domain("") == ""
+    assert sanitize_company_domain(None) == ""
+    assert sanitize_company_domain("semponto") == ""
 
 
 # ---- CompanyDomainResolver ------------------------------------------------

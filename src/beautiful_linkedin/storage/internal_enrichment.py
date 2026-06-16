@@ -104,6 +104,50 @@ PERSONAL_EMAIL_DOMAINS: frozenset[str] = frozenset(
 _EMAIL_REGEX = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
 
 
+def sanitize_company_domain(value: str | None) -> str:
+    """Normalize a company domain and repair common malformations.
+
+    Clients paste domains in many shapes: with a scheme, a path, a
+    leading ``www.``, or — the bug that motivated this — a duplicated
+    TLD like ``superdalben.com.com`` (a double-paste / autocomplete
+    artifact). A malformed domain poisons *every* candidate generated
+    for that lead (every e-mail lands on a domain with no MX, or the
+    wrong one), so we clean it once, here, before it reaches the
+    generator or the MX/SMTP resolvers.
+
+    Returns the cleaned bare domain in lower-case, or ``""`` when
+    nothing usable remains.
+    """
+    raw = (value or "").strip().lower()
+    if not raw:
+        return ""
+    if "://" in raw:
+        from urllib.parse import urlparse
+
+        raw = urlparse(raw).netloc or raw.split("://", 1)[1]
+    # Drop path / query / port and a leading www.
+    raw = raw.split("/", 1)[0].split("?", 1)[0].split(":", 1)[0].strip()
+    if raw.startswith("www."):
+        raw = raw[4:]
+    raw = raw.strip(".")
+    if not raw or "." not in raw:
+        return ""
+    # Collapse consecutive duplicate labels: ``superdalben.com.com`` ->
+    # ``superdalben.com``; ``acme.com.com.br`` -> ``acme.com.br``. Only
+    # *adjacent* repeats are merged, so the common case (a TLD pasted
+    # twice) is fixed without touching legitimately distinct labels.
+    labels = raw.split(".")
+    collapsed: list[str] = []
+    for label in labels:
+        if not label:
+            continue
+        if collapsed and collapsed[-1] == label:
+            continue
+        collapsed.append(label)
+    cleaned = ".".join(collapsed)
+    return cleaned if "." in cleaned else ""
+
+
 # ---------------------------------------------------------------------------
 # Dataclasses
 # ---------------------------------------------------------------------------
@@ -152,14 +196,17 @@ class CompanyDomainResolver:
         table_domain: str | None = None,
     ) -> None:
         self._search_request = search_request or {}
-        self._table_domain = (table_domain or "").strip().lower() or None
+        self._table_domain = sanitize_company_domain(table_domain) or None
 
     def resolve(self, lead: Lead) -> str | None:
-        if lead.company_domain and lead.company_domain.strip():
-            return lead.company_domain.strip().lower()
+        own = sanitize_company_domain(lead.company_domain)
+        if own:
+            return own
         req_domain = self._search_request.get("company_domain")
-        if isinstance(req_domain, str) and req_domain.strip():
-            return req_domain.strip().lower()
+        if isinstance(req_domain, str):
+            cleaned = sanitize_company_domain(req_domain)
+            if cleaned:
+                return cleaned
         return self._table_domain
 
 
@@ -178,6 +225,11 @@ class EnrichmentUpdate:
     skipped_existing_email: bool = False
     failure_reason: str | None = None
     discarded_candidates: list[str] = field(default_factory=list)
+    # Plausible runner-up addresses on the SAME validated domain, ranked
+    # best-first (e.g. winner ``ana.silva@`` → ``[asilva@, a.silva@]``).
+    # These share the winner's MX/SMTP evidence but a different name
+    # pattern; surfaced so the user has fallbacks instead of one guess.
+    ranked_alternatives: list[str] = field(default_factory=list)
     # Which domain the winning candidate came from, plus the full list of
     # domains the service attempted before giving up. Surfacing both lets
     # the UI explain "tried acme.com and acme.io; accepted acme.io" and
@@ -203,13 +255,26 @@ _NAME_PARTICLES: frozenset[str] = frozenset(
 )
 
 
+# Generational suffixes that are NOT the family name. In Brazil
+# "Omar Abujamra Junior" is surname *Abujamra*, not "Junior" — building
+# ``omar.junior@`` is almost always wrong. Stripped from the END when
+# there's still a real surname before them; the with-suffix form is kept
+# as a lower-ranked alternative.
+_GENERATIONAL_SUFFIXES: frozenset[str] = frozenset(
+    {
+        "junior", "jr", "filho", "filha", "neto", "neta", "sobrinho",
+        "segundo", "terceiro", "ii", "iii", "iv",
+    }
+)
+
+
 class EmailPatternGenerator:
     """Generate plausible local-parts for a person + domain combination."""
 
     def generate(
         self, full_name: str | None, domain: str | None
     ) -> list[EmailCandidate]:
-        domain = (domain or "").strip().lower()
+        domain = sanitize_company_domain(domain)
         full_name = (full_name or "").strip()
         if not domain or not full_name:
             return []
@@ -223,6 +288,17 @@ class EmailPatternGenerator:
         # "joao.de.souza" or "jde". Keep the original tokens if stripping
         # would leave nothing.
         content = [token for token in parts if token not in _NAME_PARTICLES] or parts
+
+        # Drop trailing generational suffixes (Junior/Filho/Neto/…) when a
+        # real surname still precedes them, so the surname becomes the one
+        # companies actually use. Keep the suffixed token around to emit a
+        # ``first.suffix`` alternative below.
+        suffix_token = ""
+        core = list(content)
+        while len(core) > 2 and core[-1] in _GENERATIONAL_SUFFIXES:
+            suffix_token = core[-1]
+            core = core[:-1]
+        content = core
 
         first = content[0]
         last = content[-1] if len(content) > 1 else ""
@@ -276,6 +352,12 @@ class EmailPatternGenerator:
         if penult and penult != last:
             add(f"{first}.{penult}", EnrichmentPattern.FIRST_DOT_LAST)
             add(f"{first[0]}{penult}", EnrichmentPattern.FIRST_INITIAL_LAST)
+
+        # --- Generational-suffix fallback (omar.junior) — emitted last, so
+        #     it only surfaces as a low-ranked alternative if a company
+        #     actually uses the suffix as the mailbox name. ---
+        if suffix_token and suffix_token != last:
+            add(f"{first}.{suffix_token}", EnrichmentPattern.FIRST_DOT_LAST)
 
         return candidates
 
@@ -861,12 +943,46 @@ def score_enrichment(
 # ---------------------------------------------------------------------------
 
 
+# Relative likelihood that a pattern is a real corporate address, used to
+# order candidates when there's NO decisive evidence (no detected company
+# pattern, no published e-mail, and SMTP can't tell mailboxes apart). The
+# ordering is tuned for Brazilian B2B, where ``first.last`` dominates and a
+# bare given name (``ana@``) is the *least* reliable guess — exactly the
+# wrong default the old generation-order fallback was picking. Lower number
+# = tried first.
+_PATTERN_PRIORITY: dict[EnrichmentPattern, int] = {
+    EnrichmentPattern.FIRST_DOT_LAST: 0,  # ana.silva  (dominant)
+    EnrichmentPattern.FIRST_INITIAL_LAST: 1,  # asilva
+    EnrichmentPattern.FIRST_DOT_MIDDLE_DOT_LAST: 2,  # ana.maria.silva
+    EnrichmentPattern.FIRST_UNDERSCORE_MIDDLE_DOT_LAST: 3,  # ana_maria.silva
+    EnrichmentPattern.FIRST_INITIAL_DOT_LAST: 4,  # a.silva
+    EnrichmentPattern.FIRST_LAST: 5,  # anasilva
+    EnrichmentPattern.FIRST_UNDERSCORE_LAST: 6,  # ana_silva
+    EnrichmentPattern.FIRST_HYPHEN_LAST: 7,  # ana-silva
+    EnrichmentPattern.LAST_DOT_FIRST: 8,  # silva.ana
+    EnrichmentPattern.FIRST_DOT_LAST_INITIAL: 9,  # ana.s
+    EnrichmentPattern.FIRST_INITIAL_MIDDLE: 10,  # amaria
+    EnrichmentPattern.FIRST_LAST_INITIAL: 11,  # anas
+    EnrichmentPattern.LAST_DOT_FIRST_INITIAL: 12,  # silva.a
+    EnrichmentPattern.FIRST: 13,  # ana  — demoted: rarely a real work mail
+    EnrichmentPattern.LAST: 14,  # silva — demoted
+}
+
+
+def _pattern_priority(pattern: EnrichmentPattern) -> int:
+    return _PATTERN_PRIORITY.get(pattern, 99)
+
+
 # Patterns considered "common defaults" when there's no detected company
-# pattern — used to fall back to a sensible guess at lower confidence.
+# pattern — they score as a sensible (if unconfirmed) guess. Deliberately
+# EXCLUDES the bare ``first``/``last`` forms so a name-only guess never
+# outscores a structured ``first.last`` address.
 _COMMON_DEFAULT_PATTERNS: tuple[EnrichmentPattern, ...] = (
     EnrichmentPattern.FIRST_DOT_LAST,
     EnrichmentPattern.FIRST_INITIAL_LAST,
-    EnrichmentPattern.FIRST,
+    EnrichmentPattern.FIRST_INITIAL_DOT_LAST,
+    EnrichmentPattern.FIRST_DOT_MIDDLE_DOT_LAST,
+    EnrichmentPattern.FIRST_UNDERSCORE_MIDDLE_DOT_LAST,
 )
 
 
@@ -907,7 +1023,7 @@ class InternalLeadEnrichmentService:
                 enrichment_status=EnrichmentStatus.NOT_ENRICHED,
                 skipped_existing_email=True,
             )
-        cleaned = [d for d in (domain.strip().lower() for domain in domains) if d]
+        cleaned = [d for d in (sanitize_company_domain(domain) for domain in domains) if d]
         if not cleaned:
             return EnrichmentUpdate(
                 enrichment_status=EnrichmentStatus.FAILED,
@@ -974,8 +1090,9 @@ class InternalLeadEnrichmentService:
                 skipped_existing_email=True,
             )
 
-        # 2. Resolve domain — required.
-        domain = (lead.company_domain or "").strip().lower()
+        # 2. Resolve domain — required. Sanitize first so a malformed
+        #    column (e.g. "empresa.com.com") doesn't doom every candidate.
+        domain = sanitize_company_domain(lead.company_domain)
         if not domain:
             return EnrichmentUpdate(
                 enrichment_status=EnrichmentStatus.FAILED,
@@ -1062,6 +1179,18 @@ class InternalLeadEnrichmentService:
         if best.email:
             best.chosen_domain = domain
             best.tested_domains = [domain]
+            # Offer the next-best patterns on the same (validated) domain
+            # as ranked fallbacks. They aren't individually SMTP-checked,
+            # but they share the winner's domain evidence and are ordered
+            # by likelihood — so the user gets "the ones most likely real"
+            # instead of a single take-it-or-leave-it guess. We skip any
+            # candidate SMTP explicitly rejected.
+            rejected = set(discarded)
+            best.ranked_alternatives = [
+                c.email
+                for c in ordered
+                if c.email != best.email and c.email not in rejected
+            ][:3]
         return best
 
 
@@ -1618,8 +1747,10 @@ def _order_candidates(
     """Order candidates by evidence strength.
 
     Exact e-mails published on the company's own site win first, then the
-    detected company pattern, common defaults, and the rest in generation
-    order.
+    detected company pattern, then every remaining candidate ranked by its
+    real-world likelihood (:data:`_PATTERN_PRIORITY`) — so ``first.last``
+    is tried before the bare ``first`` guess that used to win purely
+    because it was generated first.
     """
     published = published_emails or set()
     rank: dict[EmailCandidate, int] = {}
@@ -1628,8 +1759,13 @@ def _order_candidates(
             rank[candidate] = 0
         elif company_pattern and candidate.pattern == company_pattern:
             rank[candidate] = 1
-        elif candidate.pattern in _COMMON_DEFAULT_PATTERNS:
-            rank[candidate] = 2
         else:
-            rank[candidate] = 3
-    return sorted(candidates, key=lambda c: (rank[c], candidates.index(c)))
+            rank[candidate] = 2
+    return sorted(
+        candidates,
+        key=lambda c: (
+            rank[c],
+            _pattern_priority(c.pattern),
+            candidates.index(c),
+        ),
+    )

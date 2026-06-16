@@ -178,6 +178,7 @@ from beautiful_linkedin.storage.internal_enrichment import (
     InternalLeadEnrichmentService,
     SmtpMailboxVerifier,
     collect_company_domains,
+    sanitize_company_domain,
 )
 from beautiful_linkedin.storage.linkedin_profile_validation import (
     CdpLinkedInProfilePageFetcher,
@@ -190,7 +191,7 @@ from beautiful_linkedin.storage.saved_leads import (
     SOURCE_TYPE_SEARCH,
 )
 
-VERSION = "0.1.7"
+VERSION = "0.1.8"
 
 logger = logging.getLogger(__name__)
 
@@ -5423,22 +5424,16 @@ def _apply_internal_domain_fallback(
 def _clean_internal_company_domain(value: Any) -> str | None:
     if not isinstance(value, str):
         return None
-    raw = value.strip().lower()
-    if not raw:
-        return None
-    if "://" in raw:
-        from urllib.parse import urlparse
-
-        raw = urlparse(raw).netloc
-    raw = raw.split("/", 1)[0].split("?", 1)[0].strip()
-    if raw.startswith("www."):
-        raw = raw[4:]
+    # Centralised normalisation: strips scheme/path/www and repairs
+    # duplicated TLDs ("empresa.com.com" -> "empresa.com") so a bad paste
+    # never reaches the e-mail generator.
+    raw = sanitize_company_domain(value)
     if not raw or "linkedin.com" in raw or "." not in raw:
         return None
     allowed = set("abcdefghijklmnopqrstuvwxyz0123456789.-")
     if any(char not in allowed for char in raw):
         return None
-    return raw.strip(".") or None
+    return raw or None
 
 
 def _default_mailbox_verifier() -> Any:

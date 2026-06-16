@@ -774,6 +774,32 @@ class SavedLeadsStore:
                     now=now,
                 )
 
+                # Surface the ranked runner-up patterns (same validated
+                # domain, lower-likelihood name shapes) as alternatives so
+                # the UI can offer fallbacks when the primary guess is
+                # wrong. Tagged separately from the chosen address; never
+                # promoted to primary.
+                primary_norm = (
+                    existing["email"] or update.email or ""
+                ).strip().lower()
+                for alt_email in getattr(update, "ranked_alternatives", None) or []:
+                    alt_norm = (alt_email or "").strip().lower()
+                    if not alt_norm or alt_norm == primary_norm:
+                        continue
+                    if any(
+                        (alt.get("email") or "").strip().lower() == alt_norm
+                        for alt in alternatives
+                    ):
+                        continue
+                    alternatives.append(
+                        {
+                            "email": alt_norm,
+                            "source": "internal_pattern",
+                            "confidence": None,
+                            "found_at": now,
+                        }
+                    )
+
                 connection.execute(
                     """
                     UPDATE saved_leads
