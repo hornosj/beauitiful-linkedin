@@ -190,7 +190,7 @@ from beautiful_linkedin.storage.saved_leads import (
     SOURCE_TYPE_SEARCH,
 )
 
-VERSION = "0.1.6"
+VERSION = "0.1.7"
 
 logger = logging.getLogger(__name__)
 
