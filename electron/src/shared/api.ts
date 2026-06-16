@@ -151,6 +151,22 @@ export class ApiClient {
     return this.get<EnrichmentPricingResponse>('/enrichment/pricing')
   }
 
+  /**
+   * Promote an operator-chosen address to a lead's primary e-mail. The
+   * previous primary and every other candidate are preserved as
+   * alternatives so the user can switch again. Returns the refreshed table.
+   */
+  selectLeadEmail(
+    tableId: string,
+    leadKey: string,
+    email: string
+  ): Promise<SavedLeadTableDetail> {
+    return this.post<SavedLeadTableDetail>(
+      `/lead-tables/${encodeURIComponent(tableId)}/select-email`,
+      { lead_key: leadKey, email }
+    )
+  }
+
   internalEnrichLeadTable(
     tableId: string,
     payload: InternalEnrichRequest

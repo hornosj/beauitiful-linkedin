@@ -107,6 +107,18 @@ export interface Lead {
   enrichment_confidence?: number | null
   email_type?: string | null
   email_validation_status?: string | null
+  /**
+   * True when the operator manually picked the primary `email` from the
+   * candidate list. Their choice is sovereign: the UI shows "Escolhido por
+   * você" instead of "Recomendado" and enrichment never overwrites it.
+   */
+  email_selected_by_user?: boolean
+  /**
+   * Stable per-table key used to target this lead in per-lead mutations
+   * (e.g. selecting which e-mail is primary). Populated by the backend
+   * when the lead is read from the store.
+   */
+  lead_key?: string | null
   enriched_at?: string | null
   /**
    * Sources that confirmed the primary `email` independently.

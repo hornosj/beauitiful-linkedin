@@ -256,3 +256,36 @@ def test_delete_endpoint(client: TestClient) -> None:
     assert response.status_code == 200
     assert response.json() == {"ok": True}
     assert client.get(f"/lead-tables/{table_id}").status_code == 404
+
+
+def test_select_email_endpoint_overrides_primary(client: TestClient) -> None:
+    payload = {**_lead_payload(), "email": "ana@nubank.com.br"}
+    table_id = client.post(
+        "/lead-tables", json={"name": "Pick", "leads": [payload]}
+    ).json()["table"]["id"]
+    lead_key = client.get(f"/lead-tables/{table_id}").json()["leads"][0]["lead_key"]
+    assert lead_key
+
+    resp = client.post(
+        f"/lead-tables/{table_id}/select-email",
+        json={"lead_key": lead_key, "email": "ana.silva@nubank.com.br"},
+    )
+    assert resp.status_code == 200, resp.text
+    lead = resp.json()["leads"][0]
+    assert lead["email"] == "ana.silva@nubank.com.br"
+    assert lead["email_selected_by_user"] is True
+    assert "ana@nubank.com.br" in {a["email"] for a in lead["email_alternatives"]}
+
+
+def test_select_email_endpoint_rejects_bad_email(client: TestClient) -> None:
+    payload = {**_lead_payload(), "email": "ana@nubank.com.br"}
+    table_id = client.post(
+        "/lead-tables", json={"name": "Pick", "leads": [payload]}
+    ).json()["table"]["id"]
+    lead_key = client.get(f"/lead-tables/{table_id}").json()["leads"][0]["lead_key"]
+
+    resp = client.post(
+        f"/lead-tables/{table_id}/select-email",
+        json={"lead_key": lead_key, "email": "nope"},
+    )
+    assert resp.status_code == 422

@@ -839,6 +839,107 @@ class SavedLeadsStore:
                 )
         return counters
 
+    def set_primary_email(
+        self,
+        table_id: str,
+        lead_key: str,
+        email: str,
+    ) -> Lead:
+        """Promote an operator-chosen address to the lead's primary e-mail.
+
+        The user's decision is sovereign: whichever candidate they pick
+        becomes the primary, and every other known candidate (including the
+        address the system had recommended) is preserved in
+        ``email_alternatives`` so they can switch again later. Sets
+        ``email_selected_by_user`` so the UI marks it "Escolhido por você"
+        and so future enrichment leaves it untouched.
+
+        ``email`` may be any candidate already on the lead or a brand-new
+        address the operator typed by hand. Returns the refreshed Lead.
+        Raises ``ValueError`` on a malformed address and ``KeyError`` when
+        the lead is not found.
+        """
+        chosen = (email or "").strip()
+        if not chosen or "@" not in chosen or "." not in chosen.split("@", 1)[1]:
+            raise ValueError("invalid_email")
+        chosen_norm = chosen.lower()
+        now = _now_iso()
+        with self._lock, self._connect() as connection:
+            self._assert_table_exists(connection, table_id)
+            row = connection.execute(
+                """
+                SELECT email, email_alternatives_json
+                FROM saved_leads
+                WHERE table_id = ? AND lead_key = ?
+                """,
+                (table_id, lead_key),
+            ).fetchone()
+            if row is None:
+                raise KeyError(
+                    f"lead '{lead_key}' não encontrado na tabela '{table_id}'"
+                )
+
+            old_primary = (row["email"] or "").strip()
+            existing_alts = _json_dict_list(
+                row["email_alternatives_json"]
+                if "email_alternatives_json" in row.keys()
+                else None
+            )
+            # Rebuild the candidate pool = old primary + existing
+            # alternatives, minus the chosen address, deduped by the
+            # normalized e-mail. Nothing is lost — the user can swap back.
+            pool: list[dict[str, Any]] = []
+            seen: set[str] = {chosen_norm}
+
+            def _push(entry: dict[str, Any]) -> None:
+                addr = (entry.get("email") or "").strip()
+                norm = addr.lower()
+                if not addr or norm in seen:
+                    return
+                seen.add(norm)
+                pool.append(entry)
+
+            if old_primary and old_primary.lower() != chosen_norm:
+                _push(
+                    {
+                        "email": old_primary,
+                        "source": "previous_primary",
+                        "confidence": None,
+                        "found_at": now,
+                    }
+                )
+            for alt in existing_alts:
+                _push(alt)
+
+            # When the choice differs from the recommended address, the old
+            # validation verdict no longer applies — clear it so the UI
+            # doesn't show a stale confidence dot over a manual pick.
+            clear_status = old_primary.lower() != chosen_norm
+            connection.execute(
+                """
+                UPDATE saved_leads
+                SET email = ?,
+                    email_selected_by_user = 1,
+                    email_alternatives_json = ?,
+                    email_validation_status = CASE WHEN ? THEN NULL ELSE email_validation_status END,
+                    enriched_at = ?
+                WHERE table_id = ? AND lead_key = ?
+                """,
+                (
+                    chosen,
+                    json.dumps(pool, ensure_ascii=False),
+                    1 if clear_status else 0,
+                    now,
+                    table_id,
+                    lead_key,
+                ),
+            )
+            refreshed = connection.execute(
+                "SELECT * FROM saved_leads WHERE table_id = ? AND lead_key = ?",
+                (table_id, lead_key),
+            ).fetchone()
+        return _row_to_lead(refreshed)
+
     def apply_contact_email_updates(
         self,
         table_id: str,
@@ -1634,6 +1735,12 @@ class SavedLeadsStore:
             _ensure_column(
                 connection, "saved_leads", "email_alternatives_json", "TEXT"
             )
+            # Set to 1 when the operator manually chose the primary e-mail
+            # from the candidate list. Drives the "Escolhido por você"
+            # marker and guarantees the choice is treated as sovereign.
+            _ensure_column(
+                connection, "saved_leads", "email_selected_by_user", "INTEGER"
+            )
             # Phone enrichment metadata — mirrors the email trail. All
             # additive so existing rows keep working; defaults are NULL.
             _ensure_column(connection, "saved_leads", "phone_type", "TEXT")
@@ -2171,9 +2278,11 @@ def _row_to_lead(row: sqlite3.Row) -> Lead:
         enrichment_confidence=_row_get_int(row, "enrichment_confidence"),
         email_type=_row_get(row, "email_type"),
         email_validation_status=_row_get(row, "email_validation_status"),
+        email_selected_by_user=bool(_row_get_int(row, "email_selected_by_user")),
         enriched_at=_row_get(row, "enriched_at"),
         email_verified_by=_json_list(_row_get(row, "email_verified_by_json")),
         email_alternatives=_json_dict_list(_row_get(row, "email_alternatives_json")),
+        lead_key=_row_get(row, "lead_key"),
         phone_type=_row_get(row, "phone_type"),
         phone_country=_row_get(row, "phone_country"),
         phone_carrier=_row_get(row, "phone_carrier"),

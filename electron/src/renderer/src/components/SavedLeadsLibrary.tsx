@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ApiClient, ApiError } from '../../../shared/api'
 import type {
   EnrichLeadTableRequest,
@@ -212,6 +212,38 @@ export default function SavedLeadsLibrary(props: Props) {
   // passar para o próximo. 'parallel' dispara todos os providers selecionados
   // de uma vez (gasta o orçamento cheio mesmo quando o barato já resolveu).
   const [enrichmentMode, setEnrichmentMode] = useState<'cascade' | 'parallel'>('cascade')
+  // lead_key currently being saved by the e-mail picker (disables its
+  // controls and shows a spinner state) — null when idle.
+  const [emailSelecting, setEmailSelecting] = useState<string | null>(null)
+
+  // The operator picked (or typed) which address becomes the lead's primary
+  // e-mail. Their choice is sovereign: we persist it and refresh the table.
+  const handleSelectLeadEmail = useCallback(
+    async (lead: Lead, email: string) => {
+      if (!client || !activeId) return
+      const key = lead.lead_key
+      if (!key) {
+        onFeedback('error', 'Não foi possível identificar este lead para salvar o e-mail.')
+        return
+      }
+      const chosen = (email || '').trim()
+      if (!chosen.includes('@')) {
+        onFeedback('error', 'Informe um e-mail válido.')
+        return
+      }
+      setEmailSelecting(key)
+      try {
+        const detail = await client.selectLeadEmail(activeId, key, chosen)
+        setActiveDetail(detail)
+        onFeedback('success', `E-mail definido: ${chosen}`)
+      } catch (error) {
+        onFeedback('error', formatError(error))
+      } finally {
+        setEmailSelecting(null)
+      }
+    },
+    [client, activeId, onFeedback]
+  )
 
   const refresh = useMemo(
     () => async () => {
@@ -1527,7 +1559,12 @@ export default function SavedLeadsLibrary(props: Props) {
                               '—'
                             ) : (
                               <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                                <LeadEmailCell lead={lead} hideFallback={true} />
+                                <LeadEmailCell
+                                  lead={lead}
+                                  hideFallback={true}
+                                  onSelectEmail={handleSelectLeadEmail}
+                                  busy={emailSelecting === lead.lead_key}
+                                />
                                 <LinkedInContactCell lead={lead} />
                                 <LeadPhoneCell lead={lead} hideFallback={true} />
                                 <LeadAddressCell lead={lead} />
@@ -1755,68 +1792,127 @@ function emailConfidenceBand(
   return { tone, color, label, title: why.length ? `${label} — ${why.join(' · ')}` : label }
 }
 
-function LeadEmailCell({ lead, hideFallback }: { lead: Lead; hideFallback?: boolean }) {
-  const [expanded, setExpanded] = useState(false)
-  const verifiedBy = parseArrayField<string>(lead.email_verified_by).filter(Boolean)
-  const alternatives = parseArrayField<any>(lead.email_alternatives).filter((alt) => alt && alt.email)
-  const hasBadge = verifiedBy.length >= 2
-  const hasAlternatives = alternatives.length > 0
-  const band = emailConfidenceBand(lead)
+/** A single addressable e-mail option for a lead (primary + alternatives). */
+interface EmailCandidate {
+  email: string
+  source: string
+  isPrimary: boolean
+}
 
-  if (!lead.email) {
-    if (hasAlternatives) {
-      const [primary, ...rest] = alternatives
-      return (
-        <div className="email-cell">
-          <div className="email-cell-primary">
-            <span className="email-cell-text">{primary.email}</span>
-            <span className="email-pill suggested" title={`Sugerido por ${primary.source}`}>
-              sugestão · {primary.source}
-            </span>
-          </div>
-          {rest.length > 0 && (
-            <AlternativesToggle
-              expanded={expanded}
-              setExpanded={setExpanded}
-              alternatives={rest}
-            />
-          )}
-        </div>
-      )
+/**
+ * Generic, client-facing label for an e-mail's origin. Internal/raw source
+ * codes (``internal_pattern``, ``previous_primary``) are humanised; never
+ * leak storage identifiers to the operator.
+ */
+function emailSourceLabel(source?: string | null): string {
+  const n = (source || '').trim().toLowerCase()
+  if (!n) return 'Sugestão'
+  if (n.includes('internal')) return 'Sugestão automática'
+  if (n === 'previous_primary') return 'Opção anterior'
+  if (n.includes('linkedin')) return 'Informado no perfil'
+  if (n === 'apollo') return 'Apollo'
+  if (n === 'lusha') return 'Lusha'
+  if (n === 'snovio' || n === 'snov.io') return 'Snov.io'
+  if (n === 'pdl') return 'PDL'
+  if (n === 'coresignal') return 'Coresignal'
+  return 'Sugestão'
+}
+
+function candidateTagKind(c: EmailCandidate, userChosen: boolean): string {
+  if (c.isPrimary) return userChosen ? 'user' : 'recommended'
+  return 'alt'
+}
+
+function candidateTagLabel(c: EmailCandidate, userChosen: boolean): string {
+  if (c.isPrimary) return userChosen ? 'Escolhido por você' : 'Recomendado'
+  return emailSourceLabel(c.source)
+}
+
+function LeadEmailCell({
+  lead,
+  hideFallback,
+  onSelectEmail,
+  busy
+}: {
+  lead: Lead
+  hideFallback?: boolean
+  onSelectEmail?: (lead: Lead, email: string) => void
+  busy?: boolean
+}) {
+  const [open, setOpen] = useState(false)
+  const verifiedBy = parseArrayField<string>(lead.email_verified_by).filter(Boolean)
+  const alternatives = parseArrayField<any>(lead.email_alternatives).filter(
+    (alt) => alt && alt.email
+  )
+  const hasBadge = verifiedBy.length >= 2
+  const band = emailConfidenceBand(lead)
+  const userChosen = lead.email_selected_by_user === true
+  const canPick = typeof onSelectEmail === 'function'
+  const primaryEmail = (lead.email || '').trim()
+
+  // Full candidate pool: current primary first (when present), then every
+  // alternative, deduped by normalised address.
+  const candidates = useMemo<EmailCandidate[]>(() => {
+    const out: EmailCandidate[] = []
+    const seen = new Set<string>()
+    const push = (email: string, source: string, isPrimary: boolean) => {
+      const norm = (email || '').trim().toLowerCase()
+      if (!norm || seen.has(norm)) return
+      seen.add(norm)
+      out.push({ email: email.trim(), source, isPrimary })
     }
+    if (primaryEmail) push(primaryEmail, userChosen ? 'user' : 'recommended', true)
+    for (const alt of alternatives) push(alt.email, alt.source || '', false)
+    return out
+  }, [primaryEmail, alternatives, userChosen])
+
+  if (!primaryEmail && candidates.length === 0) {
     if (hideFallback) return null
     return <div className="email-cell-empty">—</div>
   }
 
+  const headline = primaryEmail || candidates[0]?.email || ''
+  const extraCount = candidates.length - (primaryEmail ? 1 : 0)
+
   return (
     <div className="email-cell">
       <div className="email-cell-primary">
-        {band && (
-          <span
-            className="confidence-dot"
-            data-tone={band.tone}
-            style={{ background: band.color }}
-            title={band.title}
-            aria-label={`Confiança do e-mail: ${band.label}`}
-          />
+        {primaryEmail ? (
+          userChosen ? (
+            <span className="email-pill chosen" title="Você escolheu este e-mail">
+              ✓ escolhido
+            </span>
+          ) : (
+            band && (
+              <span
+                className="confidence-dot"
+                data-tone={band.tone}
+                style={{ background: band.color }}
+                title={band.title}
+                aria-label={`Confiança do e-mail: ${band.label}`}
+              />
+            )
+          )
+        ) : (
+          <span className="email-pill suggested" title="Nenhum e-mail confirmado ainda">
+            sugestão
+          </span>
         )}
-        <span className="email-cell-text">{lead.email}</span>
-        <span className="email-pill" title="Tipo de e-mail">
-          {emailTypeLabel(lead.email_type, lead.email)}
+        <span className={primaryEmail ? 'email-cell-text' : 'email-cell-text muted'}>
+          {headline}
         </span>
+        {primaryEmail && (
+          <span className="email-pill" title="Tipo de e-mail">
+            {emailTypeLabel(lead.email_type, primaryEmail)}
+          </span>
+        )}
         {hasBadge && (
           <span
             className="email-pill verified"
             title={`Verificado por: ${verifiedBy.join(', ')}`}
             aria-label={`Verificado por ${verifiedBy.join(', ')}`}
           >
-            <svg
-              width="9"
-              height="9"
-              viewBox="0 0 12 12"
-              fill="none"
-              aria-hidden="true"
-            >
+            <svg width="9" height="9" viewBox="0 0 12 12" fill="none" aria-hidden="true">
               <path
                 d="M2.5 6.5L4.8 8.8L9.5 3.5"
                 stroke="currentColor"
@@ -1829,57 +1925,120 @@ function LeadEmailCell({ lead, hideFallback }: { lead: Lead; hideFallback?: bool
           </span>
         )}
       </div>
-      {hasAlternatives && (
-        <AlternativesToggle
-          expanded={expanded}
-          setExpanded={setExpanded}
-          alternatives={alternatives}
+      {(canPick || extraCount > 0) && (
+        <button
+          type="button"
+          className="email-alt-toggle"
+          onClick={() => setOpen(!open)}
+          aria-expanded={open}
+        >
+          <span className="email-alt-caret" data-open={open ? 'true' : 'false'} aria-hidden="true">
+            ▸
+          </span>
+          {canPick
+            ? candidates.length > 1
+              ? `escolher e-mail (${candidates.length})`
+              : 'alterar e-mail'
+            : extraCount === 1
+              ? 'mais 1 sugestão'
+              : `mais ${extraCount} sugestões`}
+        </button>
+      )}
+      {open && (
+        <EmailCandidatePicker
+          lead={lead}
+          candidates={candidates}
+          userChosen={userChosen}
+          canPick={canPick}
+          busy={busy === true}
+          onSelectEmail={onSelectEmail}
         />
       )}
     </div>
   )
 }
 
-function AlternativesToggle({
-  expanded,
-  setExpanded,
-  alternatives
+function EmailCandidatePicker({
+  lead,
+  candidates,
+  userChosen,
+  canPick,
+  busy,
+  onSelectEmail
 }: {
-  expanded: boolean
-  setExpanded: (next: boolean) => void
-  alternatives: NonNullable<Lead['email_alternatives']>
+  lead: Lead
+  candidates: EmailCandidate[]
+  userChosen: boolean
+  canPick: boolean
+  busy: boolean
+  onSelectEmail?: (lead: Lead, email: string) => void
 }) {
-  const count = alternatives.length
+  const [manual, setManual] = useState('')
+  const submitManual = (event: React.FormEvent) => {
+    event.preventDefault()
+    const value = manual.trim()
+    if (!value.includes('@')) return
+    onSelectEmail?.(lead, value)
+    setManual('')
+  }
+
   return (
-    <>
-      <button
-        type="button"
-        className="email-alt-toggle"
-        onClick={() => setExpanded(!expanded)}
-        aria-expanded={expanded}
-      >
-        <span
-          className="email-alt-caret"
-          data-open={expanded ? 'true' : 'false'}
-          aria-hidden="true"
-        >
-          ▸
-        </span>
-        {count === 1
-          ? `outro provider sugeriu 1 e-mail`
-          : `outros providers sugeriram ${count} e-mails`}
-      </button>
-      {expanded && (
-        <ul className="email-alt-list">
-          {alternatives.map((alt, index) => (
-            <li key={`${alt.email}-${alt.source}-${index}`} className="email-alt-row">
-              <span className="email-alt-source">{alt.source}</span>
-              <span className="email-alt-email">{alt.email}</span>
-            </li>
-          ))}
-        </ul>
+    <div className="email-picker">
+      {canPick && (
+        <div className="email-picker-hint">
+          Recomendamos um, mas a escolha é sua — clique para usar.
+        </div>
       )}
-    </>
+      <ul className="email-picker-list">
+        {candidates.map((c, index) => (
+          <li
+            key={`${c.email}-${index}`}
+            className="email-picker-row"
+            data-selected={c.isPrimary ? 'true' : 'false'}
+          >
+            <button
+              type="button"
+              className="email-picker-choice"
+              disabled={!canPick || busy || c.isPrimary}
+              onClick={() => onSelectEmail?.(lead, c.email)}
+              title={c.isPrimary ? 'E-mail atual' : 'Usar este e-mail'}
+            >
+              <span
+                className="email-picker-radio"
+                data-on={c.isPrimary ? 'true' : 'false'}
+                aria-hidden="true"
+              >
+                {c.isPrimary ? '●' : '○'}
+              </span>
+              <span className="email-picker-email">{c.email}</span>
+            </button>
+            <span className="email-picker-tag" data-kind={candidateTagKind(c, userChosen)}>
+              {candidateTagLabel(c, userChosen)}
+            </span>
+          </li>
+        ))}
+      </ul>
+      {canPick && (
+        <form className="email-picker-manual" onSubmit={submitManual}>
+          <input
+            type="email"
+            className="email-picker-input"
+            value={manual}
+            onChange={(event) => setManual(event.target.value)}
+            placeholder="ou digite outro e-mail"
+            disabled={busy}
+            aria-label="Digitar outro e-mail"
+          />
+          <button
+            type="submit"
+            className="email-picker-use"
+            disabled={busy || !manual.trim().includes('@')}
+          >
+            Usar
+          </button>
+        </form>
+      )}
+    </div>
   )
 }
 

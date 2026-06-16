@@ -300,3 +300,40 @@ def test_mark_enrichment_updates_status(store: SavedLeadsStore) -> None:
     store.add_leads(table.id, [_lead()])
     updated = store.mark_enrichment(table.id, status=ENRICHMENT_NOT_IMPLEMENTED)
     assert updated.enrichment_status == ENRICHMENT_NOT_IMPLEMENTED
+
+
+def test_set_primary_email_overrides_and_preserves_candidates(
+    store: SavedLeadsStore,
+) -> None:
+    table = store.create_table(name="Pick")
+    store.add_leads(table.id, [_lead(email="ana@nubank.com.br")])
+    [lead] = store.list_leads(table.id)
+    assert lead.lead_key
+
+    updated = store.set_primary_email(
+        table.id, lead.lead_key, "ana.silva@nubank.com.br"
+    )
+    assert updated.email == "ana.silva@nubank.com.br"
+    assert updated.email_selected_by_user is True
+    # The recommended (old) address is preserved so the user can switch back.
+    assert "ana@nubank.com.br" in {a["email"] for a in updated.email_alternatives}
+
+    reverted = store.set_primary_email(table.id, lead.lead_key, "ana@nubank.com.br")
+    assert reverted.email == "ana@nubank.com.br"
+    assert reverted.email_selected_by_user is True
+    assert "ana.silva@nubank.com.br" in {
+        a["email"] for a in reverted.email_alternatives
+    }
+
+
+def test_set_primary_email_validates_and_requires_lead(
+    store: SavedLeadsStore,
+) -> None:
+    table = store.create_table(name="Pick")
+    store.add_leads(table.id, [_lead(email="ana@nubank.com.br")])
+    [lead] = store.list_leads(table.id)
+
+    with pytest.raises(ValueError):
+        store.set_primary_email(table.id, lead.lead_key, "not-an-email")
+    with pytest.raises(KeyError):
+        store.set_primary_email(table.id, "row:999:missing", "x@empresa.com")

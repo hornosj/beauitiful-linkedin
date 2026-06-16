@@ -191,7 +191,7 @@ from beautiful_linkedin.storage.saved_leads import (
     SOURCE_TYPE_SEARCH,
 )
 
-VERSION = "0.1.8"
+VERSION = "0.1.9"
 
 logger = logging.getLogger(__name__)
 
@@ -453,6 +453,18 @@ class ExportLeadTableRequest(BaseModel):
 
 class ExportLeadTableResponse(BaseModel):
     output_path: str
+
+
+class SelectLeadEmailRequest(BaseModel):
+    """Body for ``POST /lead-tables/{id}/select-email``.
+
+    Promotes an operator-chosen address to the lead's primary e-mail. The
+    user's decision is sovereign — ``email`` can be any candidate already
+    on the lead or a brand-new address typed by hand.
+    """
+
+    lead_key: str = Field(min_length=1)
+    email: str = Field(min_length=3)
 
 
 class MergeLeadTablesRequest(BaseModel):
@@ -1568,6 +1580,25 @@ def build_app(
             leads = store.list_leads(table_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return SavedLeadTableDetail(table=_table_to_payload(table), leads=leads)
+
+    @app.post(
+        "/lead-tables/{table_id}/select-email",
+        response_model=SavedLeadTableDetail,
+    )
+    def select_lead_email(
+        table_id: str, payload: SelectLeadEmailRequest
+    ) -> SavedLeadTableDetail:
+        """Set the operator-chosen address as the lead's primary e-mail."""
+        store = get_saved_leads_store(app)
+        try:
+            store.set_primary_email(table_id, payload.lead_key, payload.email)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="e-mail inválido") from exc
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        table = store.get_table(table_id)
+        leads = store.list_leads(table_id)
         return SavedLeadTableDetail(table=_table_to_payload(table), leads=leads)
 
     @app.post(

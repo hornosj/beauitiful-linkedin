@@ -77,6 +77,11 @@ class Lead(BaseModel):
     enrichment_confidence: Optional[int] = Field(default=None, ge=0, le=100)
     email_type: Optional[str] = None  # work | personal | unknown
     email_validation_status: Optional[str] = None  # valid | probable | risky | unknown
+    # True when the operator manually picked the primary ``email`` from the
+    # candidate list (overriding the system recommendation). The user's
+    # choice is sovereign: enrichment never overwrites it, and the UI shows
+    # an "Escolhido por você" marker instead of "Recomendado".
+    email_selected_by_user: bool = False
     enriched_at: Optional[str] = None  # ISO timestamp
     # Cross-provider verification trail.
     #
@@ -142,6 +147,11 @@ class Lead(BaseModel):
     # enrichment status, and is never overwritten once set. Populated by
     # the Telegram phone stage alongside ``phone``.
     endereco: Optional[str] = None
+    # Storage handle: the stable per-table key the SavedLeadsStore uses to
+    # address this row. Populated only when a lead is read back from the
+    # store (None for freshly-built search results). The UI sends it back to
+    # target per-lead mutations like "select this e-mail".
+    lead_key: Optional[str] = None
 
 
 class ProspectingSummary(BaseModel):
