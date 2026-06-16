@@ -73,7 +73,11 @@ export default function SearchForm(props: Props) {
   const isMultiCompany = companyCount >= 2
 
   const setExtraCompanies = (next: ExtraCompany[]) => props.onChange({ extraCompanies: next })
-  const addCompany = () => setExtraCompanies([...extraCompanies, { name: '', domain: '' }])
+  const addCompany = () =>
+    setExtraCompanies([
+      ...extraCompanies,
+      { name: '', domain: '', linkedinUrl: '', maxResults: props.form.maxResults }
+    ])
   const updateCompany = (index: number, patch: Partial<ExtraCompany>) =>
     setExtraCompanies(
       extraCompanies.map((entry, i) => (i === index ? { ...entry, ...patch } : entry))
@@ -196,37 +200,98 @@ export default function SearchForm(props: Props) {
         <div className="form-row">
           <label className="form-label">Outras empresas</label>
           {extraCompanies.length > 0 && (
+            <label
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                marginBottom: 8,
+                fontSize: 13,
+                color: 'var(--ink-2)'
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={props.form.sameMaxForAll}
+                onChange={(e) => props.onChange({ sameMaxForAll: e.target.checked })}
+              />
+              Mesmo máx. de leads para todas as empresas
+            </label>
+          )}
+          {extraCompanies.length > 0 && (
             <div style={{ display: 'grid', gap: 6, marginBottom: 8 }}>
               {extraCompanies.map((entry, index) => (
                 <div
                   key={index}
-                  style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 6 }}
+                  style={{
+                    display: 'grid',
+                    gap: 6,
+                    border: '1px solid var(--line, #e5e7eb)',
+                    borderRadius: 8,
+                    padding: 8
+                  }}
                 >
-                  <input
-                    className="input"
-                    value={entry.name}
-                    onChange={(e) => updateCompany(index, { name: e.target.value })}
-                    placeholder="Nome da empresa ou URL do LinkedIn"
-                    aria-label={`Empresa adicional ${index + 1}`}
-                  />
+                  <div
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: props.form.sameMaxForAll
+                        ? '1fr 1fr auto'
+                        : '1fr 1fr 84px auto',
+                      gap: 6
+                    }}
+                  >
+                    <input
+                      className="input"
+                      value={entry.name}
+                      onChange={(e) => updateCompany(index, { name: e.target.value })}
+                      placeholder="Nome da empresa"
+                      aria-label={`Empresa adicional ${index + 1}`}
+                    />
+                    <input
+                      className="input mono"
+                      value={entry.domain}
+                      onChange={(e) => updateCompany(index, { domain: e.target.value })}
+                      placeholder="dominio.com.br"
+                      autoComplete="url"
+                      aria-label={`Domínio da empresa adicional ${index + 1}`}
+                    />
+                    {!props.form.sameMaxForAll && (
+                      <input
+                        className="input mono"
+                        type="number"
+                        min={1}
+                        max={500}
+                        value={entry.maxResults}
+                        onChange={(e) =>
+                          updateCompany(index, {
+                            maxResults: Number.parseInt(e.target.value, 10) || 0
+                          })
+                        }
+                        placeholder="máx"
+                        title="Máx. de leads desta empresa"
+                        aria-label={`Máx. de leads da empresa adicional ${index + 1}`}
+                      />
+                    )}
+                    <button
+                      type="button"
+                      className="pill-btn"
+                      onClick={() => removeCompany(index)}
+                      aria-label="Remover empresa"
+                      title="Remover empresa"
+                      style={{ flexShrink: 0 }}
+                    >
+                      ✕
+                    </button>
+                  </div>
                   <input
                     className="input mono"
-                    value={entry.domain}
-                    onChange={(e) => updateCompany(index, { domain: e.target.value })}
-                    placeholder="dominio.com.br"
+                    type="url"
+                    value={entry.linkedinUrl}
+                    onChange={(e) => updateCompany(index, { linkedinUrl: e.target.value })}
+                    placeholder="https://www.linkedin.com/company/empresa/people/"
                     autoComplete="url"
-                    aria-label={`Domínio da empresa adicional ${index + 1}`}
+                    aria-label={`URL da aba People da empresa adicional ${index + 1}`}
                   />
-                  <button
-                    type="button"
-                    className="pill-btn"
-                    onClick={() => removeCompany(index)}
-                    aria-label="Remover empresa"
-                    title="Remover empresa"
-                    style={{ flexShrink: 0 }}
-                  >
-                    ✕
-                  </button>
                 </div>
               ))}
             </div>
@@ -235,9 +300,11 @@ export default function SearchForm(props: Props) {
             + Adicionar empresa
           </button>
           <div className="field-hint">
-            Cada empresa dispara uma busca própria, em sequência. O domínio de
-            cada uma é usado para encontrar e-mails. Uma falha não interrompe as
-            demais.
+            Cada empresa dispara uma busca própria, em sequência. O domínio é
+            usado para encontrar e-mails; a URL da aba <strong>People</strong> é o
+            que o scraper visita (sem ela, tentamos adivinhar pelo nome).
+            Desmarque <em>“mesmo máx.”</em> para definir quantos leads puxar de
+            cada empresa. Uma falha não interrompe as demais.
           </div>
         </div>
 

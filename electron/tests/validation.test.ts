@@ -15,6 +15,7 @@ const baseForm: SearchFormState = {
   companyDomain: 'nubank.com.br',
   linkedinUrl: 'https://www.linkedin.com/company/nubank/',
   extraCompanies: [],
+  sameMaxForAll: true,
   tableMode: 'single',
   rolePreset: 'custom',
   titles: 'marketing, growth',
@@ -87,15 +88,16 @@ describe('collectCompanies (busca múltipla com domínio por empresa)', () => {
       companyName: 'Nubank',
       companyDomain: 'nubank.com.br',
       linkedinUrl: '',
+      maxResults: 25,
       extraCompanies: [
-        { name: 'Mercado Livre', domain: 'mercadolivre.com' },
-        { name: 'Stone', domain: 'stone.com.br' }
+        { name: 'Mercado Livre', domain: 'mercadolivre.com', linkedinUrl: '', maxResults: 0 },
+        { name: 'Stone', domain: 'stone.com.br', linkedinUrl: '', maxResults: 0 }
       ]
     })
     expect(companies).toEqual([
-      { name: 'Nubank', domain: 'nubank.com.br' },
-      { name: 'Mercado Livre', domain: 'mercadolivre.com' },
-      { name: 'Stone', domain: 'stone.com.br' }
+      { name: 'Nubank', domain: 'nubank.com.br', maxResults: 25 },
+      { name: 'Mercado Livre', domain: 'mercadolivre.com', maxResults: 25 },
+      { name: 'Stone', domain: 'stone.com.br', maxResults: 25 }
     ])
   })
 
@@ -105,7 +107,9 @@ describe('collectCompanies (busca múltipla com domínio por empresa)', () => {
       companyName: 'Nubank',
       companyDomain: 'nubank.com.br',
       linkedinUrl: '',
-      extraCompanies: [{ name: 'Mercado Livre', domain: 'mercadolivre.com' }]
+      extraCompanies: [
+        { name: 'Mercado Livre', domain: 'mercadolivre.com', linkedinUrl: '', maxResults: 0 }
+      ]
     }
     const [primary, extra] = collectCompanies(form)
     expect(buildSearchRequestForCompany(form, primary).company_domain).toBe('nubank.com.br')
@@ -118,11 +122,70 @@ describe('collectCompanies (busca múltipla com domínio por empresa)', () => {
       companyName: 'Nubank',
       companyDomain: 'nubank.com.br',
       linkedinUrl: '',
-      extraCompanies: [{ name: 'Stone', domain: '   ' }]
+      extraCompanies: [{ name: 'Stone', domain: '   ', linkedinUrl: '', maxResults: 0 }]
     }
     const [, extra] = collectCompanies(form)
     expect(extra.domain).toBeUndefined()
     expect(buildSearchRequestForCompany(form, extra).company_domain).toBeUndefined()
+  })
+
+  it('usa a URL da aba People por empresa para o request (people_search)', () => {
+    const peopleUrl = 'https://www.linkedin.com/company/mercadolivre-com/people/'
+    const form: SearchFormState = {
+      ...baseForm,
+      companyName: 'Nubank',
+      extraCompanies: [
+        { name: 'Mercado Livre', domain: 'mercadolivre.com', linkedinUrl: peopleUrl, maxResults: 0 }
+      ]
+    }
+    const [, extra] = collectCompanies(form)
+    expect(extra.linkedinUrl).toBe(peopleUrl)
+    expect(buildSearchRequestForCompany(form, extra).linkedin_url).toBe(peopleUrl)
+  })
+
+  it('aceita URL do LinkedIn colada no campo nome quando não há URL explícita', () => {
+    const peopleUrl = 'https://www.linkedin.com/company/stone-co/people/'
+    const [extra] = collectCompanies({
+      ...baseForm,
+      companyName: '',
+      companyDomain: '',
+      linkedinUrl: '',
+      extraCompanies: [{ name: peopleUrl, domain: 'stone.com.br', linkedinUrl: '', maxResults: 0 }]
+    })
+    expect(extra.linkedinUrl).toBe(peopleUrl)
+    expect(extra.domain).toBe('stone.com.br')
+  })
+
+  it('sameMaxForAll=true: toda empresa usa o máx. global', () => {
+    const form: SearchFormState = {
+      ...baseForm,
+      companyName: 'Nubank',
+      maxResults: 30,
+      sameMaxForAll: true,
+      extraCompanies: [
+        { name: 'Stone', domain: 'stone.com.br', linkedinUrl: '', maxResults: 5 }
+      ]
+    }
+    const [primary, extra] = collectCompanies(form)
+    expect(buildSearchRequestForCompany(form, primary).max_results).toBe(30)
+    expect(buildSearchRequestForCompany(form, extra).max_results).toBe(30)
+  })
+
+  it('sameMaxForAll=false: cada empresa extra usa seu próprio máx. (e cai no global se vazio)', () => {
+    const form: SearchFormState = {
+      ...baseForm,
+      companyName: 'Nubank',
+      maxResults: 30,
+      sameMaxForAll: false,
+      extraCompanies: [
+        { name: 'Stone', domain: 'stone.com.br', linkedinUrl: '', maxResults: 5 },
+        { name: 'iFood', domain: 'ifood.com.br', linkedinUrl: '', maxResults: 0 }
+      ]
+    }
+    const [primary, stone, ifood] = collectCompanies(form)
+    expect(buildSearchRequestForCompany(form, primary).max_results).toBe(30)
+    expect(buildSearchRequestForCompany(form, stone).max_results).toBe(5)
+    expect(buildSearchRequestForCompany(form, ifood).max_results).toBe(30)
   })
 })
 

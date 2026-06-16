@@ -17,12 +17,17 @@ export interface SearchFormFilters {
   dropUnclassified: boolean
 }
 
-/** Empresa adicional numa busca múltipla: nome (ou URL do LinkedIn) e seu
- *  próprio domínio. O domínio é por empresa porque é o que ancora a busca de
- *  e-mail — sem ele, o enriquecimento de e-mail daquela empresa falha. */
+/** Empresa adicional numa busca múltipla. Cada campo é por empresa:
+ *  - `domain`: ancora a busca de e-mail (sem ele o e-mail daquela empresa falha);
+ *  - `linkedinUrl`: a URL da aba People que o CDP scrapa no modo people_search
+ *    (sem ela, o slug é só adivinhado a partir do nome — frágil). */
 export interface ExtraCompany {
   name: string
   domain: string
+  linkedinUrl: string
+  /** Máx. de leads só desta empresa. Usado quando `sameMaxForAll` está
+   *  desligado; caso contrário todas usam o `maxResults` global do form. */
+  maxResults: number
 }
 
 export interface SearchFormState {
@@ -32,6 +37,9 @@ export interface SearchFormState {
   /** Empresas adicionais (nome OU URL do LinkedIn) com domínio próprio. Cada
    *  entrada dispara sua própria busca. Vazio = busca de empresa única. */
   extraCompanies: ExtraCompany[]
+  /** Quando true (padrão), todas as empresas usam o `maxResults` global. Quando
+   *  false, cada empresa extra usa seu próprio `maxResults`. */
+  sameMaxForAll: boolean
   /** Com 2+ empresas: 'single' agrega tudo numa tabela (coluna identifica
    *  a empresa) e 'separate' cria uma tabela por empresa. */
   tableMode: 'single' | 'separate'
@@ -141,6 +149,9 @@ export interface CompanyDraft {
   name: string
   domain?: string
   linkedinUrl?: string
+  /** Máx. de leads desta empresa (resolvido por collectCompanies a partir do
+   *  global ou do valor por empresa, conforme `sameMaxForAll`). */
+  maxResults?: number
 }
 
 const LINKEDIN_COMPANY_URL = /linkedin\.com\/company\/([^/?#]+)/i
@@ -179,20 +190,38 @@ export function collectCompanies(form: SearchFormState): CompanyDraft[] {
     push({
       name: form.companyName.trim(),
       domain: form.companyDomain.trim() || undefined,
-      linkedinUrl: form.linkedinUrl.trim() || undefined
+      linkedinUrl: form.linkedinUrl.trim() || undefined,
+      maxResults: form.maxResults
     })
   }
-  for (const entry of form.extraCompanies) push(draftFromExtra(entry))
+  for (const entry of form.extraCompanies) {
+    const draft = draftFromExtra(entry)
+    if (!draft) continue
+    // Cada empresa puxa seu próprio número de leads quando o "mesmo valor" está
+    // desligado; senão herda o máx. global. Valor inválido cai no global.
+    const perCompany = form.sameMaxForAll ? 0 : entry.maxResults
+    draft.maxResults = perCompany && perCompany > 0 ? perCompany : form.maxResults
+    push(draft)
+  }
   return drafts
 }
 
-/** Turn a structured extra-company entry into a draft, parsing the name field
- *  as a plain name or a LinkedIn URL and attaching its own domain. */
+/** Turn a structured extra-company entry into a draft. Uses the explicit
+ *  LinkedIn People URL when given (so the CDP scrape targets the right company),
+ *  otherwise parses the name field (which may itself be a name or a URL). The
+ *  per-company domain rides along for e-mail enrichment. */
 function draftFromExtra(entry: ExtraCompany): CompanyDraft | null {
-  const base = draftFromEntry(entry.name)
-  if (!base) return null
+  const name = entry.name.trim()
+  const url = entry.linkedinUrl.trim()
   const domain = entry.domain.trim()
-  return domain ? { ...base, domain } : base
+  let draft: CompanyDraft | null
+  if (url) {
+    draft = { name: name || companyNameFromLinkedInUrl(url), linkedinUrl: url }
+  } else {
+    draft = draftFromEntry(name)
+  }
+  if (!draft) return null
+  return domain ? { ...draft, domain } : draft
 }
 
 /** Build a search request for one specific company, reusing every shared
@@ -209,6 +238,7 @@ export function buildSearchRequestForCompany(
   else delete request.company_domain
   if (company.linkedinUrl) request.linkedin_url = company.linkedinUrl
   else delete request.linkedin_url
+  if (company.maxResults && company.maxResults > 0) request.max_results = company.maxResults
   return request
 }
 
@@ -272,6 +302,7 @@ export const emptyFormState: SearchFormState = {
   companyDomain: '',
   linkedinUrl: '',
   extraCompanies: [],
+  sameMaxForAll: true,
   tableMode: 'single',
   rolePreset: 'marketing_growth',
   titles: 'marketing, growth, cmo, head of marketing, demand generation, performance marketing',
